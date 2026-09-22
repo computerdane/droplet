@@ -11,7 +11,7 @@ extends Node
 ## Command-line options (after `--`): site=KTLX time=20130520_200359 field=VEL elev=0.5
 ## live=0|1 play=0|1 fps=8 zoom=2 pan=-15,5 (2D centre, km east,north) view=2d|3d yaw=30
 ## pitch=25 dist=400 exag=4 isolate=0|1|2 threshold=20 render=cones|volume density=0.05
-## mosaic=0|1 prefetch=0|1
+## mosaic=0|1 prefetch=0|1 ui_scale=1.25 (multiplies the automatic UI scale, see _fit_ui_scale)
 ## section=ax,ay,bx,by (cross-section A -> B, km east,north of the radar)
 ## srm=240,10 (storm-relative velocity, storm moving from 240 degrees at 10 m/s) or srm=auto
 ## (storm motion from the VAD profile, see _auto_storm) winds=0|1 (hodograph panel)
@@ -43,9 +43,9 @@ const FIELD_KEYS := {
 	KEY_8: "DVEL",
 }
 const HINT_COMMON := (
-	"Space play   Left/Right step   Home/End first/last   [ ] speed   L live   Up/Down tilt\n"
-	+ "1-8 field   S site   M mosaic   V 2D/3D   R reset view   X section   F fetch\n"
-	+ "T storm-relative   W winds (hodograph)\n"
+	"Space play   Left/Right step   Shift+Left/Right prev/next loop   Home/End first/last\n"
+	+ "[ ] speed   L live   Up/Down tilt   1-8 field   S site   M mosaic   V 2D/3D\n"
+	+ "R reset view   X section   F fetch   T storm-relative   W winds (hodograph)\n"
 )
 const HINT_2D := "wheel zoom   drag pan"
 const HINT_SECTION := "wheel zoom   left drag: section A to B   right drag pan"
@@ -76,6 +76,7 @@ var storm_from_deg := 240.0  # meteorological: direction the storm moves from
 var storm_speed := 10.0  # m/s
 var srm_auto := true  # storm motion from the VAD profile when there is one, else manual
 var winds_shown := false  # hodograph panel
+var ui_scale := 1.0  # user factor on top of the automatic UI scale
 var _auto_storm: Dictionary = {}  # RadarLibrary.storm_motion_near() for the current volume
 var _neighbors: Array = []  # mosaic entries, see _find_neighbors()
 var _others := PackedVector2Array()  # neighbours in the selected site's frame
@@ -102,6 +103,9 @@ func _ready() -> void:
 	_connect_hud()
 
 	var opts := _parse_options()
+	ui_scale = clampf(float(opts.get("ui_scale", ui_scale)), 0.5, 4.0)
+	get_window().size_changed.connect(_fit_ui_scale)
+	_fit_ui_scale()
 	field_name = opts.get("field", field_name).to_upper()
 	target_elev = float(opts.get("elev", target_elev))
 	fps = float(opts.get("fps", fps))
@@ -186,6 +190,23 @@ func _apply_3d_options(opts: Dictionary) -> void:
 		view_3d.thresholds[field_name] = float(opts["threshold"])
 
 
+## The project stretches canvas items with aspect "expand" from the 1280x800 design size, so
+## the UI grows with big windows and the canvas fills any aspect ratio. Small windows would
+## shrink the text too; instead the scale stays at least the screen's own (HiDPI) scale and
+## the HUD reflows into the smaller canvas.
+func _fit_ui_scale() -> void:
+	var win := get_window()
+	var design := Vector2(
+		ProjectSettings.get_setting("display/window/size/viewport_width"),
+		ProjectSettings.get_setting("display/window/size/viewport_height")
+	)
+	var stretch := minf(win.size.x / design.x, win.size.y / design.y)
+	if stretch <= 0.0:
+		return
+	var screen_scale := DisplayServer.screen_get_scale(win.current_screen)
+	win.content_scale_factor = maxf(stretch, screen_scale) * ui_scale / stretch
+
+
 func _parse_options() -> Dictionary:
 	var out := {}
 	for a in OS.get_cmdline_user_args():
@@ -217,11 +238,25 @@ func _go_to(i: int) -> void:
 	_refresh()
 
 
+## Steps within the current sequence; it stops at either end rather than running into
+## another day's data (see _step_sequence).
 func _step(delta: int) -> void:
 	_set_playing(false)
 	if delta < 0:
 		_set_live(false)
-	_go_to(frame + delta)
+	var seq := _sequence()
+	_go_to(clampi(frame + delta, seq.x, seq.y))
+
+
+## Jumps to the previous / next sequence: its last frame going back, its first going forward.
+func _step_sequence(delta: int) -> void:
+	var seq := _sequence()
+	var i := seq.y + 1 if delta > 0 else seq.x - 1
+	if i < 0 or i >= frames.size():
+		return
+	_set_playing(false)
+	_set_live(false)
+	_go_to(i)
 
 
 func _set_view_3d(on: bool) -> void:
@@ -712,9 +747,15 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_SPACE:
 			_set_playing(not playing)
 		KEY_LEFT:
-			_step(-1)
+			if e.shift_pressed:
+				_step_sequence(-1)
+			else:
+				_step(-1)
 		KEY_RIGHT:
-			_step(1)
+			if e.shift_pressed:
+				_step_sequence(1)
+			else:
+				_step(1)
 		KEY_HOME:
 			_set_live(false)
 			_go_to(_sequence().x)

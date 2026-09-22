@@ -59,6 +59,9 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/main.gd` – controller: site, frame, field, *target elevation* (kept across frames), playback,
   live, mosaic neighbours. Parses `key=value` user args (see its header) – screenshot.gd passes them through.
 - `scripts/hud.gd` – code-built UI (no keyboard focus except the fetch panel's text fields, so shortcuts work).
+  Responsive: stretch `canvas_items` + aspect `expand` from 1280x800; `main._fit_ui_scale()` keeps the scale
+  ≥ the screen scale (× `ui_scale=`) so small windows reflow instead of shrinking; `Hud._layout()` wraps the
+  top-right rows, sizes/places hodograph + section (side by side when they don't stack) and wraps/hides the hint.
 - `scripts/ppi_view.gd` + `shaders/ppi.gdshader` – 2D plan view, basemap, rings, decluttered city labels.
 - `scripts/volume_view_3d.gd`, `scripts/cone_set.gd` + `shaders/cone.gdshader` – 3D: each tilt is a shared
   unit grid bent along the beam in the vertex shader (4/3 earth radius, vertical exaggeration); per-field

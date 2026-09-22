@@ -4,6 +4,12 @@ extends Control
 ## a playback bar. Built in code; emits intent signals and main.gd pushes state back via
 ## the set_* methods. Nothing here takes keyboard focus, so shortcuts keep working, except
 ## the text fields of the fetch panel while it is open.
+##
+## Layout adapts to the canvas size (main.gd keeps the UI scale >= 1, so small windows get
+## a smaller canvas rather than tiny text), see _layout(): the top-right rows wrap when the
+## info text leaves little room, the hodograph and cross-section panels are sized from the
+## space left and go side by side when they do not fit stacked, and the key hint wraps next
+## to them or hides when there is no room.
 
 signal play_toggled
 signal step_requested(delta: int)
@@ -24,8 +30,16 @@ signal field_selected(field_name: String)
 const SPEEDS := [1.0, 2.0, 4.0, 8.0, 15.0]
 const DEFAULT_SPEED_INDEX := 2
 const LEGEND_WIDTH := 280
-const SECTION_SIZE := Vector2(560, 270)
-const HODOGRAPH_SIZE := Vector2(280, 300)
+const HODOGRAPH_SIZE := Vector2(280, 300)  # largest; shrinks to fit
+const HODOGRAPH_MIN_H := 180.0
+const SECTION_MIN := Vector2(340, 170)
+const SECTION_MAX := Vector2(760, 360)
+const SECTION_WIDTH_SHARE := 0.42  # of the canvas width
+const SECTION_ASPECT := 0.48  # height / width
+const MARGIN := 12.0
+const GAP := 8.0
+const COLUMN_MIN_WIDTH := 300.0
+const HINT_MIN_WIDTH := 240.0
 
 var info: Label
 var hint: Label
@@ -36,7 +50,7 @@ var section_button: Button
 var section: SectionView
 var fetch_panel: FetchPanel
 var field_buttons: Dictionary = {}  # name -> Button
-var srm_row: HBoxContainer
+var srm_row: HFlowContainer
 var srm_button: Button
 var srm_auto_button: Button
 var winds_button: Button
@@ -52,6 +66,10 @@ var slider: HSlider
 var time_label: Label
 var speed_option: OptionButton
 var live_button: Button
+var _top_box: VBoxContainer
+var _top_rows: Array[HFlowContainer] = []
+var _bar: PanelContainer
+var _layout_queued := false
 var _sites: Array[String] = []
 var _setting_slider := false
 
@@ -69,6 +87,11 @@ func _ready() -> void:
 	fetch_panel.offset_top = 60
 	fetch_panel.visible = false
 	add_child(fetch_panel)
+	resized.connect(_queue_layout)
+	info.minimum_size_changed.connect(_queue_layout)
+	_top_box.resized.connect(_queue_layout)
+	_bar.resized.connect(_queue_layout)
+	_queue_layout()
 
 
 func _build_info() -> void:
@@ -77,10 +100,8 @@ func _build_info() -> void:
 	add_child(info)
 	hint = _label(12)
 	hint.modulate = Color(1, 1, 1, 0.55)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	hint.offset_left = 12
-	hint.offset_top = -52
-	hint.offset_bottom = -52
 	hint.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	add_child(hint)
 
@@ -89,16 +110,14 @@ func _build_top_right() -> void:
 	var box := VBoxContainer.new()
 	box.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	box.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	box.offset_left = -12
-	box.offset_right = -12
+	box.offset_left = -MARGIN
+	box.offset_right = -MARGIN
 	box.offset_top = 10
-	box.alignment = BoxContainer.ALIGNMENT_END
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(box)
+	_top_box = box
 
-	var row := _hbox()
-	row.alignment = BoxContainer.ALIGNMENT_END
-	box.add_child(row)
+	var row := _flow(box)
 	site_option = OptionButton.new()
 	site_option.focus_mode = Control.FOCUS_NONE
 	site_option.tooltip_text = "Radar site (sites with decoded volumes)"
@@ -123,9 +142,7 @@ func _build_top_right() -> void:
 	view_button.pressed.connect(view_toggled.emit)
 	row.add_child(view_button)
 
-	var fields := _hbox()
-	fields.alignment = BoxContainer.ALIGNMENT_END
-	box.add_child(fields)
+	var fields := _flow(box)
 	var group := ButtonGroup.new()
 	for i in RadarVolume.FIELDS.size():
 		var fname: String = RadarVolume.FIELDS[i]
@@ -158,36 +175,42 @@ func _build_top_right() -> void:
 	labels.add_child(legend_hi)
 
 	hodograph = Hodograph.new()
-	hodograph.custom_minimum_size = HODOGRAPH_SIZE
-	hodograph.size_flags_horizontal = Control.SIZE_SHRINK_END
+	hodograph.size = HODOGRAPH_SIZE
 	hodograph.visible = false
-	box.add_child(hodograph)
+	add_child(hodograph)
 
 
 ## Storm-relative motion controls, shown for velocity fields: storm moving from a
 ## direction (meteorological convention) at a speed.
+## The row wraps between its three groups, never inside one.
 func _build_srm_row(box: VBoxContainer) -> void:
-	srm_row = _hbox()
-	srm_row.alignment = BoxContainer.ALIGNMENT_END
-	box.add_child(srm_row)
+	srm_row = _flow(box)
+	var toggles := _hbox()
+	srm_row.add_child(toggles)
 	srm_button = _button("Storm-relative", "Subtract the storm motion from velocity (T)")
 	srm_button.toggle_mode = true
 	srm_button.pressed.connect(srm_toggled.emit)
-	srm_row.add_child(srm_button)
+	toggles.add_child(srm_button)
 	srm_auto_button = _button(
 		"Auto", "Storm motion from the VAD wind profile (Bunkers right mover)"
 	)
 	srm_auto_button.toggle_mode = true
 	srm_auto_button.pressed.connect(srm_auto_toggled.emit)
-	srm_row.add_child(srm_auto_button)
-	srm_row.add_child(_srm_step("<", "Storm motion from 10 degrees further left", -10.0, 0.0))
+	toggles.add_child(srm_auto_button)
+	var dir := _hbox()
+	srm_row.add_child(dir)
+	dir.add_child(_srm_step("<", "Storm motion from 10 degrees further left", -10.0, 0.0))
 	srm_dir_label = _label(13)
-	srm_row.add_child(srm_dir_label)
-	srm_row.add_child(_srm_step(">", "Storm motion from 10 degrees further right", 10.0, 0.0))
-	srm_row.add_child(_srm_step("-", "Storm slower by 1 m/s", 0.0, -1.0))
+	srm_dir_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	dir.add_child(srm_dir_label)
+	dir.add_child(_srm_step(">", "Storm motion from 10 degrees further right", 10.0, 0.0))
+	var speed := _hbox()
+	srm_row.add_child(speed)
+	speed.add_child(_srm_step("-", "Storm slower by 1 m/s", 0.0, -1.0))
 	srm_speed_label = _label(13)
-	srm_row.add_child(srm_speed_label)
-	srm_row.add_child(_srm_step("+", "Storm faster by 1 m/s", 0.0, 1.0))
+	srm_speed_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	speed.add_child(srm_speed_label)
+	speed.add_child(_srm_step("+", "Storm faster by 1 m/s", 0.0, 1.0))
 
 
 func _srm_step(text: String, tip: String, d_from_deg: float, d_speed: float) -> Button:
@@ -208,17 +231,18 @@ func _build_bottom_bar() -> void:
 	style.content_margin_bottom = 6
 	panel.add_theme_stylebox_override("panel", style)
 	add_child(panel)
+	_bar = panel
 
 	var row := _hbox()
 	panel.add_child(row)
-	var prev := _button("<", "Previous volume (Left)")
+	var prev := _button("<", "Previous volume in this loop (Left; Shift+Left: previous loop)")
 	prev.pressed.connect(func() -> void: step_requested.emit(-1))
 	row.add_child(prev)
 	play_button = _button("Play", "Play / pause the loop (Space)")
 	play_button.custom_minimum_size.x = 64
 	play_button.pressed.connect(play_toggled.emit)
 	row.add_child(play_button)
-	var next := _button(">", "Next volume (Right)")
+	var next := _button(">", "Next volume in this loop (Right; Shift+Right: next loop)")
 	next.pressed.connect(func() -> void: step_requested.emit(1))
 	row.add_child(next)
 
@@ -250,31 +274,126 @@ func _build_bottom_bar() -> void:
 	row.add_child(live_button)
 
 
-## Cross-section panel, bottom right above the playback bar and clear of the hint text.
+## Cross-section panel, bottom right above the playback bar; placed by _layout().
 func _build_section() -> void:
 	section = SectionView.new()
-	section.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	section.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	section.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	section.offset_left = -SECTION_SIZE.x - 12
-	section.offset_right = -12
-	section.offset_top = -SECTION_SIZE.y - 100
-	section.offset_bottom = -100
 	section.visible = false
 	add_child(section)
 
 
+func _queue_layout() -> void:
+	if not _layout_queued:
+		_layout_queued = true
+		_layout.call_deferred()
+
+
+## Places the top-right column, hodograph, cross-section and hint for the current canvas
+## size. Positions are in canvas units (after UI scaling).
+func _layout() -> void:
+	_layout_queued = false
+	var view := size
+	var bar_top := view.y - _bar.size.y
+	var info_bottom := info.position.y + info.get_combined_minimum_size().y
+
+	# Top-right column: as wide as its rows want, but leave the info text its room (the rows
+	# wrap then). Only below COLUMN_MIN_WIDTH does it give up and overlap the info text.
+	var natural := LEGEND_WIDTH * 1.0
+	for r in _top_rows:
+		if r.visible:
+			natural = maxf(natural, _natural_width(r))
+	var room := view.x - info.position.x - info.get_combined_minimum_size().x - 3 * MARGIN
+	var col_w := minf(natural, maxf(room, COLUMN_MIN_WIDTH))
+	col_w = minf(col_w, view.x - 2 * MARGIN)
+	_top_box.custom_minimum_size.x = col_w
+	var legend_w := minf(LEGEND_WIDTH, col_w)
+	legend_tex.custom_minimum_size.x = legend_w
+	legend_lo.get_parent().custom_minimum_size.x = legend_w
+	var top := _top_box.position.y + _top_box.get_combined_minimum_size().y + GAP
+	var bottom := bar_top - GAP
+	var right := view.x - MARGIN
+
+	# Hodograph under the column, cross-section at the bottom right; side by side when
+	# stacking them would squeeze the hodograph below HODOGRAPH_MIN_H.
+	var sec := Vector2.ZERO
+	if section.visible:
+		sec.x = clampf(view.x * SECTION_WIDTH_SHARE, SECTION_MIN.x, SECTION_MAX.x)
+		sec.y = clampf(sec.x * SECTION_ASPECT, SECTION_MIN.y, SECTION_MAX.y)
+	var hodo := Vector2.ZERO
+	var side_by_side := false
+	if hodograph.visible:
+		var hodo_w := minf(HODOGRAPH_SIZE.x, col_w)
+		var avail := bottom - top
+		if section.visible and avail - sec.y - GAP < HODOGRAPH_MIN_H:
+			side_by_side = true
+		elif section.visible:
+			avail -= sec.y + GAP
+		hodo = Vector2(hodo_w, clampf(avail, HODOGRAPH_MIN_H, HODOGRAPH_SIZE.y))
+		hodograph.position = Vector2(right - hodo.x, top)
+		hodograph.size = hodo
+	if section.visible:
+		var sec_right := right - (hodo.x + GAP if side_by_side else 0.0)
+		sec.x = minf(sec.x, sec_right - MARGIN)
+		sec.y = minf(sec.y, bottom - info_bottom - GAP)
+		section.position = Vector2(sec_right - sec.x, bottom - sec.y)
+		section.size = sec
+
+	# Key hint: bottom left, wrapped to the room left of whatever reaches down to it.
+	var hint_right := right
+	var hint_top := bottom - _hint_height(right - MARGIN)
+	for c: Control in [_top_box, hodograph, section]:
+		if c.visible and c.get_rect().end.y > hint_top:
+			hint_right = minf(hint_right, c.position.x - GAP)
+	var hint_w := maxf(hint_right - MARGIN, 0.0)
+	hint.offset_left = MARGIN
+	hint.offset_right = MARGIN + hint_w
+	hint.offset_bottom = -(view.y - bottom)
+	hint.offset_top = hint.offset_bottom
+	hint.visible = hint_w >= HINT_MIN_WIDTH and bottom - _hint_height(hint_w) > info_bottom + GAP
+
+	fetch_panel.custom_minimum_size.x = minf(480.0, view.x - 2 * MARGIN)
+
+
+## Height of the key hint wrapped to `width` (measured with the font: a hidden Label does not
+## re-wrap, so its minimum size would be stale).
+func _hint_height(width: float) -> float:
+	var font := hint.get_theme_font("font")
+	var font_size := hint.get_theme_font_size("font_size")
+	var flags := TextServer.BREAK_MANDATORY | TextServer.BREAK_WORD_BOUND
+	var sz := font.get_multiline_string_size(
+		hint.text, HORIZONTAL_ALIGNMENT_LEFT, width, font_size, -1, flags
+	)
+	return sz.y
+
+
+## Width of a flow row laid out on one line.
+func _natural_width(row: HFlowContainer) -> float:
+	var sep := row.get_theme_constant("h_separation")
+	var w := 0.0
+	for c: Control in row.get_children():
+		if c.visible:
+			w += c.get_combined_minimum_size().x + sep
+	return maxf(w - sep, 0.0)
+
+
 func set_section(on: bool, shown: bool) -> void:
 	section_button.set_pressed_no_signal(on)
-	section.visible = shown
+	if section.visible != shown:
+		section.visible = shown
+		_queue_layout()
 
 
 func set_info(text: String) -> void:
 	info.text = text
 
 
+## Items in `text` are separated by runs of spaces; single spaces inside an item become
+## no-break spaces so wrapping only happens between items.
 func set_hint(text: String) -> void:
-	hint.text = text
+	var re := RegEx.create_from_string("(?<=\\S) (?=\\S)")
+	text = re.sub(text, "\u00a0", true)
+	if hint.text != text:
+		hint.text = text
+		_queue_layout()
 
 
 func set_sites(sites: Array[String], current: String) -> void:
@@ -304,7 +423,9 @@ func set_srm(
 
 func set_winds_shown(on: bool) -> void:
 	winds_button.set_pressed_no_signal(on)
-	hodograph.visible = on
+	if hodograph.visible != on:
+		hodograph.visible = on
+		_queue_layout()
 
 
 func set_view_3d(on: bool) -> void:
@@ -363,6 +484,17 @@ func _button(text: String, tip: String) -> Button:
 	b.tooltip_text = tip
 	b.focus_mode = Control.FOCUS_NONE
 	return b
+
+
+## A right-aligned row that wraps when the top-right column is narrow.
+func _flow(parent: Control) -> HFlowContainer:
+	var f := HFlowContainer.new()
+	f.alignment = FlowContainer.ALIGNMENT_END
+	f.last_wrap_alignment = FlowContainer.LAST_WRAP_ALIGNMENT_END
+	f.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(f)
+	_top_rows.append(f)
+	return f
 
 
 func _hbox() -> HBoxContainer:
