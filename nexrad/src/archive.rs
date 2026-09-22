@@ -1,0 +1,227 @@
+//! The archive mirror (Unidata's `unidata-nexrad-level2` bucket, ~5 min behind real time,
+//! back to ~2008): keys are `YYYY/MM/DD/SITE/SITEYYYYMMDD_HHMMSS_V06[.gz]`, one per volume.
+
+use std::path::{Path, PathBuf};
+
+use crate::time::{Date, Utc};
+use crate::{Error, Result};
+
+pub const BUCKET: &str = "https://unidata-nexrad-level2.s3.amazonaws.com";
+
+/// An S3 bucket with anonymous listing and reads (`net::HttpBucket`, or a fake in tests).
+pub trait Bucket {
+    /// Keys under `prefix`, as the bucket lists them (at most one page of 1000).
+    fn list(&self, prefix: &str) -> Result<Vec<String>>;
+    fn get(&self, key: &str) -> Result<Vec<u8>>;
+}
+
+/// `<Key>` elements of an S3 ListObjectsV2 response.
+pub fn parse_listing(xml: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(i) = rest.find("<Key>") {
+        rest = &rest[i + 5..];
+        let Some(j) = rest.find("</Key>") else { break };
+        let key = rest[..j].replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'");
+        if !key.is_empty() {
+            out.push(key);
+        }
+        rest = &rest[j + 6..];
+    }
+    out
+}
+
+/// Scan start time from an archive key's `SITEYYYYMMDD_HHMMSS` file name, if it has one.
+pub fn key_time(key: &str) -> Option<Utc> {
+    let name = key.rsplit('/').next().unwrap_or(key).as_bytes();
+    // Four upper-case letters, eight digits, '_', six digits, anywhere in the name.
+    for start in 0..name.len().saturating_sub(18) {
+        let w = &name[start..start + 19];
+        if w[..4].iter().all(u8::is_ascii_uppercase)
+            && w[12] == b'_'
+            && let Some(t) = Utc::parse_compact(std::str::from_utf8(&w[4..]).ok()?)
+        {
+            return Some(t);
+        }
+    }
+    None
+}
+
+pub fn file_name(key: &str) -> &str {
+    key.rsplit('/').next().unwrap_or(key)
+}
+
+/// Volume keys of one site and day, sorted. `_MDM` files are metadata-only stubs; skipped.
+pub fn list_keys(bucket: &dyn Bucket, site: &str, day: Date) -> Result<Vec<String>> {
+    let prefix = format!("{}/{}/", day.slashed(), site.to_uppercase());
+    let mut keys: Vec<String> = bucket.list(&prefix)?.into_iter().filter(|k| !k.ends_with("_MDM") && key_time(k).is_some()).collect();
+    keys.sort();
+    Ok(keys)
+}
+
+pub fn latest_key(bucket: &dyn Bucket, site: &str) -> Result<String> {
+    let today = Utc::now().date();
+    for day in [today, today.add_days(-1)] {
+        if let Some(k) = list_keys(bucket, site, day)?.pop() {
+            return Ok(k);
+        }
+    }
+    Err(format!("no volumes found for {site} in the last two days").into())
+}
+
+/// Newest key whose scan start is at or before `at`.
+pub fn key_at(bucket: &dyn Bucket, site: &str, at: Utc) -> Result<String> {
+    for day in [at.date(), at.date().add_days(-1)] {
+        if let Some(k) = list_keys(bucket, site, day)?.into_iter().rfind(|k| key_time(k).unwrap() <= at) {
+            return Ok(k);
+        }
+    }
+    Err(format!("no volumes for {site} at or before {}", at.isoformat()).into())
+}
+
+pub fn keys_between(bucket: &dyn Bucket, site: &str, start: Utc, end: Utc) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut day = start.date();
+    while day <= end.date() {
+        out.extend(list_keys(bucket, site, day)?.into_iter().filter(|k| {
+            let t = key_time(k).unwrap();
+            start <= t && t <= end
+        }));
+        day = day.add_days(1);
+    }
+    Ok(out)
+}
+
+/// Which keys a fetch/update asks for.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Selection {
+    pub at: Option<Utc>,
+    pub start: Option<Utc>,
+    pub end: Option<Utc>,
+}
+
+pub fn resolve_keys(bucket: &dyn Bucket, site: &str, sel: &Selection) -> Result<Vec<String>> {
+    match (sel.start, sel.end, sel.at) {
+        (Some(s), Some(e), _) => keys_between(bucket, site, s, e),
+        (None, None, Some(at)) => Ok(vec![key_at(bucket, site, at)?]),
+        (None, None, None) => Ok(vec![latest_key(bucket, site)?]),
+        _ => Err("--from and --to must be given together".into()),
+    }
+}
+
+/// Downloads `key` into `raw_dir` (skipped if already there); returns the local path.
+pub fn download(bucket: &dyn Bucket, key: &str, raw_dir: &Path, log: &mut dyn std::io::Write) -> Result<PathBuf> {
+    let dest = raw_dir.join(file_name(key));
+    std::fs::create_dir_all(raw_dir).map_err(|e| Error::from(format!("{}: {e}", raw_dir.display())))?;
+    if dest.exists() {
+        let _ = writeln!(log, "already have {}", file_name(key));
+        return Ok(dest);
+    }
+    let _ = writeln!(log, "downloading {key}");
+    let bytes = bucket.get(key)?;
+    crate::volume::write_atomic(&dest, &bytes)?;
+    Ok(dest)
+}
+
+#[cfg(test)]
+pub mod fakes {
+    //! Stand-ins for the S3 HTTP layer.
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    use super::*;
+
+    pub fn s3_listing(keys: &[&str]) -> String {
+        let items: String = keys.iter().map(|k| format!("<Contents><Key>{k}</Key><Size>1</Size></Contents>")).collect();
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Name>bucket</Name>{items}</ListBucketResult>"
+        )
+    }
+
+    pub type Lister = Box<dyn Fn(&str) -> Vec<String>>;
+
+    /// Keys by prefix and objects by key, plus a log of every prefix listed.
+    #[derive(Default)]
+    pub struct FakeBucket {
+        pub keys: RefCell<HashMap<String, Vec<String>>>,
+        pub objects: RefCell<HashMap<String, Vec<u8>>>,
+        pub listed: RefCell<Vec<String>>,
+        /// Called with the prefix instead of `keys` when set.
+        pub lister: Option<Lister>,
+    }
+
+    impl FakeBucket {
+        pub fn put_day(&self, day: &str, names: &[&str]) {
+            let prefix = format!("{day}/KTST/");
+            self.keys.borrow_mut().insert(prefix.clone(), names.iter().map(|n| format!("{prefix}{n}")).collect());
+        }
+    }
+
+    impl Bucket for FakeBucket {
+        fn list(&self, prefix: &str) -> Result<Vec<String>> {
+            self.listed.borrow_mut().push(prefix.to_string());
+            if let Some(f) = &self.lister {
+                return Ok(f(prefix));
+            }
+            Ok(parse_listing(&s3_listing(
+                &self.keys.borrow().get(prefix).map(|v| v.iter().map(String::as_str).collect::<Vec<_>>()).unwrap_or_default(),
+            )))
+        }
+        fn get(&self, key: &str) -> Result<Vec<u8>> {
+            self.objects.borrow().get(key).cloned().ok_or_else(|| format!("{key}: not in the fake bucket").into())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fakes::*;
+    use super::*;
+
+    #[test]
+    fn key_times() {
+        assert_eq!(key_time("2013/05/20/KTLX/KTLX20130520_200359_V06.gz"), Some(Utc::from_ymd_hms(2013, 5, 20, 20, 3, 59)));
+        assert_eq!(key_time("2013/05/20/KTLX/NOP3_20130520"), None);
+        assert_eq!(key_time("junk"), None);
+        assert_eq!(parse_listing(&s3_listing(&["a/b", "c&amp;d"])), ["a/b", "c&d"]);
+    }
+
+    #[test]
+    fn list_keys_filters_and_sorts() {
+        let b = FakeBucket::default();
+        b.put_day("2024/05/01", &["KTST20240501_220500_V06", "KTST20240501_220000_V06", "KTST20240501_220000_V06_MDM", "junk"]);
+        let keys = list_keys(&b, "ktst", Date::new(2024, 5, 1)).unwrap();
+        assert_eq!(keys, ["2024/05/01/KTST/KTST20240501_220000_V06", "2024/05/01/KTST/KTST20240501_220500_V06"]);
+        assert_eq!(b.listed.borrow()[0], "2024/05/01/KTST/");
+    }
+
+    #[test]
+    fn key_at_and_between() {
+        let b = FakeBucket::default();
+        b.put_day("2024/04/30", &["KTST20240430_235500_V06"]);
+        b.put_day("2024/05/01", &["KTST20240501_000400_V06", "KTST20240501_001000_V06"]);
+        let at = key_at(&b, "KTST", Utc::from_ymd_hms(2024, 5, 1, 0, 2, 0)).unwrap();
+        assert!(at.ends_with("KTST20240430_235500_V06")); // falls back to the previous day
+        assert!(key_at(&b, "KTST", Utc::from_ymd_hms(2024, 5, 1, 0, 5, 0)).unwrap().ends_with("000400_V06"));
+        assert!(key_at(&b, "KTST", Utc::from_ymd_hms(2024, 4, 30, 12, 0, 0)).is_err());
+        let between = keys_between(&b, "KTST", Utc::from_ymd_hms(2024, 4, 30, 23, 0, 0), Utc::from_ymd_hms(2024, 5, 1, 0, 5, 0)).unwrap();
+        assert_eq!(between.iter().map(|k| file_name(k)).collect::<Vec<_>>(), ["KTST20240430_235500_V06", "KTST20240501_000400_V06"]);
+        let sel = Selection { start: Some(Utc(0)), ..Default::default() };
+        assert!(resolve_keys(&b, "KTST", &sel).unwrap_err().to_string().contains("--from and --to"));
+        let sel = Selection { at: Some(Utc::from_ymd_hms(2024, 5, 1, 0, 5, 0)), ..Default::default() };
+        assert_eq!(resolve_keys(&b, "KTST", &sel).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn download_caches() {
+        let b = FakeBucket::default();
+        b.objects.borrow_mut().insert("2024/05/01/KTST/KTST20240501_000400_V06".into(), vec![1, 2, 3]);
+        let dir = crate::volume::tempdir::Dir::new("raw");
+        let mut log = Vec::new();
+        let p = download(&b, "2024/05/01/KTST/KTST20240501_000400_V06", dir.path(), &mut log).unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), [1, 2, 3]);
+        download(&b, "2024/05/01/KTST/KTST20240501_000400_V06", dir.path(), &mut log).unwrap();
+        let log = String::from_utf8(log).unwrap();
+        assert!(log.starts_with("downloading ") && log.contains("already have KTST20240501_000400_V06"));
+    }
+}

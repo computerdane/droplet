@@ -1,0 +1,28 @@
+[package]
+name = "nexrad"
+version = "0.1.0"
+edition = "2024"
+description = "NEXRAD Level II fetch, decode, dealias and VAD for droplet"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "nexrad"
+path = "src/main.rs"
+required-features = ["native"]
+
+[features]
+default = ["native"]
+# Networking and the CLI. Off for a wasm build, which fetches through the browser.
+native = ["dep:ureq"]
+
+[dependencies]
+bzip2 = "0.6"
+flate2 = "1"
+half = "2"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+ureq = { version = "3", optional = true }

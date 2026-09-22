@@ -2,7 +2,7 @@ class_name WindProfileView
 extends Control
 ## VAD wind profile over time (a VWP, like the NWS product): one column of wind barbs per
 ## volume of the loop, height up to the top of the highest profile, coloured by speed.
-## Data is each volume's `wind_profile` (nexrad/vad.py, 250 m bins centred 125 m + k*250 m
+## Data is each volume's `wind_profile` (nexrad/src/vad.rs, 250 m bins centred 125 m + k*250 m
 ## above the radar). The current volume's column is highlighted; clicking a column jumps
 ## to that volume. Barbs point into the wind, feathers on the low-pressure side (northern
 ## hemisphere), in knots: pennant 50, full feather 10, half 5.

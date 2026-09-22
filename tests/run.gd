@@ -1,7 +1,7 @@
 extends SceneTree
 ## Godot unit tests: godot --headless --path . --script res://tests/run.gd [-- key=value ...]
 ## Runs every test_* method of every tests/unit/test_*.gd against the synthetic fixture
-## volumes (python -m nexrad.synth writes them). Options:
+## volumes (`nexrad synth` writes them). Options:
 ##   volumes=res://data/volumes  run against another library root (e.g. real data)
 ##   only=readout                only tests whose file or method name contains this
 ## Exits 1 if any test failed or the volume root is empty.
@@ -22,10 +22,7 @@ func _initialize() -> void:
 	print("volumes: %d under %s  sites: %s" % [lib.volumes.size(), root, lib.sites()])
 	if lib.volumes.is_empty():
 		push_error(
-			(
-				"no volumes under %s%s"
-				% [root, " (python -m nexrad.synth)" if root == FIXTURE_ROOT else ""]
-			)
+			"no volumes under %s%s" % [root, " (run: nexrad synth)" if root == FIXTURE_ROOT else ""]
 		)
 		quit(1)
 		return

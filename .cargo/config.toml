@@ -1,0 +1,3 @@
+# Keep build output under nexrad/ (which carries a .gdignore) so the Godot editor does not scan it.
+[build]
+target-dir = "nexrad/target"

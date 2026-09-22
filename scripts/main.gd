@@ -812,7 +812,7 @@ func _update_playback() -> void:
 
 func _update_info() -> void:
 	if volume == null:
-		var help := "Run:  python -m nexrad update KTLX   (or: python -m nexrad live KTLX)"
+		var help := "Run:  nexrad update KTLX   (or: nexrad live KTLX)"
 		hud.set_info("No volumes in %s\n%s" % [library.root, help])
 		return
 	var lines := PackedStringArray()

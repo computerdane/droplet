@@ -51,7 +51,7 @@ func latest(site: String = "") -> String:
 
 
 ## The VAD wind profile and Bunkers storm motion the sidecar stored in volume.json
-## (nexrad/vad.py): {"wind_profile": Dictionary or null, "storm_motion": Dictionary or null}.
+## (nexrad/src/vad.rs): {"wind_profile": Dictionary or null, "storm_motion": Dictionary or null}.
 ## Memoised per path until volume.json changes.
 func winds(path: String) -> Dictionary:
 	var file := path.path_join("volume.json")

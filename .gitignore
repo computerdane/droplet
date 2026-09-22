@@ -14,12 +14,13 @@ result
 *.swp
 .DS_Store
 
-# Radar data (large; fetch with `python -m nexrad`)
+# Radar data (large; fetch with `nexrad update`)
 data/raw/
 data/volumes/
 data/basemap/
-__pycache__/
 
-# Synthetic test volumes (python -m nexrad.synth)
+# Synthetic test volumes (nexrad synth)
 tests/fixtures/volumes/
-.pytest_cache/
+
+# Rust build output (kept under nexrad/ so the Godot editor ignores it)
+nexrad/target/

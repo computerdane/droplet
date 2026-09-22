@@ -1,6 +1,6 @@
 class_name Basemap
 extends RefCounted
-## Loads data/basemap (built by `python -m nexrad basemap`): line layers as lon/lat meshes
+## Loads data/basemap (built by `nexrad basemap`): line layers as lon/lat meshes
 ## that basemap_2d/3d.gdshader project around the site on the GPU, and a city list.
 ## Loaded once and shared; `get_shared()` returns null when the basemap has not been built.
 

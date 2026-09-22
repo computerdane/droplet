@@ -1,6 +1,6 @@
 class_name Hodograph
 extends Control
-## Hodograph of a VAD wind profile (nexrad/vad.py): the tip of the wind vector with
+## Hodograph of a VAD wind profile (nexrad/src/vad.rs): the tip of the wind vector with
 ## height, coloured by layer (0-1, 1-3, 3-6, 6+ km), with the Bunkers right/left movers,
 ## the 0-6 km mean wind and the storm motion in use for storm-relative velocity.
 ## +x east, +y north (up), rings every RING_STEP m/s.

@@ -5,11 +5,13 @@ will be hosted. `CLAUDE.md` describes the architecture; this file is about direc
 
 ## Where we are
 
-**Pipeline (`nexrad/`, Python + numpy).** Level II decoder for both archive layouts
+**Pipeline (`nexrad/`, Rust).** Level II decoder for both archive layouts
 (bz2 LDM records and the older gzip stream, Message 31 only), archive fetch of the newest /
 at-a-time / range of volumes, live following of the chunks bucket, region-based velocity
 dealiasing (DVEL), VAD wind profile with Bunkers storm motion and SRH, basemap build,
-and a CLI whose progress lines the UI parses.
+and a CLI whose progress lines the UI parses. Ported from Python/numpy on 2026-09-22 with
+bit-identical output; decode + dealias + VAD + write is ~0.45 s per volume, and the library
+has no C or platform dependencies, so it also compiles to WebAssembly.
 
 **Viewer (`scripts/`, `shaders/`, Godot 4.7).** 2D plan view with basemap, rings and
 decluttered city labels; eight fields with colormaps; loop playback over sequences with
@@ -22,9 +24,10 @@ background prefetch; responsive HUD; `key=value` options for scripted runs.
 **Tests and tooling.** `tests/run.gd` runs the Godot unit tests in `tests/unit/` (tilt
 selection, sequences, projection, preload, beam model, storm motion lookup, readout) against
 the synthetic fixtures, or real data with `volumes=`, `tests/screenshot.gd`, `tests/frametimes.gd`,
-gdformat and gdlint. `nexrad/synth.py` generates synthetic Archive2 files and fixture
-volumes; `pytest` covers the decoder, dealiasing, VAD, chunk ring, `live()`, key selection
-and the volume writer without network or real data (57 tests, ~10 s). All green.
+gdformat and gdlint. `nexrad/src/synth.rs` generates synthetic Archive2 files and fixture
+volumes; `cargo test` covers the decoder, dealiasing, VAD, chunk ring, `live()`, key
+selection, the basemap readers and the volume writer without network or real data (43
+tests, ~6 s). All green.
 
 **Gaps.**
 
@@ -36,7 +39,7 @@ and the volume writer without network or real data (57 tests, ~10 s). All green.
 
 Ordered by what unblocks the most.
 
-1. **Test fixtures and CI.** Done: synthetic volume generator, pytest, Godot test runner
+1. **Test fixtures and CI.** Done: synthetic volume generator, `cargo test`, Godot test runner
    on the fixtures. Left: golden screenshots under Xvfb, GitHub Actions.
    Prerequisite for everything below being safe to ship. See "Automated testing".
 2. **Web build and hosting.** See "Web build". Includes URL-state permalinks, which fall
@@ -59,13 +62,13 @@ Ordered by what unblocks the most.
 
 Five layers, cheapest first. Each maps onto a tool already in the dev shell.
 
-- **Python unit tests (done, `tests/python/`).** `nexrad/synth.py` encodes synthetic
+- **Rust unit tests (done, `cargo test`).** `nexrad/src/synth.rs` encodes synthetic
   Archive2 files in both layouts, so no raw file lands in git. Covers header parsing, LDM
   record iteration, moment scaling, sentinels, sweep grouping, partial volumes and the
   Message 31 size overflow; the dealias and VAD self-tests plus scoring against the synthetic
   scene's truth; the chunk ring and `live()` against canned S3 listings; key selection;
   `write_volume()` layout and values.
-- **Godot unit tests without real data.** `python -m nexrad.synth` writes three fixture
+- **Godot unit tests without real data.** `nexrad synth` writes three fixture
   volumes (KTST ×2 and a KTSU neighbour, ~3.8 MB) to `tests/fixtures/volumes/`. They are
   generated deterministically rather than committed (~0.9 MB compressed per regeneration
   would pile up in history); CI runs the generator first. `volumes=` points the app at
@@ -83,7 +86,7 @@ Five layers, cheapest first. Each maps onto a tool already in the dev shell.
   protocol, assert the engine banner appears with zero console errors, screenshot. Once
   the fixture volume ships in the web pck this can screenshot actual radar.
 
-One GitHub Actions workflow using the Nix flake: lint, pytest, Godot import plus unit
+One GitHub Actions workflow using the Nix flake: lint, `cargo test`, Godot import plus unit
 tests, Xvfb screenshots, web export uploaded as an artifact. A `nix flake check` target
 runs the same set locally.
 
@@ -114,34 +117,42 @@ listing.
 | Raw archive file                    | 7 to 11 MB   | (bz2)    |
 | Decode + dealias + VAD, one core    | 1.5 s/volume |          |
 
-**What does not carry over.** The Python sidecar cannot run in a browser, so fetching,
+**What does not carry over.** The native CLI cannot be spawned from a browser, so fetching,
 decoding, dealiasing and VAD need a new home. Reads from `res://data` become HTTP fetches.
 Worker threads need the threaded export plus the two cross-origin isolation headers. The
 1 GiB cache budget must shrink.
 
-**Pure client is possible but costly.** The archives are bzip2 and Godot only decompresses
-gzip, deflate, zstd and brotli, so client decoding needs a JS bzip2 library through the
-JavaScript bridge or a web GDExtension, plus a GDScript port of the parser. The numpy
-dealiaser and VAD would not port well, so a pure client would ship without DVEL and winds.
+**Pure client is now the plan.** The `nexrad` crate is pure Rust (bzip2, flate2, half,
+serde; networking sits behind the `native` feature), so it compiles to WebAssembly with
+wasm-bindgen and runs in a Web Worker: the worker fetches archive files or live chunks
+straight from the Unidata buckets (wildcard CORS), decodes, dealiases and fits the VAD, and
+hands `volume.json` plus float16 sweep buffers to Godot through `JavaScriptBridge`, the same
+format the cache reads today. Nothing runs on a server; the site is static files. The cost
+is bandwidth and CPU on the client: a raw archive is 7 to 11 MB per volume against ~0.2 MB
+per served sweep, and one volume is expected to take a few seconds of wasm time (native is
+0.45 s). Cache decoded volumes in IndexedDB or OPFS so each one is paid for once, and use
+several workers for loops and mosaics. Live latency stays at seconds: the worker polls the
+chunks bucket exactly as `live` does.
 
-**Decision: thin decode layer, mostly static.** A worker runs the existing Python
-pipeline and writes the current on-disk format where a web server can serve it. The client
-fetches per sweep, which is how the cache already loads. A live follower rewrites partial
-volumes into the same directory and the client polls `volume.json` every few seconds with
-ETag checks, as it polls the mtime today. The only real endpoint is a small
-request-to-decode call for a time nobody has asked for yet.
+**Fallback: thin decode layer.** If client bandwidth turns out to matter (long historical
+loops, big mosaics), the same crate runs as a native worker (`nix build` packages it) that
+writes decoded volumes where a web server can serve them, and the client fetches per sweep.
+The decision is deferred until the wasm build is measured.
 
 **Client changes, in order.**
 
-1. A volume source abstraction with a local-directory and an HTTP implementation behind
-   `RadarLibrary`, `read_image()` and the two-byte readout (which on web reads from the
-   cached Image instead of seeking a file).
-2. The fetch panel calls the decode endpoint instead of spawning Python; hide process UI.
+1. A volume source abstraction with a local-directory and an HTTP/worker implementation
+   behind `RadarLibrary`, `read_image()` and the two-byte readout (which on web reads from
+   the cached Image instead of seeking a file).
+2. The fetch panel drives the wasm worker instead of spawning the binary; hide process UI.
 3. Options come from the URL query string on web (permalinks, same screenshot harness).
 4. A platform-dependent cache budget and an explicit Compatibility renderer for web.
 5. Basemap served from the same origin and cached in `user://`.
 
 ### Hosting
+
+With the pure-client plan the app is static files and any host will do; the notes below are
+for the thin-decode-layer fallback, where data and a worker live next to the app.
 
 **Chosen: bludgeonder (danix), same origin for app and data.** The box already has nginx
 with DNS-01 certs, a dynamic-IP record updater, a public 80/443 door, fail2ban, a 7 TB

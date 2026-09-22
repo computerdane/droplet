@@ -1,11 +1,12 @@
 class_name Fetcher
 extends Node
-## Runs the Python sidecar from the UI: `python -m nexrad update ...` for history and
-## `python -m nexrad live SITE` for live following, with non-blocking pipes polled every
-## frame. Each job keeps its last output line for the HUD and the volume directories it
-## reported (names like KTLX_20130520_200359), so main.gd can jump to them.
-## Needs the dev shell's `python` on PATH (override with DROPLET_PYTHON) and a project
-## directory on disk (res:// as a real folder, i.e. not an exported build).
+## Runs the nexrad CLI from the UI: `nexrad update ...` for history and `nexrad live SITE`
+## for live following, with non-blocking pipes polled every frame. Each job keeps its last
+## output line for the HUD and the volume directories it reported (names like
+## KTLX_20130520_200359), so main.gd can jump to them.
+## Needs the `nexrad` binary on PATH (the dev shell adds nexrad/target/release, filled by
+## `cargo build --release`; override with DROPLET_NEXRAD) and a project directory on disk
+## (res:// as a real folder, i.e. not an exported build).
 
 signal job_updated(job: Job)
 signal job_finished(job: Job)
@@ -79,19 +80,14 @@ func _start(kind: String, site: String, args: PackedStringArray) -> Job:
 	job.kind = kind
 	job.site = site
 	job.args = args
-	var root := ProjectSettings.globalize_path("res://")
-	# `python -m nexrad` must find the package; the CLI locates data/ from its own path.
-	var path := OS.get_environment("PYTHONPATH")
-	if not root in path.split(":"):
-		OS.set_environment("PYTHONPATH", root if path.is_empty() else root + ":" + path)
-	var python := OS.get_environment("DROPLET_PYTHON")
-	var argv := PackedStringArray(["-u", "-m", "nexrad"])
-	argv.append_array(args)
-	var p := OS.execute_with_pipe(python if not python.is_empty() else "python", argv, false)
+	# The CLI resolves data/ under DROPLET_ROOT.
+	OS.set_environment("DROPLET_ROOT", ProjectSettings.globalize_path("res://"))
+	var exe := OS.get_environment("DROPLET_NEXRAD")
+	var p := OS.execute_with_pipe(exe if not exe.is_empty() else "nexrad", args, false)
 	if p.is_empty():
 		job.running = false
 		job.exit_code = -1
-		job.last_line = "could not start python (is the nix dev shell active?)"
+		job.last_line = "could not start nexrad (cargo build --release in the dev shell?)"
 	else:
 		job.pid = p["pid"]
 		job.stdio = p["stdio"]
