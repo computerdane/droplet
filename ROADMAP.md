@@ -44,8 +44,9 @@ Ordered by what unblocks the most.
 2. **Web build and hosting.** See "Web build". Includes URL-state permalinks, which fall
    out of the existing `key=value` options.
 3. **Derived products.** Done: composite reflectivity, echo tops and VIL (nexrad/src/products.rs,
-   plan view, 9 cycles them). Left: azimuthal shear and rotation tracks, KDP, a hydrometeor
-   classifier (per-gate fields written next to the moments, like DVEL).
+   plan view, 9 cycles them), azimuthal shear and KDP (nexrad/src/fields.rs, per-gate fields
+   next to the moments like DVEL; 0 toggles them). Left: rotation tracks, a hydrometeor
+   classifier.
 4. **Context overlays.** NWS warning polygons and SPC outlooks from the public NWS API,
    storm cell identification and tracking with motion vectors, tornado debris signature
    flags (low RHO inside high REF and rotation).

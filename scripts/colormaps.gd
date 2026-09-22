@@ -12,6 +12,8 @@ const RANGES := {
 	"RHO": [0.2, 1.05],  # unitless
 	"CFP": [0.0, 60.0],  # dB
 	"DVEL": [-64.0, 64.0],  # m/s, dealiased VEL
+	"KDP": [-1.0, 7.0],  # deg/km, specific differential phase
+	"AZSHR": [-10.0, 20.0],  # 1e-3 /s, azimuthal shear of DVEL (+ cyclonic)
 	"CREF": [-30.0, 80.0],  # dBZ, composite (column maximum)
 	"ET": [0.0, 20.0],  # km above the radar, 18 dBZ echo top
 	"VIL": [0.0, 80.0],  # kg/m², vertically integrated liquid
@@ -26,6 +28,8 @@ const UNITS := {
 	"RHO": "CC",
 	"CFP": "dB",
 	"DVEL": "m/s (- toward)",
+	"KDP": "°/km",
+	"AZSHR": "10⁻³/s",
 	"CREF": "dBZ",
 	"ET": "km ARL",
 	"VIL": "kg/m²",
@@ -87,6 +91,30 @@ const STOPS := {
 		[1.05, "ffffff"],
 	],
 	"CFP": [[0.0, "101010"], [20.0, "2050c0"], [40.0, "f0f000"], [60.0, "f00000"]],
+	"KDP":
+	[
+		[-1.0, "404040"],
+		[0.0, "202060"],
+		[0.5, "2050c0"],
+		[1.0, "00c0c0"],
+		[2.0, "00c000"],
+		[3.0, "f0f000"],
+		[4.5, "f08000"],
+		[6.0, "f00000"],
+		[7.0, "f000f0"],
+	],
+	"AZSHR":
+	[
+		[-10.0, "00c0f0"],
+		[-4.0, "004060"],
+		[0.0, "202020"],
+		[2.0, "404040"],
+		[4.0, "808000"],
+		[7.0, "f0f000"],
+		[10.0, "f08000"],
+		[14.0, "f00000"],
+		[20.0, "ff60ff"],
+	],
 	"ET":
 	[
 		[0.0, "202040"],
@@ -143,6 +171,10 @@ static func format_value(field_name: String, v: float) -> String:
 			return "%.1f %s (%.0f kt)" % [v, unit, v * KT_PER_MS]
 		"ET":
 			return "%.1f km ARL (%.0f kft)" % [v, v * 3.28084]
+		"KDP":
+			return "%.2f °/km" % v
+		"AZSHR":
+			return "%.1f × 10⁻³/s" % v
 	return "%.1f %s" % [v, unit]
 
 

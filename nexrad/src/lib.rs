@@ -6,6 +6,7 @@ pub mod archive;
 pub mod basemap;
 pub mod chunks;
 pub mod dealias;
+pub mod fields;
 pub mod grid;
 pub mod level2;
 #[cfg(feature = "native")]

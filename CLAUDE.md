@@ -19,7 +19,7 @@ nexrad update KTLX --from ... --to ...             # a range of volumes
 nexrad live KTLX                                   # poll chunks bucket, rewrite partial volume as it grows
 nexrad basemap                                     # once: Census states/counties + cities -> data/basemap/
 nexrad decode data/raw/*_V06*                      # re-decode everything (e.g. after decoder/dealias changes)
-nexrad derive [data/volumes/...]                   # (re)compute VAD winds, storm motion, CREF/ET/VIL without re-decoding
+nexrad derive [data/volumes/...]                   # (re)compute AZSHR/KDP, VAD winds, storm motion, CREF/ET/VIL without re-decoding
 nexrad synth                                       # synthetic fixture volumes -> tests/fixtures/volumes/
 cargo test                                         # Rust tests (decoder, dealias, VAD, chunks, live, fixtures); no network, ~6 s
 cargo clippy --all-targets && cargo fmt --check    # lint (rustfmt.toml: 140 columns)
@@ -47,7 +47,7 @@ gdformat scripts tests && gdlint scripts tests
 
 - `nexrad/` – Cargo workspace member (`Cargo.toml` at the repo root, build output in `nexrad/target/` via
   `.cargo/config.toml`). Library + `nexrad` binary; the `native` feature (default) holds networking and the CLI
-  so the library also builds for wasm. Unit tests sit next to the code (`#[cfg(test)]`, 48 of them).
+  so the library also builds for wasm. Unit tests sit next to the code (`#[cfg(test)]`, 51 of them).
 - `nexrad-wasm/` – wasm-bindgen wrapper (workspace member, `nexrad` without `native`): `decode(bytes)` →
   `{name, volume_json, files: Map<sNN_FIELD.bin, Uint8Array>}` via `volume::encode_volume()`, byte-identical to
   `nexrad decode`; `resolve_keys(site, at, from, to, bucket)` and `live(site, bucket, sleep, emit, log)` run the
@@ -104,6 +104,10 @@ gdformat scripts tests && gdlint scripts tests
   rendered by the flake's Mesa llvmpipe under Xvfb (`DROPLET_GL_LIBS`, not the host driver) and compared by
   `tests/compare.gd` (≤ 0.2 % of pixels off by > 24/255). Re-render with `--update` after an intended visual change and
   look at the PNGs before committing. `.github/workflows/ci.yml` runs lint, `cargo test`, the Godot tests and these.
+- `nexrad/src/fields.rs` – per-gate derived fields written next to the moments: `AZSHR` (LLSD azimuthal shear of DVEL,
+  10⁻³ s⁻¹, + cyclonic, ±750 m × ±1 gate) and `KDP` (°/km, half the slope of unwrapped, median-filtered PHI over ±1 km
+  in REF ≥ 40 dBZ, ±3 km below; only RHO ≥ 0.9, REF ≥ 20 dBZ and PHI within 6° of the fit). `volume::add_derived_fields()`,
+  rayon over sweeps natively.
 - `nexrad/src/products.rs` – column products CREF / ET / VIL from the REF tilts (`tilts()` is the Rust twin of
   `RadarVolume.tilts()`; `beam_at_ground()` inverts the 4/3-earth beam model), ~0.1 s/volume.
 - `scripts/mosaic.gd` – `Mosaic.neighbors()` (other sites within 10 min / 900 km, projected + rotated),
@@ -193,7 +197,8 @@ gdformat scripts tests && gdlint scripts tests
 - Sentinels: `-1000` missing/below threshold, `-2000` range folded. Shader discards `< -900`, paints purple `< -1500`.
 - Per field: `n_gates`, `first_gate_m` (range to centre of gate 0), `gate_spacing_m`. Fields on the same sweep can differ (REF often 1832 gates, others 1192).
 - Split-cut VCPs produce two sweeps at ~the same elevation: a surveillance cut (REF/ZDR/PHI/RHO/CFP) and a Doppler cut (REF/VEL/SW). `RadarVolume.tilts()` / `tilt_near()` pick one sweep per elevation that has the requested field.
-- `DVEL` = dealiased `VEL`, written next to every VEL sweep with the same geometry (VEL stays raw).
+- `DVEL` = dealiased `VEL`, written next to every VEL sweep with the same geometry (VEL stays raw); `AZSHR` next to every
+  DVEL and `KDP` next to every PHI (nexrad/src/fields.rs), same geometry as their source.
   Volumes decoded before it existed (e.g. old `live` output with no raw file) simply lack it.
 - `wind_profile` = `{height_m, u_ms, v_ms, n}` (parallel lists, m above the radar, m/s east/north) or null;
   `storm_motion` = `{method, right, left, mean_0_6km, shear_0_6km: [u, v], srh_0_1km, srh_0_3km}` or null
@@ -226,7 +231,7 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Decoder reads both archive layouts: bzip2 LDM records (current) and the older gzip-wrapped uncompressed stream (~pre-2016, `.gz` keys). Only Message 31 radials are parsed (Build 10+, ~mid-2008 onward); pre-2008 files use Message 1 and would need a separate parser.
 - Verified against KTLX 2026-09-22 (VCP 212, bz2) and KTLX 2013-05-20 20:03Z (VCP 12, gz, the Moore tornado).
 - `live` starts on the in-progress volume (skipping it if joined after its first chunk), then follows each new one. It bootstraps by probing ~20 S3 listings to find the newest volume number; could cache the last number in `data/`.
-- Done: time animation + live following, column products (CREF, ET, VIL), 3D cones, basemap, site picker, multi-site mosaic,
+- Done: time animation + live following, column products (CREF, ET, VIL), azimuthal shear and KDP, 3D cones, basemap, site picker, multi-site mosaic,
   background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
   storm-relative velocity, fetching from the UI, translucent volume rendering, VAD wind profile +
   hodograph + automatic (Bunkers) storm motion, hover readout (2D, section, VWP), VWP time-height plot.

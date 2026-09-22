@@ -30,6 +30,10 @@ signal field_selected(field_name: String)
 
 const SPEEDS := [1.0, 2.0, 4.0, 8.0, 15.0]
 const DEFAULT_SPEED_INDEX := 2
+const FIELD_NAMES := {
+	"KDP": "specific differential phase",
+	"AZSHR": "azimuthal shear of DVEL, positive = cyclonic",
+}
 const PRODUCT_NAMES := {
 	"CREF": "composite reflectivity",
 	"ET": "18 dBZ echo top",
@@ -167,7 +171,9 @@ func _build_top_right() -> void:
 	var names: Array = RadarVolume.FIELDS + RadarVolume.PRODUCTS
 	for i in names.size():
 		var fname: String = names[i]
-		var tip := "%s (%d)" % [fname, i + 1]
+		var tip := "%s (%d)" % [fname, i + 1] if i < 8 else "%s (0)" % fname
+		if FIELD_NAMES.has(fname):
+			tip = "%s: %s (0 toggles KDP / AZSHR)" % [fname, FIELD_NAMES[fname]]
 		if fname in RadarVolume.PRODUCTS:
 			tip = "%s: %s, plan view only (9 cycles products)" % [fname, PRODUCT_NAMES[fname]]
 		var b := _button(fname, tip)

@@ -150,7 +150,7 @@ fn run(args: &[String]) -> Result<()> {
                     }
                     None => "no storm motion (profile too sparse)".to_string(),
                 };
-                let prods = if volume::add_products(&d)? { "CREF/ET/VIL" } else { "no REF, no products" };
+                let prods = if volume::add_derived(&d)? { "AZSHR/KDP, CREF/ET/VIL" } else { "AZSHR/KDP, no REF so no products" };
                 println!("{name}: {desc}; {prods}");
             }
         }

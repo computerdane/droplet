@@ -60,8 +60,9 @@ const FIELD_KEYS := {
 }
 const HINT_COMMON := (
 	"Space play   Left/Right step   Shift+Left/Right prev/next loop   Home/End first/last\n"
-	+ "[ ] speed   L live   Up/Down tilt   1-8 field   9 products   S site   M mosaic   V 2D/3D\n"
-	+ "R reset view   X section   F fetch   T storm-relative   W hodograph   P VWP\n"
+	+ "[ ] speed   L live   Up/Down tilt   1-8 field   9 products   0 KDP/shear   S site\n"
+	+ "M mosaic   V 2D/3D   R reset view   X section   F fetch   T storm-relative   W hodograph\n"
+	+ "P VWP   "
 )
 const HINT_2D := "wheel zoom   drag pan   hover: value"
 const HINT_SECTION := "wheel zoom   left drag: section A to B   right drag pan   hover: value"

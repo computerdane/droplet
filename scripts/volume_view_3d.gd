@@ -31,6 +31,8 @@ const DEFAULT_THRESHOLDS := {
 	"RHO": [0.8, false],
 	"CFP": [-10.0, false],
 	"DVEL": [10.0, true],
+	"KDP": [0.5, false],
+	"AZSHR": [4.0, true],
 }
 
 var storm_motion := Vector2.ZERO  # m/s east, north in the selected site's frame; zero = off

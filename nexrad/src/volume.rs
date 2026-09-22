@@ -6,12 +6,14 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+#[cfg(not(target_arch = "wasm32"))]
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::grid::Grid;
 use crate::level2::{MISSING, RANGE_FOLDED, Volume};
 use crate::time::Utc;
-use crate::{Error, Result, dealias, products, round_to, vad};
+use crate::{Error, Result, dealias, fields, products, round_to, vad};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct FieldMeta {
@@ -144,6 +146,38 @@ pub fn add_dealiased(d: &mut Decoded) {
     }
 }
 
+/// Adds AZSHR next to every DVEL and KDP next to every PHI that has RHO on the same sweep
+/// (see `fields`), with the geometry of the field they come from. Sweeps run in parallel
+/// natively.
+pub fn add_derived_fields(d: &mut Decoded) {
+    let derive = |(sw, g): (&SweepMeta, &Fields)| -> Vec<(String, FieldMeta, Grid)> {
+        let mut out = Vec::new();
+        if let Some(dvel) = g.get("DVEL") {
+            let mut meta = sw.fields["DVEL"].clone();
+            let shear = fields::azimuthal_shear(dvel, meta.first_gate_m as f64, meta.gate_spacing_m as f64);
+            meta.file = format!("s{:02}_AZSHR.bin", sw.index);
+            out.push(("AZSHR".to_string(), meta, shear));
+        }
+        if let (Some(phi), Some(rho)) = (g.get("PHI"), g.get("RHO")) {
+            let mut meta = sw.fields["PHI"].clone();
+            let k = fields::kdp(phi, rho, g.get("REF"), meta.gate_spacing_m as f64);
+            meta.file = format!("s{:02}_KDP.bin", sw.index);
+            out.push(("KDP".to_string(), meta, k));
+        }
+        out
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let results: Vec<_> = d.sweeps.par_iter().zip(d.grids.par_iter()).map(derive).collect();
+    #[cfg(target_arch = "wasm32")]
+    let results: Vec<_> = d.sweeps.iter().zip(d.grids.iter()).map(derive).collect();
+    for ((sw, g), fs) in d.sweeps.iter_mut().zip(d.grids.iter_mut()).zip(results) {
+        for (name, meta, grid) in fs {
+            sw.fields.insert(name.clone(), meta);
+            g.insert(name, grid);
+        }
+    }
+}
+
 /// VAD wind profile from every sweep with DVEL (see `vad`).
 pub fn wind_profile(sweeps: &[SweepMeta], grids: &[Fields]) -> Option<vad::WindProfile> {
     let inputs: Vec<vad::SweepIn> = sweeps
@@ -181,6 +215,7 @@ pub struct Encoded {
 pub fn encode_volume(vol: &Volume) -> Encoded {
     let mut d = rasterise(vol);
     add_dealiased(&mut d);
+    add_derived_fields(&mut d);
     let profile = wind_profile(&d.sweeps, &d.grids);
     let mut files = Vec::new();
     for (sw, fields) in d.sweeps.iter().zip(&d.grids) {
@@ -257,24 +292,38 @@ pub fn read_field(out: &Path, sw: &SweepMeta, name: &str) -> Result<Option<Grid>
     Grid::from_f16_le(sw.n_azimuth_bins, f.n_gates, &bytes).map(Some).ok_or_else(|| format!("{}: wrong size", f.file).into())
 }
 
-/// Recomputes the column products of an already decoded volume from its REF files.
-pub fn add_products(out: &Path) -> Result<bool> {
+/// Recomputes the derived per-gate fields (AZSHR, KDP) and the column products of an already
+/// decoded volume from its REF, DVEL, PHI and RHO files. False if it has no REF (no products).
+pub fn add_derived(out: &Path) -> Result<bool> {
     let mut meta = read_meta(out)?;
-    let mut grids: Vec<Fields> = Vec::new();
+    let mut d = Decoded { sweeps: meta.sweeps.clone(), grids: Vec::new() };
     for sw in &meta.sweeps {
         let mut g = Fields::new();
-        if let Some(grid) = read_field(out, sw, "REF")? {
-            g.insert("REF".into(), grid);
+        for name in ["REF", "DVEL", "PHI", "RHO"] {
+            if let Some(grid) = read_field(out, sw, name)? {
+                g.insert(name.into(), grid);
+            }
         }
-        grids.push(g);
+        d.grids.push(g);
     }
-    let Some((pm, pg)) = products::volume_products(&meta.sweeps, &grids) else { return Ok(false) };
-    for (name, grid) in products::NAMES.iter().zip(&pg) {
-        write_atomic(&out.join(&pm.fields[*name].file), &grid.to_f16_le())?;
+    add_derived_fields(&mut d);
+    for (sw, g) in d.sweeps.iter().zip(&d.grids) {
+        for name in ["AZSHR", "KDP"] {
+            if let Some(grid) = g.get(name) {
+                write_atomic(&out.join(&sw.fields[name].file), &grid.to_f16_le())?;
+            }
+        }
     }
-    meta.products = Some(pm);
+    let prods = products::volume_products(&d.sweeps, &d.grids);
+    if let Some((pm, pg)) = &prods {
+        for (name, grid) in products::NAMES.iter().zip(pg) {
+            write_atomic(&out.join(&pm.fields[*name].file), &grid.to_f16_le())?;
+        }
+    }
+    meta.sweeps = d.sweeps;
+    meta.products = prods.map(|(m, _)| m);
     write_meta(out, &meta)?;
-    Ok(true)
+    Ok(meta.products.is_some())
 }
 
 /// Recomputes `wind_profile` / `storm_motion` of an already decoded volume from its files.
@@ -321,7 +370,8 @@ mod tests {
         assert_eq!(meta.sweeps.iter().map(|s| s.index).collect::<Vec<_>>(), [0, 1, 2]);
         assert_eq!(meta.sweeps.iter().map(|s| s.azimuth_step_deg).collect::<Vec<_>>(), [0.5, 0.5, 1.0]);
         assert_eq!(meta.sweeps.iter().map(|s| s.n_azimuth_bins).collect::<Vec<_>>(), [720, 720, 360]);
-        assert_eq!(meta.sweeps[1].fields.keys().collect::<Vec<_>>(), ["DVEL", "REF", "SW", "VEL"]);
+        assert_eq!(meta.sweeps[1].fields.keys().collect::<Vec<_>>(), ["AZSHR", "DVEL", "REF", "SW", "VEL"]);
+        assert_eq!(meta.sweeps[0].fields.keys().collect::<Vec<_>>(), ["KDP", "PHI", "REF", "RHO", "ZDR"]);
         let files: std::collections::BTreeSet<String> =
             std::fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         assert!(!files.iter().any(|f| f.ends_with(".tmp")));
@@ -361,7 +411,7 @@ mod tests {
         for (sw, radials) in meta.sweeps.iter().zip(vol.sweeps()) {
             let step = sw.azimuth_step_deg as f32;
             for name in sw.fields.keys() {
-                if name == "DVEL" {
+                if ["DVEL", "AZSHR", "KDP"].contains(&name.as_str()) {
                     continue;
                 }
                 let grid = read_field(&out, sw, name).unwrap().unwrap();
@@ -436,14 +486,94 @@ mod tests {
             }
         }
         assert!(stormy > 20, "the scene has a core");
-        // Recomputing from the files gives the same products.
-        let before: Vec<Vec<u8>> = prods.fields.values().map(|f| std::fs::read(out.join(&f.file)).unwrap()).collect();
-        for f in prods.fields.values() {
-            std::fs::remove_file(out.join(&f.file)).unwrap();
+        // Recomputing from the files (`nexrad derive`) gives the same products and fields.
+        let derived: Vec<String> = prods
+            .fields
+            .values()
+            .map(|f| f.file.clone())
+            .chain(meta.sweeps.iter().flat_map(|s| ["AZSHR", "KDP"].into_iter().filter_map(|n| s.fields.get(n).map(|f| f.file.clone()))))
+            .collect();
+        assert!(derived.len() > 5);
+        let before: Vec<Vec<u8>> = derived.iter().map(|f| std::fs::read(out.join(f)).unwrap()).collect();
+        for f in &derived {
+            std::fs::remove_file(out.join(f)).unwrap();
         }
-        assert!(add_products(&out).unwrap());
-        let after: Vec<Vec<u8>> = prods.fields.values().map(|f| std::fs::read(out.join(&f.file)).unwrap()).collect();
-        assert_eq!(before, after);
+        let mut stripped = read_meta(&out).unwrap();
+        stripped.products = None;
+        for s in &mut stripped.sweeps {
+            s.fields.retain(|n, _| n != "AZSHR" && n != "KDP");
+        }
+        write_meta(&out, &stripped).unwrap();
+        assert!(add_derived(&out).unwrap());
+        assert_eq!(read_meta(&out).unwrap(), meta);
+        let after: Vec<Vec<u8>> = derived.iter().map(|f| std::fs::read(out.join(f)).unwrap()).collect();
+        // DVEL and PHI come back from float16 files, so the fields match to within rounding.
+        let f16s = |b: &Vec<u8>| b.chunks(2).map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32()).collect::<Vec<f32>>();
+        for ((f, b), a) in derived.iter().zip(&before).zip(&after) {
+            let worst = f16s(b)
+                .iter()
+                .zip(f16s(a))
+                .map(|(x, y)| if (*x < -900.0) == (y < -900.0) { (x - y).abs() } else { 1e9 })
+                .fold(0.0, f32::max);
+            assert!(worst < 0.1, "{f}: recomputed values differ by up to {worst}");
+        }
+    }
+
+    #[test]
+    fn derived_fields_of_the_scene() {
+        // The fixture storm's rotation couplet and rain core share a centre: find it as the REF
+        // maximum of the lowest tilt, then check AZSHR (solid-body rotation of 25 m/s at 2 km,
+        // so 12.5e-3 /s shrinking with height) and KDP (the scene's PHI rises 0.05 deg/km per
+        // dBZ above 30, so KDP = 0.025 * (REF - 30)) around it.
+        let dir = tempdir::Dir::new("derived");
+        let out = write_volume(&synth::fixture_volumes()[0], dir.path()).unwrap();
+        let meta = read_meta(&out).unwrap();
+        let xy = |sw: &SweepMeta, f: &FieldMeta, a: usize, g: usize| {
+            let r = (f.first_gate_m as f64 + g as f64 * f.gate_spacing_m as f64) / 1000.0 * sw.elevation_deg.to_radians().cos();
+            let az = ((a as f64 + 0.5) * sw.azimuth_step_deg).to_radians();
+            (r * az.sin(), r * az.cos())
+        };
+        let s0 = &meta.sweeps[0];
+        let refl = read_field(&out, s0, "REF").unwrap().unwrap();
+        let top = (0..refl.data.len()).max_by(|&i, &j| refl.data[i].total_cmp(&refl.data[j])).unwrap();
+        let centre = xy(s0, &s0.fields["REF"], top / refl.n_gates, top % refl.n_gates);
+        let near = |p: (f64, f64), km: f64| (p.0 - centre.0).hypot(p.1 - centre.1) < km;
+
+        let s1 = &meta.sweeps[1];
+        let shear = read_field(&out, s1, "AZSHR").unwrap().unwrap();
+        let f = &s1.fields["AZSHR"];
+        let (mut peak, mut far) = (f32::MIN, Vec::new());
+        for a in 0..shear.n_az {
+            for g in 0..shear.n_gates {
+                let v = shear.at(a, g);
+                if v > -900.0 {
+                    let p = xy(s1, f, a, g);
+                    if near(p, 2.0) {
+                        peak = peak.max(v);
+                    } else if !near(p, 6.0) {
+                        far.push(v.abs());
+                    }
+                }
+            }
+        }
+        assert!((8.0..14.0).contains(&peak), "AZSHR peak {peak} at the couplet");
+        far.sort_by(f32::total_cmp);
+        let p99 = far[far.len() * 99 / 100];
+        assert!(p99 < 4.0, "AZSHR away from the couplet (noise, the vortex's 1/r tail): 99th percentile {p99}");
+
+        let k = read_field(&out, s0, "KDP").unwrap().unwrap();
+        let mut core: Vec<f32> = Vec::new();
+        for a in 0..k.n_az {
+            for g in 0..k.n_gates {
+                if k.at(a, g) > -900.0 && near(xy(s0, &s0.fields["KDP"], a, g), 2.0) {
+                    core.push(k.at(a, g));
+                }
+            }
+        }
+        core.sort_by(f32::total_cmp);
+        let median = core[core.len() / 2];
+        let want = 0.025 * (refl.data[top] - 30.0 - 2.0); // REF's max includes noise
+        assert!((median - want).abs() < 0.3, "KDP in the core {median}, want ~{want}");
     }
 
     #[test]
