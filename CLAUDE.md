@@ -19,7 +19,7 @@ nexrad update KTLX --from ... --to ...             # a range of volumes
 nexrad live KTLX                                   # poll chunks bucket, rewrite partial volume as it grows
 nexrad basemap                                     # once: Census states/counties + cities -> data/basemap/
 nexrad decode data/raw/*_V06*                      # re-decode everything (e.g. after decoder/dealias changes)
-nexrad winds [data/volumes/...]                    # (re)compute VAD winds + storm motion without re-decoding
+nexrad derive [data/volumes/...]                   # (re)compute VAD winds, storm motion, CREF/ET/VIL without re-decoding
 nexrad synth                                       # synthetic fixture volumes -> tests/fixtures/volumes/
 cargo test                                         # Rust tests (decoder, dealias, VAD, chunks, live, fixtures); no network, ~6 s
 cargo clippy --all-targets && cargo fmt --check    # lint (rustfmt.toml: 140 columns)
@@ -47,7 +47,7 @@ gdformat scripts tests && gdlint scripts tests
 
 - `nexrad/` – Cargo workspace member (`Cargo.toml` at the repo root, build output in `nexrad/target/` via
   `.cargo/config.toml`). Library + `nexrad` binary; the `native` feature (default) holds networking and the CLI
-  so the library also builds for wasm. Unit tests sit next to the code (`#[cfg(test)]`, 43 of them).
+  so the library also builds for wasm. Unit tests sit next to the code (`#[cfg(test)]`, 48 of them).
 - `nexrad-wasm/` – wasm-bindgen wrapper (workspace member, `nexrad` without `native`): `decode(bytes)` →
   `{name, volume_json, files: Map<sNN_FIELD.bin, Uint8Array>}` via `volume::encode_volume()`, byte-identical to
   `nexrad decode`; `resolve_keys(site, at, from, to, bucket)` and `live(site, bucket, sleep, emit, log)` run the
@@ -104,11 +104,15 @@ gdformat scripts tests && gdlint scripts tests
   rendered by the flake's Mesa llvmpipe under Xvfb (`DROPLET_GL_LIBS`, not the host driver) and compared by
   `tests/compare.gd` (≤ 0.2 % of pixels off by > 24/255). Re-render with `--update` after an intended visual change and
   look at the PNGs before committing. `.github/workflows/ci.yml` runs lint, `cargo test`, the Godot tests and these.
+- `nexrad/src/products.rs` – column products CREF / ET / VIL from the REF tilts (`tilts()` is the Rust twin of
+  `RadarVolume.tilts()`; `beam_at_ground()` inverts the 4/3-earth beam model), ~0.1 s/volume.
+- `scripts/mosaic.gd` – `Mosaic.neighbors()` (other sites within 10 min / 900 km, projected + rotated),
+  `assign_others()` for the nearest-radar discard, `summary()`.
 - `nexrad/src/basemap.rs` – Census 1:500k state/county shapefiles (own zip + shapefile reader) + Natural Earth cities.
   `pack_lines()` stores each shared border once and simplifies runs between junctions (`SIMPLIFY_DEG`). `scripts/basemap.gd`
   loads it from `res://data/basemap` (desktop) or fetches `basemap/` next to index.html (web, `when_loaded()` callbacks).
 - `nexrad/src/volume.rs` – the on-disk format Godot reads: `rasterise()` bins radials, `write_volume()` (+
-  `add_dealiased()` for DVEL, VAD winds), `read_meta`/`read_field`, `add_winds()`. `grid.rs` is the polar
+  `add_dealiased()` for DVEL, VAD winds), `read_meta`/`read_field`, `add_winds()`, `add_products()`. `grid.rs` is the polar
   float32 grid; `time.rs` the UTC/Julian/ISO conversions (no chrono).
 - `nexrad/src/main.rs` – CLI (hand-rolled args, same subcommands and stdout/stderr protocol the fetch panel
   parses). `data/` and `tests/` resolve under `$DROPLET_ROOT`, else the current directory.
@@ -193,7 +197,12 @@ gdformat scripts tests && gdlint scripts tests
   Volumes decoded before it existed (e.g. old `live` output with no raw file) simply lack it.
 - `wind_profile` = `{height_m, u_ms, v_ms, n}` (parallel lists, m above the radar, m/s east/north) or null;
   `storm_motion` = `{method, right, left, mean_0_6km, shear_0_6km: [u, v], srh_0_1km, srh_0_3km}` or null
-  (nexrad/src/vad.rs). Added without a format_version bump; older volume.json lacks them (`nexrad winds`).
+  (nexrad/src/vad.rs). Added without a format_version bump; older volume.json lacks them (`nexrad derive`).
+- `products` = `{azimuth_step_deg, n_azimuth_bins, fields: {CREF, ET, VIL}}` (files `p_<NAME>.bin`, same float16 layout) or
+  null: column products on a grid whose range is *ground distance* (nexrad/src/products.rs). CREF = column max REF (dBZ),
+  ET = 18 dBZ echo top (km above the radar, interpolated in dBZ between tilts, else the top tilt's beam), VIL (kg/m²,
+  REF capped at 56 dBZ). `RadarVolume` appends it as one extra sweep at 0° (`is_product()`), so `tilts("CREF")` is that
+  sweep and 2D, the readout and the mosaic need nothing special; 3D and sections show REF instead (`main._volume_field()`).
 - `complete: false` marks a partial volume still being filled by `live`. Files are written via atomic rename so Godot never reads a torn file; `main.gd` re-scans every 3 s while live.
 
 ## Mosaic
@@ -217,7 +226,7 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Decoder reads both archive layouts: bzip2 LDM records (current) and the older gzip-wrapped uncompressed stream (~pre-2016, `.gz` keys). Only Message 31 radials are parsed (Build 10+, ~mid-2008 onward); pre-2008 files use Message 1 and would need a separate parser.
 - Verified against KTLX 2026-09-22 (VCP 212, bz2) and KTLX 2013-05-20 20:03Z (VCP 12, gz, the Moore tornado).
 - `live` starts on the in-progress volume (skipping it if joined after its first chunk), then follows each new one. It bootstraps by probing ~20 S3 listings to find the newest volume number; could cache the last number in `data/`.
-- Done: time animation + live following, 3D cones, basemap, site picker, multi-site mosaic,
+- Done: time animation + live following, column products (CREF, ET, VIL), 3D cones, basemap, site picker, multi-site mosaic,
   background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
   storm-relative velocity, fetching from the UI, translucent volume rendering, VAD wind profile +
   hodograph + automatic (Bunkers) storm motion, hover readout (2D, section, VWP), VWP time-height plot.

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::grid::Grid;
 use crate::level2::{MISSING, RANGE_FOLDED, Volume};
 use crate::time::Utc;
-use crate::{Error, Result, dealias, round_to, vad};
+use crate::{Error, Result, dealias, products, round_to, vad};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct FieldMeta {
@@ -53,6 +53,9 @@ pub struct VolumeMeta {
     pub wind_profile: Option<vad::WindProfile>,
     #[serde(default)]
     pub storm_motion: Option<vad::StormMotion>,
+    /// Column products (CREF, ET, VIL) on a ground-range grid, see `products`.
+    #[serde(default)]
+    pub products: Option<products::ProductsMeta>,
     pub sweeps: Vec<SweepMeta>,
 }
 
@@ -185,6 +188,12 @@ pub fn encode_volume(vol: &Volume) -> Encoded {
             files.push((sw.fields[name].file.clone(), grid.to_f16_le()));
         }
     }
+    let prods = products::volume_products(&d.sweeps, &d.grids);
+    if let Some((meta, grids)) = &prods {
+        for (name, grid) in products::NAMES.iter().zip(grids) {
+            files.push((meta.fields[*name].file.clone(), grid.to_f16_le()));
+        }
+    }
     let storm_motion = vad::bunkers(profile.as_ref());
     let meta = VolumeMeta {
         format_version: 1,
@@ -201,6 +210,7 @@ pub fn encode_volume(vol: &Volume) -> Encoded {
         range_folded: RANGE_FOLDED as f64,
         wind_profile: profile,
         storm_motion,
+        products: prods.map(|(m, _)| m),
         sweeps: d.sweeps,
     };
     Encoded { meta, files }
@@ -245,6 +255,26 @@ pub fn read_field(out: &Path, sw: &SweepMeta, name: &str) -> Result<Option<Grid>
     let Some(f) = sw.fields.get(name) else { return Ok(None) };
     let bytes = std::fs::read(out.join(&f.file)).map_err(|e| Error::from(format!("{}: {e}", f.file)))?;
     Grid::from_f16_le(sw.n_azimuth_bins, f.n_gates, &bytes).map(Some).ok_or_else(|| format!("{}: wrong size", f.file).into())
+}
+
+/// Recomputes the column products of an already decoded volume from its REF files.
+pub fn add_products(out: &Path) -> Result<bool> {
+    let mut meta = read_meta(out)?;
+    let mut grids: Vec<Fields> = Vec::new();
+    for sw in &meta.sweeps {
+        let mut g = Fields::new();
+        if let Some(grid) = read_field(out, sw, "REF")? {
+            g.insert("REF".into(), grid);
+        }
+        grids.push(g);
+    }
+    let Some((pm, pg)) = products::volume_products(&meta.sweeps, &grids) else { return Ok(false) };
+    for (name, grid) in products::NAMES.iter().zip(&pg) {
+        write_atomic(&out.join(&pm.fields[*name].file), &grid.to_f16_le())?;
+    }
+    meta.products = Some(pm);
+    write_meta(out, &meta)?;
+    Ok(true)
 }
 
 /// Recomputes `wind_profile` / `storm_motion` of an already decoded volume from its files.
@@ -307,6 +337,15 @@ mod tests {
                 assert_eq!((v.n_gates, v.first_gate_m, v.gate_spacing_m), (dv.n_gates, dv.first_gate_m, dv.gate_spacing_m));
             }
         }
+        let prods = meta.products.as_ref().expect("column products");
+        assert_eq!(prods.fields.keys().collect::<Vec<_>>(), ["CREF", "ET", "VIL"]);
+        let low = &meta.sweeps[0].fields["REF"];
+        for (name, f) in &prods.fields {
+            assert_eq!(f.file, format!("p_{name}.bin"));
+            assert_eq!((f.n_gates, f.first_gate_m, f.gate_spacing_m), (low.n_gates, low.first_gate_m, low.gate_spacing_m));
+            assert_eq!(std::fs::metadata(out.join(&f.file)).unwrap().len() as usize, prods.n_azimuth_bins * f.n_gates * 2);
+            expected.insert(f.file.clone());
+        }
         assert_eq!(files, expected);
         // The JSON keeps the field order Godot and the docs expect.
         let text = std::fs::read_to_string(out.join("volume.json")).unwrap();
@@ -354,6 +393,57 @@ mod tests {
         }
         assert!(unfolded, "the scene aliases; something was unfolded");
         assert!(meta.wind_profile.is_some());
+    }
+
+    #[test]
+    fn column_products_of_the_scene() {
+        // The full fixture scan (0.5 to 11 degrees), so the storm has a top.
+        let dir = tempdir::Dir::new("products");
+        let out = write_volume(&synth::fixture_volumes()[0], dir.path()).unwrap();
+        let meta = read_meta(&out).unwrap();
+        let prods = meta.products.clone().unwrap();
+        let as_sweep = SweepMeta {
+            index: 0,
+            elevation_number: 0,
+            elevation_deg: 0.0,
+            azimuth_step_deg: prods.azimuth_step_deg,
+            n_azimuth_bins: prods.n_azimuth_bins,
+            n_radials: 0,
+            time: String::new(),
+            nyquist_ms: None,
+            unambiguous_range_km: None,
+            fields: prods.fields.clone(),
+        };
+        let get = |n: &str| read_field(&out, &as_sweep, n).unwrap().unwrap();
+        let (cref, et, vil) = (get("CREF"), get("ET"), get("VIL"));
+        let low = read_field(&out, &meta.sweeps[products::tilts(&meta.sweeps, "REF")[0]], "REF").unwrap().unwrap();
+        // At short range the lowest beam is nearly at the ground point: CREF is at least it.
+        let mut stormy = 0;
+        for row in 0..720 {
+            for g in 0..cref.n_gates {
+                let (l, c) = (low.at(row * low.n_az / 720, g), cref.at(row, g));
+                if l > -900.0 {
+                    assert!(c >= l - 0.1, "row {row} gate {g}: CREF {c} < REF {l}");
+                }
+                if c >= 45.0 {
+                    stormy += 1;
+                    assert!(et.at(row, g) > 3.0, "a 45 dBZ column tops out above 3 km");
+                    assert!(vil.at(row, g) > 1.0);
+                }
+                if c < 18.0 {
+                    assert_eq!(et.at(row, g), MISSING);
+                }
+            }
+        }
+        assert!(stormy > 20, "the scene has a core");
+        // Recomputing from the files gives the same products.
+        let before: Vec<Vec<u8>> = prods.fields.values().map(|f| std::fs::read(out.join(&f.file)).unwrap()).collect();
+        for f in prods.fields.values() {
+            std::fs::remove_file(out.join(&f.file)).unwrap();
+        }
+        assert!(add_products(&out).unwrap());
+        let after: Vec<Vec<u8>> = prods.fields.values().map(|f| std::fs::read(out.join(&f.file)).unwrap()).collect();
+        assert_eq!(before, after);
     }
 
     #[test]

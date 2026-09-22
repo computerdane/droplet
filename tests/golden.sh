@@ -17,6 +17,8 @@ declare -A CASES=(
 	[volume_render]="view=3d render=volume field=REF dist=90 pitch=20 yaw=-30 density=0.3"
 	[section_vwp]="field=REF zoom=3 section=-10,-15,50,45 vwp=1"
 	[hodograph_hover]="field=VEL srm=auto winds=1 zoom=3 hover=700,360"
+	[cref_mosaic]="field=CREF mosaic=1 zoom=2 hover=760,330"
+	[echo_tops]="field=ET zoom=3"
 )
 
 : "${DROPLET_GL_LIBS:?run inside nix develop}"

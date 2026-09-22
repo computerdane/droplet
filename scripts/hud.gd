@@ -30,6 +30,11 @@ signal field_selected(field_name: String)
 
 const SPEEDS := [1.0, 2.0, 4.0, 8.0, 15.0]
 const DEFAULT_SPEED_INDEX := 2
+const PRODUCT_NAMES := {
+	"CREF": "composite reflectivity",
+	"ET": "18 dBZ echo top",
+	"VIL": "vertically integrated liquid",
+}
 const LEGEND_WIDTH := 280
 const HODOGRAPH_SIZE := Vector2(280, 300)  # largest; shrinks to fit
 const HODOGRAPH_MIN_H := 180.0
@@ -159,9 +164,13 @@ func _build_top_right() -> void:
 
 	var fields := _flow(box)
 	var group := ButtonGroup.new()
-	for i in RadarVolume.FIELDS.size():
-		var fname: String = RadarVolume.FIELDS[i]
-		var b := _button(fname, "%s (%d)" % [fname, i + 1])
+	var names: Array = RadarVolume.FIELDS + RadarVolume.PRODUCTS
+	for i in names.size():
+		var fname: String = names[i]
+		var tip := "%s (%d)" % [fname, i + 1]
+		if fname in RadarVolume.PRODUCTS:
+			tip = "%s: %s, plan view only (9 cycles products)" % [fname, PRODUCT_NAMES[fname]]
+		var b := _button(fname, tip)
 		b.toggle_mode = true
 		b.button_group = group
 		b.pressed.connect(func() -> void: field_selected.emit(fname))

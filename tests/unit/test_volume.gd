@@ -83,3 +83,41 @@ func _drain(cache, deadline: int) -> void:
 	while cache.pending_jobs() > 0 and Time.get_ticks_msec() < deadline:
 		cache.poll()
 		OS.delay_msec(2)
+
+
+## Column products (nexrad/src/products.rs) arrive as one extra sweep after the real ones; the
+## plan view, readout and mosaic treat it as the only "tilt" of CREF / ET / VIL. Over the
+## lowest tilt's ground point CREF is at least that tilt's REF.
+func test_products() -> void:
+	var vol = lib.open(lib.latest())
+	var i: int = vol.sweep_count() - 1
+	if not check(vol.is_product(i), "last sweep is the products"):
+		return
+	for p in RadarVolume.PRODUCTS:
+		check_eq(vol.tilts(p), [i] as Array[int], "%s tilts" % p)
+		check_eq(vol.tilt_near(p, 3.0), i, "%s at any elevation" % p)
+		check(vol.get_texture(i, p) != null, "%s texture" % p)
+		check(ColormapsScript.texture_for(p) != null, "%s colormap" % p)
+	check(not vol.tilts("REF").has(i), "products are not a REF tilt")
+	var low: int = vol.tilts("REF")[0]
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 11
+	var bad := 0
+	var stormy := 0
+	for k in 400:
+		var az := rng.randf_range(0.0, 360.0)
+		var r := rng.randf_range(2.0, 60.0)
+		var ref: float = vol.value_at(low, "REF", az, r)
+		var cref: float = vol.value_at(i, "CREF", az, r)
+		if ref > -900.0 and cref < ref - 1.0:
+			bad += 1
+		if cref >= 40.0:
+			stormy += 1
+			var et: float = vol.value_at(i, "ET", az, r)
+			check(
+				et > 0.0,
+				"echo top %.2f over a %.0f dBZ column at %.0f° %.1f km" % [et, cref, az, r]
+			)
+	check(bad == 0, "CREF below the lowest tilt's REF at %d of 400 points" % bad)
+	if fixtures:
+		check(stormy > 0, "some points in the fixture storm")

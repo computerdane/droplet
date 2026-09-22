@@ -33,13 +33,11 @@ extends Node
 ## _preload_ahead() and VolumeCache.
 ##
 ## Mosaic mode also draws every other site's volume nearest in time (within
-## MOSAIC_MAX_SKEW_SEC), placed at its projected offset from the selected site and rotated
+## Mosaic.MAX_SKEW_SEC), placed at its projected offset from the selected site and rotated
 ## for meridian convergence; the selected site draws on top.
 
 const LIVE_RESCAN_SEC := 3.0
 const LOOP_DWELL_SEC := 1.0  # extra pause on the last frame of the loop
-const MOSAIC_MAX_SKEW_SEC := 10 * 60
-const MOSAIC_MAX_KM := 900.0
 ## Automatic storm motion may come from a volume (any site) up to this far away in time.
 const AUTO_STORM_MAX_SEC := 60 * 60
 const VELOCITY_FIELDS := ["VEL", "DVEL"]
@@ -62,7 +60,7 @@ const FIELD_KEYS := {
 }
 const HINT_COMMON := (
 	"Space play   Left/Right step   Shift+Left/Right prev/next loop   Home/End first/last\n"
-	+ "[ ] speed   L live   Up/Down tilt   1-8 field   S site   M mosaic   V 2D/3D\n"
+	+ "[ ] speed   L live   Up/Down tilt   1-8 field   9 products   S site   M mosaic   V 2D/3D\n"
 	+ "R reset view   X section   F fetch   T storm-relative   W hodograph   P VWP\n"
 )
 const HINT_2D := "wheel zoom   drag pan   hover: value"
@@ -97,7 +95,7 @@ var winds_shown := false  # hodograph panel
 var vwp_shown := false  # wind profile over the loop
 var ui_scale := 1.0  # user factor on top of the automatic UI scale
 var _auto_storm: Dictionary = {}  # RadarLibrary.storm_motion_near() for the current volume
-var _neighbors: Array = []  # mosaic entries, see _find_neighbors()
+var _neighbors: Array = []  # mosaic entries, see Mosaic.neighbors()
 var _others := PackedVector2Array()  # neighbours in the selected site's frame
 var _site_lonlat := Vector2.INF  # site the views' basemaps are centred on
 var _mouse_in_window := true
@@ -386,8 +384,19 @@ func _set_field(f: String) -> void:
 	_refresh()
 
 
+## Field for the 3D view and the cross-section, which have no column products: REF instead.
+func _volume_field() -> String:
+	return "REF" if field_name in RadarVolume.PRODUCTS else field_name
+
+
+## 9: the first column product, then the next one.
+func _cycle_product() -> void:
+	var i := RadarVolume.PRODUCTS.find(field_name)
+	_set_field(RadarVolume.PRODUCTS[(i + 1) % RadarVolume.PRODUCTS.size()])
+
+
 func _step_tilt(delta: int) -> void:
-	if volume == null:
+	if volume == null or field_name in RadarVolume.PRODUCTS:
 		return
 	var tilts := volume.tilts(field_name)
 	if tilts.is_empty():
@@ -535,15 +544,18 @@ func _on_play_tick() -> void:
 
 
 func _refresh() -> void:
-	sweep_index = volume.tilt_near(field_name, target_elev) if volume != null else -1
+	var shown := _volume_field() if view_is_3d else field_name
+	sweep_index = volume.tilt_near(shown, target_elev) if volume != null else -1
 	if volume != null:
 		var ll := Vector2(float(volume.meta["longitude"]), float(volume.meta["latitude"]))
 		if ll != _site_lonlat:
 			_site_lonlat = ll
 			view_2d.set_site(ll.y, ll.x)
 			view_3d.set_site(ll.y, ll.x)
-	_neighbors = _find_neighbors()
-	_others = _assign_others(_neighbors)
+	_neighbors = []
+	if mosaic and volume != null:
+		_neighbors = Mosaic.neighbors(library, cache, volume, shown, target_elev)
+	_others = Mosaic.assign_others(_neighbors)
 	var on_screen: Array = [volume.name] if volume != null else []
 	for n in _neighbors:
 		on_screen.append((n["volume"] as RadarVolume).name)
@@ -556,7 +568,7 @@ func _refresh() -> void:
 	view_3d.storm_motion = storm
 	hud.section.storm_motion = storm
 	if view_is_3d:
-		view_3d.show_volume(volume, field_name, target_elev, _neighbors, _others)
+		view_3d.show_volume(volume, _volume_field(), target_elev, _neighbors, _others)
 	else:
 		view_2d.show_sweep(volume, sweep_index, field_name, _neighbors, _others)
 	hud.set_mosaic(mosaic, library.sites().size() > 1)
@@ -701,12 +713,11 @@ func _readout_2d(p: Vector2) -> String:
 		var th := deg_to_rad(elev)
 		var ka := SectionView.KE_A
 		var h := sqrt(r * r + ka * ka + 2.0 * r * ka * sin(th)) - ka
-		lines.append(
-			(
-				"%s  %.1f km @ %03d°   %.2f° beam %.2f km ARL"
-				% [vol.icao(), r, roundi(az) % 360, elev, h]
-			)
-		)
+		var where := "%s  %.1f km @ %03d°" % [vol.icao(), r, roundi(az) % 360]
+		if vol.is_product(i):
+			lines.append("%s   column of %d tilts" % [where, vol.tilts("REF").size()])
+		else:
+			lines.append("%s   %.2f° beam %.2f km ARL" % [where, elev, h])
 	else:
 		lines.append("%s: no %s" % [vol.icao(), field_name])
 		lines.append("%s  %.1f km @ %03d°" % [vol.icao(), r, roundi(az) % 360])
@@ -725,7 +736,7 @@ func _update_section() -> void:
 	var shown := section_on and view_2d.has_section
 	hud.set_section(section_on, shown)
 	if shown:
-		hud.section.show_section(volume, field_name, view_2d.section_a, view_2d.section_b)
+		hud.section.show_section(volume, _volume_field(), view_2d.section_a, view_2d.section_b)
 
 
 ## Queues background reads of the frames after the current one, wrapping around the loop,
@@ -742,89 +753,20 @@ func _preload_ahead() -> void:
 		need = VolumeCache.Need.TILT_ARRAY if view_3d.volume_render else VolumeCache.Need.ALL_TILTS
 	elif section_on and view_2d.has_section:
 		need = VolumeCache.Need.ALL_TILTS
-	budget -= cache.prefetch(volume.name, field_name, target_elev, need)
+	var f := field_name if need == VolumeCache.Need.NEAREST_TILT else _volume_field()
+	budget -= cache.prefetch(volume.name, f, target_elev, need)
 	for nb in _neighbors:
-		budget -= cache.prefetch(nb["volume"].name, field_name, target_elev, need)
+		budget -= cache.prefetch(nb["volume"].name, f, target_elev, need)
 	for k in range(1, n):
 		if budget <= 0:
 			break
 		var path := frames[seq.x + (frame - seq.x + k) % n]
-		budget -= cache.prefetch(path, field_name, target_elev, need)
+		budget -= cache.prefetch(path, f, target_elev, need)
 		var t := RadarLibrary.unix_of(path)
 		for nb in _neighbors:
-			var other := _mosaic_path(nb["site"], t)
+			var other := Mosaic.path_near(library, nb["site"], t)
 			if not other.is_empty():
-				budget -= cache.prefetch(other, field_name, target_elev, need)
-
-
-## Volume of `s` nearest in time to `t`, or "" if none is within MOSAIC_MAX_SKEW_SEC.
-func _mosaic_path(s: String, t: int) -> String:
-	var list := library.for_site(s)
-	var i := RadarLibrary.nearest_in_time(list, t)
-	if i < 0 or absi(RadarLibrary.unix_of(list[i]) - t) > MOSAIC_MAX_SKEW_SEC:
-		return ""
-	return list[i]
-
-
-## Other sites' volumes nearest in time to the current one, for mosaic mode:
-## [{site, volume, sweep, offset_km (+y north), rotation (rad, clockwise), skew_sec}]
-func _find_neighbors() -> Array:
-	var out := []
-	if not mosaic or volume == null:
-		return out
-	var t := RadarLibrary.unix_of(volume.name)
-	var lat0 := float(volume.meta["latitude"])
-	var lon0 := float(volume.meta["longitude"])
-	for s in library.sites():
-		if s == site:
-			continue
-		var path := _mosaic_path(s, t)
-		if path.is_empty():
-			continue
-		var skew := RadarLibrary.unix_of(path) - t
-		var v := cache.get_volume(path, true)
-		if v == null:
-			continue
-		var lat := float(v.meta["latitude"])
-		var lon := float(v.meta["longitude"])
-		var off := Basemap.project(lat, lon, lat0, lon0)
-		if off.length() > MOSAIC_MAX_KM:
-			continue
-		# The neighbour's north, as seen in the selected site's projection.
-		var north := Basemap.project(lat + 0.05, lon, lat0, lon0) - off
-		(
-			out
-			. append(
-				{
-					"site": s,
-					"volume": v,
-					"sweep": v.tilt_near(field_name, target_elev),
-					"offset_km": off,
-					"rotation": atan2(north.x, north.y),
-					"skew_sec": skew,
-				}
-			)
-		)
-	return out
-
-
-## For nearest-radar compositing, give each neighbour the positions of all the other
-## radars in its own local frame (+x east, +y south, as both shaders use). Returns the
-## neighbours' positions in the selected site's frame.
-static func _assign_others(neighbors: Array) -> PackedVector2Array:
-	var pos := PackedVector2Array([Vector2.ZERO])  # selected site first
-	var rot := PackedFloat32Array([0.0])
-	for n in neighbors:
-		var off: Vector2 = n["offset_km"]
-		pos.append(Vector2(off.x, -off.y))
-		rot.append(n["rotation"])
-	for k in neighbors.size():
-		var others := PackedVector2Array()
-		for j in pos.size():
-			if j != k + 1:
-				others.append((pos[j] - pos[k + 1]).rotated(-rot[k + 1]))
-		neighbors[k]["others"] = others
-	return pos.slice(1)
+				budget -= cache.prefetch(other, f, target_elev, need)
 
 
 func _update_playback() -> void:
@@ -850,13 +792,19 @@ func _update_info() -> void:
 	)
 	if sweep_index >= 0:
 		var sw := volume.sweep(sweep_index)
-		var tilts := volume.tilts(field_name)
+		var shown := _volume_field() if view_is_3d else field_name
+		var tilts := volume.tilts(shown)
 		var scanned := str(sw["time"]).substr(11, 8) + "Z"
 		var elev := float(sw["elevation_deg"])
 		var pos := tilts.find(sweep_index) + 1
-		lines.append(
-			"tilt %d/%d  %.2f°  %s  scanned %s" % [pos, tilts.size(), elev, field_name, scanned]
-		)
+		if volume.is_product(sweep_index):
+			var what: String = Hud.PRODUCT_NAMES.get(field_name, "")
+			var n := volume.tilts("REF").size()
+			lines.append("%s  %s from %d REF tilts  %s" % [field_name, what, n, scanned])
+		else:
+			lines.append(
+				"tilt %d/%d  %.2f°  %s  scanned %s" % [pos, tilts.size(), elev, shown, scanned]
+			)
 	else:
 		lines.append("%s not in this volume" % field_name)
 	var cache_mb := cache.used_bytes() >> 20
@@ -888,21 +836,10 @@ func _update_info() -> void:
 	if _storm_vector() != Vector2.ZERO:
 		lines.append("storm-relative: " + _storm_source())
 	if mosaic:
-		lines.append("mosaic: " + _mosaic_summary())
+		lines.append("mosaic: " + Mosaic.summary(_neighbors))
 	for job in fetcher.running_jobs():
 		lines.append("fetch: " + job.describe())
 	hud.set_info("\n".join(lines))
-
-
-func _mosaic_summary() -> String:
-	if _neighbors.is_empty():
-		return "no other site within %d min" % (MOSAIC_MAX_SKEW_SEC / 60)
-	var parts := PackedStringArray()
-	for n in _neighbors:
-		var skew: int = n["skew_sec"]
-		var sign := "-" if skew < 0 else "+"
-		parts.append("%s %s%d:%02d" % [n["site"], sign, absi(skew) / 60, absi(skew) % 60])
-	return ", ".join(parts)
 
 
 # --- input ---------------------------------------------------------------------------
@@ -977,10 +914,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			view_3d.isolate = ((view_3d.isolate + 1) % ConeSet.Isolate.size()) as ConeSet.Isolate
 			_refresh()
 		KEY_COMMA:
-			view_3d.adjust_threshold(field_name, -1)
+			view_3d.adjust_threshold(_volume_field(), -1)
 			_refresh()
 		KEY_PERIOD:
-			view_3d.adjust_threshold(field_name, 1)
+			view_3d.adjust_threshold(_volume_field(), 1)
 			_refresh()
 		KEY_PAGEUP:
 			view_3d.set_exaggeration(view_3d.exaggeration + 1.0)

@@ -6,6 +6,9 @@ extends RefCounted
 const MISSING := -1000.0
 const RANGE_FOLDED := -2000.0
 const FIELDS := ["REF", "VEL", "SW", "ZDR", "PHI", "RHO", "CFP", "DVEL"]
+## Column products (nexrad/src/products.rs): one grid each over ground distance, kept as an
+## extra sweep at 0° after the real ones (is_product()); plan view only.
+const PRODUCTS := ["CREF", "ET", "VIL"]
 const ELEVATION_MERGE_DEG := 0.2
 
 var source: VolumeSource
@@ -35,6 +38,18 @@ static func open(p_source: VolumeSource, p_name: String) -> RadarVolume:
 	vol.version = version
 	vol.meta = parsed
 	vol.sweeps = parsed.get("sweeps", [])
+	var products = parsed.get("products")
+	if products is Dictionary:
+		var p: Dictionary = products.duplicate()
+		p.merge(
+			{
+				"index": vol.sweeps.size(),
+				"elevation_deg": 0.0,
+				"time": vol.time_utc(),
+				"product": true
+			}
+		)
+		vol.sweeps.append(p)
 	return vol
 
 
@@ -78,6 +93,11 @@ func nearest_sweep_with(i: int, field_name: String) -> int:
 			if j >= 0 and j < sweep_count() and has_field(j, field_name):
 				return j
 	return -1
+
+
+## True for the column products' pseudo-sweep (see PRODUCTS).
+func is_product(i: int) -> bool:
+	return sweeps[i].get("product", false)
 
 
 func elevation(i: int) -> float:

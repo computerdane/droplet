@@ -12,6 +12,9 @@ const RANGES := {
 	"RHO": [0.2, 1.05],  # unitless
 	"CFP": [0.0, 60.0],  # dB
 	"DVEL": [-64.0, 64.0],  # m/s, dealiased VEL
+	"CREF": [-30.0, 80.0],  # dBZ, composite (column maximum)
+	"ET": [0.0, 20.0],  # km above the radar, 18 dBZ echo top
+	"VIL": [0.0, 80.0],  # kg/m², vertically integrated liquid
 }
 
 const UNITS := {
@@ -23,6 +26,9 @@ const UNITS := {
 	"RHO": "CC",
 	"CFP": "dB",
 	"DVEL": "m/s (- toward)",
+	"CREF": "dBZ",
+	"ET": "km ARL",
+	"VIL": "kg/m²",
 }
 
 ## Stops as [value, colour] pairs.
@@ -81,10 +87,32 @@ const STOPS := {
 		[1.05, "ffffff"],
 	],
 	"CFP": [[0.0, "101010"], [20.0, "2050c0"], [40.0, "f0f000"], [60.0, "f00000"]],
+	"ET":
+	[
+		[0.0, "202040"],
+		[2.0, "2050c0"],
+		[5.0, "00c0c0"],
+		[8.0, "00c000"],
+		[11.0, "f0f000"],
+		[14.0, "f08000"],
+		[17.0, "f00000"],
+		[20.0, "f000f0"],
+	],
+	"VIL":
+	[
+		[0.0, "202040"],
+		[5.0, "2050c0"],
+		[10.0, "00c000"],
+		[20.0, "f0f000"],
+		[35.0, "f08000"],
+		[50.0, "f00000"],
+		[65.0, "f000f0"],
+		[80.0, "ffffff"],
+	],
 }
 
 ## Fields drawn with another field's colours.
-const SAME_AS := {"DVEL": "VEL"}
+const SAME_AS := {"DVEL": "VEL", "CREF": "REF"}
 
 const KT_PER_MS := 1.94384
 
@@ -113,6 +141,8 @@ static func format_value(field_name: String, v: float) -> String:
 			return "%.0f°" % v
 		"VEL", "DVEL", "SW":
 			return "%.1f %s (%.0f kt)" % [v, unit, v * KT_PER_MS]
+		"ET":
+			return "%.1f km ARL (%.0f kft)" % [v, v * 3.28084]
 	return "%.1f %s" % [v, unit]
 
 

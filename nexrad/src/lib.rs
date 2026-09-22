@@ -10,6 +10,7 @@ pub mod grid;
 pub mod level2;
 #[cfg(feature = "native")]
 pub mod net;
+pub mod products;
 pub mod synth;
 pub mod time;
 pub mod vad;
