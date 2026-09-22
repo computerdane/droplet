@@ -10,6 +10,7 @@
 //! `basemap.json` lists the layers and the cities ([name, lat, lon, population]).
 //! Projection to local km happens in Godot (shaders/basemap.gdshaderinc) around each site.
 
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 #[cfg(feature = "native")]
 use std::path::{Path, PathBuf};
@@ -31,6 +32,9 @@ pub const CITIES_URL: &str =
 /// lon_min, lat_min, lon_max, lat_max.
 pub const CITY_BOUNDS: (f64, f64, f64, f64) = (-170.0, 10.0, -50.0, 72.0);
 pub const CITY_MIN_POP: i64 = 20_000;
+/// Douglas-Peucker tolerance for the line layers, degrees (~60 m; the 1:500k sources are good
+/// to ~250 m and radar gates are 250 m long).
+pub const SIMPLIFY_DEG: f64 = 0.0006;
 
 fn le_u32(b: &[u8], at: usize) -> Option<u32> {
     b.get(at..at + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
@@ -76,27 +80,138 @@ pub fn read_shp_rings(shp: &[u8]) -> Vec<Vec<[f64; 2]>> {
 }
 
 /// The `.bin` layout: point count, index count, f32 lon/lat pairs, u32 segment indices.
-pub fn pack_lines(rings: &[Vec<[f64; 2]>]) -> Vec<u8> {
-    let n_points: usize = rings.iter().map(Vec::len).sum();
-    let n_indices: usize = rings.iter().map(|r| (r.len() - 1) * 2).sum();
-    let mut out = Vec::with_capacity(8 + n_points * 8 + n_indices * 4);
-    out.extend_from_slice(&(n_points as u32).to_le_bytes());
-    out.extend_from_slice(&(n_indices as u32).to_le_bytes());
+/// Points are shared by value and each segment is kept once, so borders that two polygons
+/// share (every county line) are stored and drawn once. With `tolerance_deg` > 0 every run of
+/// segments between junctions is simplified (Douglas-Peucker) on its own, so neighbours still
+/// meet exactly.
+pub fn pack_lines(rings: &[Vec<[f64; 2]>], tolerance_deg: f64) -> Vec<u8> {
+    let mut ids: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut points: Vec<[f32; 2]> = Vec::new();
+    let mut seen: HashSet<(u32, u32)> = HashSet::new();
+    let mut edges: Vec<[u32; 2]> = Vec::new();
     for r in rings {
+        let mut prev: Option<u32> = None;
         for p in r {
-            out.extend_from_slice(&(p[0] as f32).to_le_bytes());
-            out.extend_from_slice(&(p[1] as f32).to_le_bytes());
+            let q = [p[0] as f32, p[1] as f32];
+            let id = *ids.entry((q[0].to_bits(), q[1].to_bits())).or_insert_with(|| {
+                points.push(q);
+                points.len() as u32 - 1
+            });
+            if let Some(a) = prev
+                && a != id
+                && seen.insert((a.min(id), a.max(id)))
+            {
+                edges.push([a, id]);
+            }
+            prev = Some(id);
         }
     }
-    let mut start = 0u32;
-    for r in rings {
-        for i in 0..r.len() as u32 - 1 {
-            out.extend_from_slice(&(start + i).to_le_bytes());
-            out.extend_from_slice(&(start + i + 1).to_le_bytes());
+    if tolerance_deg > 0.0 {
+        edges = simplify(&points, &edges, tolerance_deg);
+    }
+    // Renumber the points still in use, in order of first use.
+    let mut remap = vec![u32::MAX; points.len()];
+    let mut used: Vec<[f32; 2]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::with_capacity(edges.len() * 2);
+    for &i in edges.iter().flatten() {
+        if remap[i as usize] == u32::MAX {
+            remap[i as usize] = used.len() as u32;
+            used.push(points[i as usize]);
         }
-        start += r.len() as u32;
+        indices.push(remap[i as usize]);
+    }
+    let mut out = Vec::with_capacity(8 + used.len() * 8 + indices.len() * 4);
+    out.extend_from_slice(&(used.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(indices.len() as u32).to_le_bytes());
+    for q in &used {
+        out.extend_from_slice(&q[0].to_le_bytes());
+        out.extend_from_slice(&q[1].to_le_bytes());
+    }
+    for i in &indices {
+        out.extend_from_slice(&i.to_le_bytes());
     }
     out
+}
+
+/// Splits the line graph into chains between junctions (points without exactly two
+/// segments; a closed loop without any is cut at its first point) and simplifies each.
+fn simplify(points: &[[f32; 2]], edges: &[[u32; 2]], tolerance: f64) -> Vec<[u32; 2]> {
+    let mut adj: Vec<Vec<u32>> = vec![Vec::new(); points.len()]; // edge numbers per point
+    for (k, e) in edges.iter().enumerate() {
+        adj[e[0] as usize].push(k as u32);
+        adj[e[1] as usize].push(k as u32);
+    }
+    let mut done = vec![false; edges.len()];
+    let mut out = Vec::new();
+    let walk = |start: u32, first_edge: u32, done: &mut Vec<bool>, out: &mut Vec<[u32; 2]>| {
+        let mut chain = vec![start];
+        let (mut at, mut edge) = (start, first_edge);
+        loop {
+            done[edge as usize] = true;
+            let e = edges[edge as usize];
+            at = if e[0] == at { e[1] } else { e[0] };
+            chain.push(at);
+            let next = adj[at as usize].iter().find(|&&k| !done[k as usize]);
+            match next {
+                Some(&k) if adj[at as usize].len() == 2 && at != start => edge = k,
+                _ => break,
+            }
+        }
+        let mut keep = vec![false; chain.len()];
+        douglas_peucker(points, &chain, tolerance, &mut keep);
+        let kept: Vec<u32> = chain.iter().zip(&keep).filter(|(_, k)| **k).map(|(p, _)| *p).collect();
+        out.extend(kept.windows(2).filter(|w| w[0] != w[1]).map(|w| [w[0], w[1]]));
+    };
+    for p in 0..points.len() as u32 {
+        if adj[p as usize].len() != 2 {
+            for &k in &adj[p as usize] {
+                if !done[k as usize] {
+                    walk(p, k, &mut done, &mut out);
+                }
+            }
+        }
+    }
+    for k in 0..edges.len() {
+        if !done[k] {
+            walk(edges[k][0], k as u32, &mut done, &mut out);
+        }
+    }
+    out
+}
+
+/// Marks the points of `chain` to keep: both ends, and recursively the farthest point from
+/// the chord while it is more than `tolerance` away (a closed chain splits at its farthest
+/// point from the start).
+fn douglas_peucker(points: &[[f32; 2]], chain: &[u32], tolerance: f64, keep: &mut [bool]) {
+    let p = |i: usize| {
+        let q = points[chain[i] as usize];
+        [q[0] as f64, q[1] as f64]
+    };
+    let n = chain.len();
+    keep[0] = true;
+    keep[n - 1] = true;
+    let mut stack = vec![(0usize, n - 1)];
+    while let Some((a, b)) = stack.pop() {
+        if b <= a + 1 {
+            continue;
+        }
+        let (pa, pb) = (p(a), p(b));
+        let (dx, dy) = (pb[0] - pa[0], pb[1] - pa[1]);
+        let len = dx.hypot(dy);
+        let (mut far, mut far_d) = (a, -1.0);
+        for i in a + 1..b {
+            let q = p(i);
+            let d = if len == 0.0 { (q[0] - pa[0]).hypot(q[1] - pa[1]) } else { ((q[0] - pa[0]) * dy - (q[1] - pa[1]) * dx).abs() / len };
+            if d > far_d {
+                (far, far_d) = (i, d);
+            }
+        }
+        if far_d > tolerance || len == 0.0 {
+            keep[far] = true;
+            stack.push((a, far));
+            stack.push((far, b));
+        }
+    }
 }
 
 /// The first `.shp` member of a zip archive (stored or deflated; no zip64).
@@ -183,9 +298,9 @@ pub fn build(out_dir: &Path, cache_dir: &Path, log: &mut dyn std::io::Write) -> 
     let mut layers = Map::new();
     for &(name, file) in LAYERS {
         let rings = read_shp_rings(&shapefile_from_zip(&fetch(&format!("{CENSUS}/{file}"), cache_dir, log)?)?);
-        let data = pack_lines(&rings);
+        let data = pack_lines(&rings, SIMPLIFY_DEG);
         write_atomic(&out_dir.join(format!("{name}.bin")), &data)?;
-        let n_points: usize = rings.iter().map(Vec::len).sum();
+        let n_points = le_u32(&data, 0).unwrap_or(0);
         layers.insert(name.into(), json!({"file": format!("{name}.bin"), "n_lines": rings.len(), "n_points": n_points}));
         let _ = writeln!(log, "{name}: {} lines, {n_points} points, {} KiB", rings.len(), data.len() >> 10);
     }
@@ -229,12 +344,44 @@ mod tests {
         let rings = vec![vec![[-97.0, 35.0], [-96.0, 35.0], [-96.0, 36.0], [-97.0, 35.0]], vec![[-90.0, 40.0], [-91.0, 41.0]]];
         let got = read_shp_rings(&shp(&rings));
         assert_eq!(got, rings);
-        let packed = pack_lines(&got);
-        assert_eq!(le_u32(&packed, 0), Some(6));
+        // The ring's closing point is its first; a segment repeated backwards is dropped.
+        let mut rings = got;
+        rings.push(vec![[-96.0, 36.0], [-96.0, 35.0]]);
+        let packed = pack_lines(&rings, 0.0);
+        assert_eq!(le_u32(&packed, 0), Some(5));
         assert_eq!(le_u32(&packed, 4), Some(8));
-        assert_eq!(packed.len(), 8 + 6 * 8 + 8 * 4);
-        let idx: Vec<u32> = (0..8).map(|i| le_u32(&packed, 8 + 48 + 4 * i).unwrap()).collect();
-        assert_eq!(idx, [0, 1, 1, 2, 2, 3, 4, 5]);
+        assert_eq!(packed.len(), 8 + 5 * 8 + 8 * 4);
+        let idx: Vec<u32> = (0..8).map(|i| le_u32(&packed, 8 + 40 + 4 * i).unwrap()).collect();
+        assert_eq!(idx, [0, 1, 1, 2, 2, 0, 3, 4]);
+    }
+
+    #[test]
+    fn simplification_keeps_junctions() {
+        let point = |i: u32, p: &[u8]| {
+            let at = 8 + 8 * i as usize;
+            [f32::from_le_bytes(p[at..at + 4].try_into().unwrap()), f32::from_le_bytes(p[at + 4..at + 8].try_into().unwrap())]
+        };
+        // Two unit squares sharing the side x = 1, ten collinear points per side (the shared side
+        // has the same points in both rings).
+        let square = |x0: i32| -> Vec<[f64; 2]> {
+            let mut grid: Vec<(i32, i32)> = Vec::new(); // tenths, counter-clockwise from (x0, 0)
+            grid.extend((0..10).map(|k| (10 * x0 + k, 0)));
+            grid.extend((0..10).map(|k| (10 * x0 + 10, k)));
+            grid.extend((0..10).map(|k| (10 * x0 + 10 - k, 10)));
+            grid.extend((0..=10).map(|k| (10 * x0, 10 - k)));
+            grid.iter().map(|&(x, y)| [x as f64 / 10.0, y as f64 / 10.0]).collect()
+        };
+        let packed = pack_lines(&[square(0), square(1)], 0.001);
+        let n_points = le_u32(&packed, 0).unwrap();
+        assert_eq!(n_points, 6, "the six corners");
+        assert_eq!(le_u32(&packed, 4), Some(2 * 7), "seven sides, the shared one once");
+        let mut corners: Vec<[f32; 2]> = (0..n_points).map(|i| point(i, &packed)).collect();
+        corners.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(corners, [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0], [2.0, 0.0], [2.0, 1.0]]);
+        // Without a tolerance every point stays, still with the shared side once.
+        let full = pack_lines(&[square(0), square(1)], 0.0);
+        assert_eq!(le_u32(&full, 0), Some(40 + 29));
+        assert_eq!(le_u32(&full, 4), Some(2 * 70));
     }
 
     #[test]

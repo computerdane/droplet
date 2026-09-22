@@ -2,10 +2,12 @@ class_name Basemap
 extends RefCounted
 ## Loads data/basemap (built by `nexrad basemap`): line layers as lon/lat meshes
 ## that basemap_2d/3d.gdshader project around the site on the GPU, and a city list.
-## Loaded once and shared; `get_shared()` returns null when the basemap has not been built, or
-## when the `basemap=0` option turns it off (`basemap=<dir>` reads another directory).
+## Loaded once and shared; `basemap=0` turns it off, `basemap=<dir>` (a URL on web) reads another
+## copy. On web it is downloaded in the background from WEB_URL, so views use when_loaded().
 
 const DEFAULT_ROOT := "res://data/basemap"
+## Web: where the page fetches the basemap from, relative to index.html (web/build.sh).
+const WEB_URL := "basemap"
 const EARTH_RADIUS_KM := 6371.0
 ## Draw order and style; later layers draw on top.
 const LAYER_STYLE := {
@@ -15,26 +17,121 @@ const LAYER_STYLE := {
 
 static var _shared: Basemap
 static var _tried := false
+static var _waiting: Array[Callable] = []
+static var _js_done: JavaScriptObject  # web: keeps the fetch callback alive
 
 var meshes: Dictionary = {}  # layer -> ArrayMesh (PRIMITIVE_LINES, Vector2 lon/lat vertices)
 var cities: Array = []  # [name, lat, lon, population], most populous first
 
 
+## The basemap, or null while it is loading (web), missing or turned off. Views build theirs in
+## a when_loaded() callback instead, so a basemap that arrives late still shows up.
 static func get_shared() -> Basemap:
-	if not _tried:
-		_tried = true
-		var root: String = AppOptions.parse().get("basemap", DEFAULT_ROOT)
-		_shared = null if root == "0" else load_from_dir(root)
+	_start_loading()
 	return _shared
 
 
+## Calls `fn` once the basemap is available: now on the desktop (the files are local), when
+## the download finishes on web. Never called if there is none.
+static func when_loaded(fn: Callable) -> void:
+	_start_loading()
+	if _shared != null:
+		fn.call()
+	else:
+		_waiting.append(fn)
+
+
+static func _start_loading() -> void:
+	if _tried:
+		return
+	_tried = true
+	var root: String = AppOptions.parse().get("basemap", DEFAULT_ROOT)
+	if root == "0":
+		return
+	if OS.has_feature("web"):
+		_fetch_web(WEB_URL if root == DEFAULT_ROOT else root)
+	else:
+		_loaded(load_from_dir(root))
+
+
+static func _loaded(bm: Basemap) -> void:
+	_shared = bm
+	if bm == null:
+		_waiting.clear()
+		return
+	for fn in _waiting:
+		if fn.is_valid():
+			fn.call()
+	_waiting.clear()
+
+
+## Web: res://data is not exported; the page fetches basemap.json and its layers from `url`
+## (web/build.sh copies data/basemap next to index.html), then hands the bytes over.
+static func _fetch_web(url: String) -> void:
+	var window := JavaScriptBridge.get_interface("window")
+	_js_done = JavaScriptBridge.create_callback(_on_web_fetched)
+	window.droplet_basemap_done = _js_done
+	(
+		JavaScriptBridge
+		. eval(
+			(
+				"""
+		(async (base) => {
+			try {
+				const get = async (f) => {
+					const r = await fetch(base + f);
+					if (!r.ok) throw new Error(f + ': HTTP ' + r.status);
+					return r;
+				};
+				const meta = await (await get('basemap.json')).text();
+				const layers = JSON.parse(meta).layers;
+				const names = Object.values(layers).map((l) => l.file);
+				const buffers = await Promise.all(names.map(async (f) => (await get(f)).arrayBuffer()));
+				self.droplet_basemap = {meta, names, buffers};
+				self.droplet_basemap_done(true);
+			} catch (e) {
+				console.warn('basemap not loaded:', e.message);
+				self.droplet_basemap_done(false);
+			}
+		})(%s)
+		"""
+				% JSON.stringify(url.trim_suffix("/") + "/")
+			),
+			true
+		)
+	)
+
+
+static func _on_web_fetched(args: Array) -> void:
+	if not args[0]:
+		_loaded(null)
+		return
+	var js: JavaScriptObject = JavaScriptBridge.get_interface("window").droplet_basemap
+	var files := {}
+	for i in int(js.names.length):
+		files[str(js.names[i])] = JavaScriptBridge.js_buffer_to_packed_byte_array(js.buffers[i])
+	JavaScriptBridge.eval("delete self.droplet_basemap", true)
+	_loaded(
+		from_files(
+			str(js.meta), func(f: String) -> PackedByteArray: return files.get(f, PackedByteArray())
+		)
+	)
+
+
 static func load_from_dir(dir: String) -> Basemap:
-	var text := FileAccess.get_file_as_string(dir.path_join("basemap.json"))
+	return from_files(
+		FileAccess.get_file_as_string(dir.path_join("basemap.json")),
+		func(f: String) -> PackedByteArray: return FileAccess.get_file_as_bytes(dir.path_join(f))
+	)
+
+
+## `read` maps a layer file name to its bytes.
+static func from_files(text: String, read: Callable) -> Basemap:
 	if text.is_empty():
 		return null
 	var meta = JSON.parse_string(text)
 	if not meta is Dictionary:
-		push_error("Basemap: bad JSON in %s" % dir)
+		push_error("Basemap: bad basemap.json")
 		return null
 	var bm := Basemap.new()
 	bm.cities = meta.get("cities", [])
@@ -42,14 +139,13 @@ static func load_from_dir(dir: String) -> Basemap:
 		var info: Dictionary = meta["layers"].get(layer, {})
 		if info.is_empty():
 			continue
-		var mesh := _load_layer(dir.path_join(info["file"]))
+		var mesh := _load_layer(info["file"], read.call(info["file"]))
 		if mesh != null:
 			bm.meshes[layer] = mesh
 	return bm
 
 
-static func _load_layer(path: String) -> ArrayMesh:
-	var bytes := FileAccess.get_file_as_bytes(path)
+static func _load_layer(path: String, bytes: PackedByteArray) -> ArrayMesh:
 	if bytes.size() < 8:
 		push_error("Basemap: cannot read %s" % path)
 		return null

@@ -18,4 +18,10 @@ touch "$out/.gdignore" # keep the editor from importing the export (and packing 
 godot --headless --path . --import >/dev/null
 godot --headless --path . --export-release Web "$(realpath "$out")/index.html"
 cp nexrad-wasm/pkg/nexrad_wasm.js nexrad-wasm/pkg/nexrad_wasm_bg.wasm web/nexrad_worker.js "$out/"
+# The page downloads the basemap in the background (scripts/basemap.gd); build it with `nexrad basemap`.
+if [ -f data/basemap/basemap.json ]; then
+  mkdir -p "$out/basemap" && cp data/basemap/basemap.json data/basemap/*.bin "$out/basemap/"
+else
+  echo "no data/basemap (run: nexrad basemap); the page will have no map lines" >&2
+fi
 ls -l "$out"

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serve } from "./serve.mjs";
 
-const [dir = "export/web", out = "export/smoke.png", query = "site=KTLX&time=20130520_200359"] = process.argv.slice(2);
+const [dir = "export/web", out = "export/smoke.png", query = "site=KTLX&time=20130520_200359&hover=0"] = process.argv.slice(2);
 const TIMEOUT_MS = +(process.env.SMOKE_TIMEOUT_MS || 120_000);
 const server = await serve(dir, 0, { isolate: !process.env.SMOKE_PAGES });
 const url = `http://127.0.0.1:${server.address().port}/index.html?${query}`;

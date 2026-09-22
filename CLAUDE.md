@@ -105,6 +105,8 @@ gdformat scripts tests && gdlint scripts tests
   `tests/compare.gd` (≤ 0.2 % of pixels off by > 24/255). Re-render with `--update` after an intended visual change and
   look at the PNGs before committing. `.github/workflows/ci.yml` runs lint, `cargo test`, the Godot tests and these.
 - `nexrad/src/basemap.rs` – Census 1:500k state/county shapefiles (own zip + shapefile reader) + Natural Earth cities.
+  `pack_lines()` stores each shared border once and simplifies runs between junctions (`SIMPLIFY_DEG`). `scripts/basemap.gd`
+  loads it from `res://data/basemap` (desktop) or fetches `basemap/` next to index.html (web, `when_loaded()` callbacks).
 - `nexrad/src/volume.rs` – the on-disk format Godot reads: `rasterise()` bins radials, `write_volume()` (+
   `add_dealiased()` for DVEL, VAD winds), `read_meta`/`read_field`, `add_winds()`. `grid.rs` is the polar
   float32 grid; `time.rs` the UTC/Julian/ISO conversions (no chrono).
@@ -222,7 +224,7 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Next ideas: dealiasing that uses the
   previous volume as a temporal reference, the A-B section line drawn in 3D, mosaic cross-sections,
   a hover readout in 3D (pick against the cones), a VAD-based temporal reference for dealiasing.
-- Web: no basemap yet (res://data is not exported), and decoded volumes are not persisted (raw files are, in
+- Web: decoded volumes are not persisted (raw files are, in
   the Cache API; re-decoding costs ~0.5 s/volume against 84 MB stored per decoded volume).
 - Mosaic uses whatever is on disk; `live` follows one site per process (the fetch panel can start several
   for a live mosaic). Fetching from the UI needs the `nexrad` binary (PATH or `DROPLET_NEXRAD`) and a source checkout (not an export).

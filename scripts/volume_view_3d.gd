@@ -44,6 +44,7 @@ var _renders: Array[VolumeRender] = []  # selected site first, then mosaic neigh
 var _height_lines: MeshInstance3D  # built in true km, scaled on y by exaggeration
 var _height_labels: Array[Label3D] = []
 var _basemap_mats: Array[ShaderMaterial] = []
+var _site_latlon := Vector2.INF  # last set_site(), re-applied when the basemap arrives
 var _city_labels: Array[Label3D] = []
 
 @onready var camera: OrbitCamera = $Camera
@@ -52,7 +53,7 @@ var _city_labels: Array[Label3D] = []
 
 func _ready() -> void:
 	_build_ground()
-	_build_basemap()
+	Basemap.when_loaded(_on_basemap_loaded)
 	_build_height_scale()
 
 
@@ -220,8 +221,16 @@ func _build_basemap() -> void:
 		_basemap_mats.append(mat)
 
 
+## Builds the basemap layers (possibly after a web download) and centres them on the site.
+func _on_basemap_loaded() -> void:
+	_build_basemap()
+	if _site_latlon != Vector2.INF:
+		set_site(_site_latlon.x, _site_latlon.y)
+
+
 ## Centre the basemap and city labels on a radar site.
 func set_site(lat: float, lon: float) -> void:
+	_site_latlon = Vector2(lat, lon)
 	for mat in _basemap_mats:
 		mat.set_shader_parameter("site_lonlat", Vector2(lon, lat))
 	for label in _city_labels:

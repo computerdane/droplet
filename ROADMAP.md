@@ -149,7 +149,10 @@ The decision is deferred until the wasm build is measured.
    what it points at (`time=`, else live), so every link is a permalink.
 4. Done: web budgets (384 MB textures, 900 MB of decoded volumes in memory; the heap caps
    at 2 GB). Web already renders with Compatibility.
-5. Basemap served from the same origin and cached in `user://`.
+5. Done: the basemap is served next to index.html (`web/build.sh` copies `data/basemap`; the Pages
+   workflow runs `nexrad basemap`) and downloaded in the background; views build it when it
+   arrives (`Basemap.when_loaded`). Shared borders are stored once and every run between
+   junctions is simplified (~60 m), so it is 7.8 MB instead of 21 MB (the browser caches it).
 6. Done: an update of several volumes decodes on a pool of up to four nested workers,
    in key order (mosaic neighbours are separate jobs, so already separate workers). With
    the raw files cached, the 7-volume Moore range decodes in ~2 s instead of 3.4 s (16
@@ -162,7 +165,6 @@ The decision is deferred until the wasm build is measured.
    `.github/workflows/pages.yml` on every push to main. Godot's PWA service worker supplies
    the isolation headers (one reload on the first visit); history, ranges and live all work
    through it (`SMOKE_PAGES=1` smoke test).
-8. Next: the basemap (item 5).
 
 ### Hosting
 

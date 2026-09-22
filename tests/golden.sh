@@ -19,10 +19,14 @@ declare -A CASES=(
 	[hodograph_hover]="field=VEL srm=auto winds=1 zoom=3 hover=700,360"
 )
 
-if [[ -z "${DISPLAY:-}" && -z "${GOLDEN_INNER:-}" ]]; then
+: "${DROPLET_GL_LIBS:?run inside nix develop}"
+# The flake's libglvnd + Mesa for Godot, and Mesa's DRI drivers for Xvfb's own GLX (its built-in
+# path is /run/opengl-driver, which only NixOS has).
+export LD_LIBRARY_PATH="$DROPLET_GL_LIBS" __GLX_VENDOR_LIBRARY_NAME=mesa LIBGL_ALWAYS_SOFTWARE=1
+export LIBGL_DRIVERS_PATH="${DROPLET_GL_LIBS##*:}/dri"
+if [[ -z "${GOLDEN_INNER:-}" ]]; then
 	GOLDEN_INNER=1 exec xvfb-run -a -s "-screen 0 1280x800x24" "$0" "$@"
 fi
-: "${DROPLET_GL_LIBS:?run inside nix develop}"
 
 update=0
 names=()
@@ -38,8 +42,7 @@ for name in "${names[@]}"; do
 	opts=${CASES[$name]:?unknown case $name}
 	png="$out/$name.png"
 	# shellcheck disable=SC2086
-	LD_LIBRARY_PATH="$DROPLET_GL_LIBS" __GLX_VENDOR_LIBRARY_NAME=mesa LIBGL_ALWAYS_SOFTWARE=1 \
-		godot --rendering-driver opengl3 --resolution 1280x800 --path . \
+	godot --rendering-driver opengl3 --resolution 1280x800 --path . \
 		--script res://tests/screenshot.gd -- "$png" frames=40 $COMMON $opts >"$out/$name.log" 2>&1 ||
 		{ cat "$out/$name.log"; failed+=("$name"); continue; }
 	if ((update)); then
