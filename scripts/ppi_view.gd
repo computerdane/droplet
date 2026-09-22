@@ -24,6 +24,7 @@ const CITY_MAX_LABELS := 40
 const CITY_RADIUS_KM := 600.0
 const BASEMAP_CULL_KM := 6000.0
 const SECTION_COLOR := Color(1, 1, 1, 0.95)
+const CELL_FORECAST_COLOR := Color(0.55, 0.85, 1.0, 0.9)
 
 var storm_motion := Vector2.ZERO  # m/s east, north; zero = ground-relative (see main.gd)
 var section_mode := false
@@ -40,6 +41,7 @@ var _neighbor_rects: Array[ColorRect] = []
 var _ppi_material: ShaderMaterial  # the sweep material; show_tracks() swaps in another
 var _tracks_material: ShaderMaterial
 var _warnings: Array = []  # Warnings.project() output, drawn by the overlay
+var _cells: Array = []  # StormCells.track() entries of the frame on screen
 
 @onready var ppi: ColorRect = $PPI
 @onready var cam: Camera2D = $Camera
@@ -245,6 +247,7 @@ func _draw_overlay() -> void:
 	overlay.draw_line(Vector2(-s, 0), Vector2(s, 0), Color.WHITE, -1.0)
 	overlay.draw_line(Vector2(0, -s), Vector2(0, s), Color.WHITE, -1.0)
 	_draw_warnings()
+	_draw_cells()
 	_draw_cities()
 	if section_mode and has_section:
 		_draw_section_line()
@@ -269,6 +272,50 @@ func _draw_section_line() -> void:
 		overlay.draw_arc(Vector2.ZERO, 6.0, 0.0, TAU, 24, Color.BLACK, 4.0, true)
 		overlay.draw_arc(Vector2.ZERO, 6.0, 0.0, TAU, 24, Color.YELLOW, 2.0, true)
 	overlay.draw_set_transform(Vector2.ZERO)
+
+
+## Tracked storm cells (StormCells.track()) to draw: past track, forecast and a marker ringed
+## by its rotation.
+func set_cells(cells: Array) -> void:
+	_cells = cells
+	overlay.queue_redraw()
+
+
+func _draw_cells() -> void:
+	var z := cam.zoom.x
+	var shadow := Color(0, 0, 0, 0.7)
+	for c in _cells:
+		var pos := Vector2(c["pos"].x, -c["pos"].y)
+		var past := PackedVector2Array()
+		for p in c["track"]:
+			past.append(Vector2(p.x, -p.y))
+		if past.size() > 1:
+			overlay.draw_polyline(past, shadow, 3.0 / z)
+			overlay.draw_polyline(past, Color(1, 1, 1, 0.75), 1.5 / z)
+		for p in past.slice(0, past.size() - 1):
+			overlay.draw_circle(p, 2.0 / z, Color(1, 1, 1, 0.75))
+		var ahead := StormCells.forecast(c)
+		if not ahead.is_empty():
+			var end := Vector2(ahead[-1].x, -ahead[-1].y)
+			overlay.draw_line(pos, end, shadow, 3.0 / z)
+			overlay.draw_line(pos, end, CELL_FORECAST_COLOR, 1.5 / z)
+			for p in ahead:
+				overlay.draw_arc(
+					Vector2(p.x, -p.y), 3.0 / z, 0.0, TAU, 12, CELL_FORECAST_COLOR, 1.5 / z
+				)
+		var rot := float(c["rot"])
+		if c["tds"]:
+			var s := 9.0 / z
+			var tri := PackedVector2Array(
+				[pos + Vector2(0, -s), pos + Vector2(s, s * 0.7), pos + Vector2(-s, s * 0.7)]
+			)
+			overlay.draw_colored_polygon(tri, Color(1, 0.1, 0.8))
+		elif rot >= StormCells.ROT_MESO:
+			var col := Color(1, 0.15, 0.15) if rot >= StormCells.ROT_STRONG else Color(1, 0.85, 0)
+			overlay.draw_arc(pos, 8.0 / z, 0.0, TAU, 24, shadow, 5.0 / z)
+			overlay.draw_arc(pos, 8.0 / z, 0.0, TAU, 24, col, 2.5 / z)
+		overlay.draw_circle(pos, 3.5 / z, shadow)
+		overlay.draw_circle(pos, 2.5 / z, Color.WHITE)
 
 
 ## Warning polygons (Warnings.project()), outlined at a constant screen width.

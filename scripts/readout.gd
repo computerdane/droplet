@@ -7,7 +7,7 @@ extends RefCounted
 ## radar that draws that pixel: the nearest one, as in the mosaic shaders. `ctx` holds what is
 ## on screen: volume, sweep, field, neighbors (Mosaic.neighbors), storm (m/s in the selected
 ## site's frame, zero = ground-relative), site_lonlat, tracks (loop volumes while the rotation
-## tracks are shown, else empty) with n_tracks frames, warnings (Warnings.active_at).
+## tracks are shown, else empty) with n_tracks frames, overlays (warnings and cells).
 static func plan_view(p: Vector2, ctx: Dictionary) -> String:
 	var vol: RadarVolume = ctx["volume"]
 	var i: int = ctx["sweep"]
@@ -54,6 +54,6 @@ static func plan_view(p: Vector2, ctx: Dictionary) -> String:
 			% [absf(ll.x), "N" if ll.x >= 0 else "S", absf(ll.y), "E" if ll.y >= 0 else "W"]
 		)
 	)
-	for w in Warnings.containing(ctx["warnings"], Vector2(ll.y, ll.x)):
-		lines.append(Warnings.describe(w))
+	var overlays: Overlays = ctx["overlays"]
+	lines.append_array(overlays.readout_lines(Vector2(ll.y, ll.x), Vector2(p.x, -p.y)))
 	return "\n".join(lines)

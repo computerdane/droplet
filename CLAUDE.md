@@ -113,11 +113,19 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/rotation_tracks.gd` + `shaders/ppi_tracks.gdshader` – rotation tracks (the `TRACKS` button, 9 cycles to it): every
   loop volume's ROT grid as one Texture2DArray, the shader takes the max over the frames up to the playhead (≥ 5 × 10⁻³ s⁻¹);
   `value_at()` is its CPU twin for the readout. Selected site only (neighbours hidden). Rebuilt when the loop changes.
+- `nexrad/src/cells.rs` – storm cells per volume (SCIT-style): CREF regions ≥ 40 dBZ split at 50/60 dBZ while a region holds
+  ≥ 2 cores of ≥ 8 km²; Z-weighted centroid, area, max CREF/VIL/ET, max ROT within 8 km, and a TDS flag (≥ 6 gates of
+  REF ≥ 40, RHO ≤ 0.80, ZDR ≤ 0.5 on the lowest dual-pol tilt within 3 km of the rotation maximum, ROT ≥ 10).
+- `scripts/storm_cells.gd` – `StormCells.track()` links a loop's cells frame to frame (greedy, nearest to where each was
+  heading, ≤ 10 km; 15 km for a cell seen once), motion from the last 4 positions, 15/30/45 min forecast points.
+  `scripts/overlays.gd` (`Overlays`, owned by main) holds Warnings + the tracked cells of the frame on screen and feeds
+  PpiView (`set_warnings`, `set_cells`), the info text and the readout. C / the Cells button toggles cells (`cells=0`).
 - `scripts/warnings.gd` – NWS storm-based warnings (TO, SV, FF, MA) from the IEM archive
   (`mesonet.agron.iastate.edu/geojson/sbw.geojson?sts=&ets=`, CORS open, any time since 2002 and live): fetched per hour with
   HTTPRequest (works on web too), cached, the current hour refetched every 60 s; `active_at(t)` = polygons in effect at the
   volume's time (each SVS update is its own polygon). Drawn in 2D (`PpiView.set_warnings`), listed in the info text, named in
-  the readout (`Readout`). A / the Warnings button toggles; `warnings=0` for offline runs (goldens use it).
+  the readout (`Readout`). A / the Warnings button toggles; `warnings=0` for offline runs (goldens use it). The archive has only each
+  warning's first polygon, so it stays up until the warning expires.
 - `scripts/readout.gd` – `Readout.plan_view()`: the 2D hover text (nearest radar's value, range/bearing, beam height,
   lat/lon, warnings containing the point).
 - `scripts/mosaic.gd` – `Mosaic.neighbors()` (other sites within 10 min / 900 km, projected + rotated),
@@ -213,6 +221,7 @@ gdformat scripts tests && gdlint scripts tests
 - `wind_profile` = `{height_m, u_ms, v_ms, n}` (parallel lists, m above the radar, m/s east/north) or null;
   `storm_motion` = `{method, right, left, mean_0_6km, shear_0_6km: [u, v], srh_0_1km, srh_0_3km}` or null
   (nexrad/src/vad.rs). Added without a format_version bump; older volume.json lacks them (`nexrad derive`).
+- `cells` = `[{x_km, y_km, area_km2, max_dbz, vil, top_km, rot, tds}]` (km east/north of the radar, strongest first) or null.
 - `products` = `{azimuth_step_deg, n_azimuth_bins, fields: {CREF, ET, VIL, ROT}}` (files `p_<NAME>.bin`, same float16 layout) or
   null: column products on a grid whose range is *ground distance* (nexrad/src/products.rs). CREF = column max REF (dBZ),
   ET = 18 dBZ echo top (km above the radar, interpolated in dBZ between tilts, else the top tilt's beam), VIL (kg/m²,
@@ -244,7 +253,7 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Done: time animation + live following, column products (CREF, ET, VIL), azimuthal shear, KDP and rotation tracks, 3D cones, basemap, site picker, multi-site mosaic,
   background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
   storm-relative velocity, fetching from the UI, translucent volume rendering, VAD wind profile +
-  hodograph + automatic (Bunkers) storm motion, hover readout (2D, section, VWP), VWP time-height plot, NWS warning polygons.
+  hodograph + automatic (Bunkers) storm motion, hover readout (2D, section, VWP), VWP time-height plot, NWS warning polygons, storm cell tracking with TDS flags.
 - Next ideas: dealiasing that uses the
   previous volume as a temporal reference, the A-B section line drawn in 3D, mosaic cross-sections,
   a hover readout in 3D (pick against the cones), a VAD-based temporal reference for dealiasing.

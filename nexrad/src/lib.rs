@@ -4,6 +4,7 @@
 
 pub mod archive;
 pub mod basemap;
+pub mod cells;
 pub mod chunks;
 pub mod dealias;
 pub mod fields;

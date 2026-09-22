@@ -501,7 +501,10 @@ impl Scene {
                         }
                         "ZDR" => {
                             if precip {
-                                (0.2 + (ref_dbz - 20.0) / 12.0).clamp(-1.0, 4.0)
+                                // Tumbling debris near the ground: ZDR falls to ~0 with RHO.
+                                let debris = if tilt.elevation < 2.0 { (-(d / 1.5).powi(2)).exp() } else { 0.0 };
+                                let w = (2.0 * debris).min(1.0);
+                                (0.2 + (ref_dbz - 20.0) / 12.0).clamp(-1.0, 4.0) * (1.0 - w) + 0.1 * w
                             } else {
                                 MISSING as f64
                             }

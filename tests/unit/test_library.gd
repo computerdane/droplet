@@ -85,3 +85,32 @@ func test_storm_motion() -> void:
 
 func test_option_times() -> void:
 	check_eq(AppOptions.iso_of_name_time("20130520_200359"), "2013-05-20T20:03:59Z", "time= as ISO")
+
+
+## Storm cells: the fixture storm is one cell in each KTST volume, linked into one track whose
+## motion is the scene's storm motion (10 m/s east, 6 m/s north).
+func test_cell_tracking() -> void:
+	var vols: Array[RadarVolume] = []
+	for name in lib.for_site("KTST" if fixtures else lib.site_of(lib.volumes[0])):
+		vols.append(lib.open(name))
+	var frames := StormCells.track(vols)
+	check_eq(frames.size(), vols.size(), "one frame per volume")
+	if not fixtures:
+		return
+	if not check(
+		frames.size() == 2 and frames[0].size() == 1 and frames[1].size() == 1, "one cell each"
+	):
+		return
+	var a: Dictionary = frames[0][0]
+	var b: Dictionary = frames[1][0]
+	check_eq(b["id"], a["id"], "same track")
+	check_eq((b["track"] as PackedVector2Array).size(), 2, "track of two positions")
+	check_eq(a["motion"], Vector2.INF, "no motion from one position")
+	var m: Vector2 = b["motion"]
+	check(m.distance_to(Vector2(10, 6)) < 2.5, "motion %s ~ (10, 6) m/s" % m)
+	check(b["rot"] >= StormCells.ROT_MESO and b["tds"], "rotating, with a debris signature")
+	var ahead := StormCells.forecast(b)
+	check_eq(ahead.size(), StormCells.FORECAST_MIN.size(), "forecast points")
+	check(ahead[0].distance_to(b["pos"] + m * 0.9) < 0.01, "15 min ahead")
+	check_eq(StormCells.nearest(frames[1], b["pos"] + Vector2(3, 0), 6.0), b, "nearest cell")
+	check_eq(StormCells.nearest(frames[1], b["pos"] + Vector2(30, 0), 6.0), {}, "none nearby")

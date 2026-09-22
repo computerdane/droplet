@@ -3,7 +3,8 @@ extends "res://tests/test_case.gd"
 
 const SAMPLE := """{"type": "FeatureCollection", "features": [
 {"type": "Feature", "properties": {"phenomena": "TO", "significance": "W", "wfo": "OUN",
- "eventid": 26, "polygon_begin": "2013-05-20T20:01:00Z", "polygon_end": "2013-05-20T20:45:00Z",
+ "eventid": 26, "polygon_begin": "2013-05-20T20:01:00Z", "polygon_end": "2013-05-20T20:09:00Z",
+ "expire": "2013-05-20T20:45:00Z",
  "is_emergency": true, "is_pds": false},
  "geometry": {"type": "MultiPolygon", "coordinates": [[[[-97.6, 35.3], [-97.3, 35.3],
  [-97.3, 35.4], [-97.6, 35.4], [-97.6, 35.3]]]]}},
@@ -25,7 +26,9 @@ func test_parse_and_query() -> void:
 	check_eq(to["kind"], "TO", "kind")
 	check_eq(to["begin"], Time.get_unix_time_from_datetime_string("2013-05-20T20:01:00"), "begin")
 	check_eq((to["rings"] as Array).size(), 1, "one ring")
-	check_eq(Warnings.describe(to), "Tornado Warning EMERGENCY  OUN 26 until 20:45Z", "describe")
+	check_eq(
+		Warnings.describe(to), "Tornado Warning EMERGENCY  OUN 26 until 20:45Z", "until expiry"
+	)
 	var moore := Vector2(-97.49, 35.34)  # lon, lat
 	var inside := Warnings.containing(ws, moore)
 	check(inside.size() == 1 and inside[0] == to, "Moore is in the tornado warning only")

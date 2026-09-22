@@ -4,7 +4,9 @@ extends Node
 ## the Iowa Environmental Mesonet's archive, which answers any time window back to 2002 and
 ## keeps up with live issuance, with CORS open to browsers. Warnings are fetched an hour at a
 ## time (every warning whose polygon overlaps that hour) and cached; the hour containing "now"
-## is refetched every LIVE_REFRESH_SEC. `changed` fires when a fetch lands.
+## is refetched every LIVE_REFRESH_SEC. `changed` fires when a fetch lands. The archive only
+## has each warning's first polygon (not the updates that shrink it), so that polygon stays
+## up until the warning expires.
 
 signal changed
 
@@ -121,7 +123,7 @@ static func parse(text: String) -> Array:
 					"name": KINDS[kind][0],
 					"color": KINDS[kind][1],
 					"begin": _unix(p.get("polygon_begin", p.get("issue", ""))),
-					"end": _unix(p.get("polygon_end", p.get("expire", ""))),
+					"end": maxi(_unix(p.get("polygon_end", "")), _unix(p.get("expire", ""))),
 					"wfo": str(p.get("wfo", "")),
 					"event": int(p.get("eventid", 0)),
 					"emergency": bool(p.get("is_emergency", false)),

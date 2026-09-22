@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::grid::Grid;
 use crate::level2::{MISSING, RANGE_FOLDED, Volume};
 use crate::time::Utc;
-use crate::{Error, Result, dealias, fields, products, round_to, vad};
+use crate::{Error, Result, cells, dealias, fields, products, round_to, vad};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct FieldMeta {
@@ -58,6 +58,9 @@ pub struct VolumeMeta {
     /// Column products (CREF, ET, VIL) on a ground-range grid, see `products`.
     #[serde(default)]
     pub products: Option<products::ProductsMeta>,
+    /// Storm cells (see `cells`), strongest first.
+    #[serde(default)]
+    pub cells: Option<Vec<cells::Cell>>,
     pub sweeps: Vec<SweepMeta>,
 }
 
@@ -178,6 +181,33 @@ pub fn add_derived_fields(d: &mut Decoded) {
     }
 }
 
+/// Storm cells (see `cells`) from the product grids of `volume_products` and the lowest tilt
+/// that has REF, RHO and ZDR.
+pub fn volume_cells(sweeps: &[SweepMeta], grids: &[Fields], meta: &products::ProductsMeta, prods: &[Grid]) -> Vec<cells::Cell> {
+    let get = |name: &str| &prods[products::NAMES.iter().position(|n| *n == name).unwrap()];
+    let f = &meta.fields["CREF"];
+    let p = cells::ProductGrids {
+        cref: get("CREF"),
+        echo_top: get("ET"),
+        vil: get("VIL"),
+        rot: get("ROT"),
+        first_gate_m: f.first_gate_m as f64,
+        gate_spacing_m: f.gate_spacing_m as f64,
+    };
+    let dual = products::tilts(sweeps, "RHO").into_iter().find(|&i| ["REF", "ZDR"].iter().all(|n| grids[i].contains_key(*n))).map(|i| {
+        let rf = &sweeps[i].fields["REF"];
+        cells::DualPol {
+            refl: &grids[i]["REF"],
+            rho: &grids[i]["RHO"],
+            zdr: &grids[i]["ZDR"],
+            elevation_deg: sweeps[i].elevation_deg,
+            first_gate_m: rf.first_gate_m as f64,
+            gate_spacing_m: rf.gate_spacing_m as f64,
+        }
+    });
+    cells::find_cells(&p, dual.as_ref())
+}
+
 /// VAD wind profile from every sweep with DVEL (see `vad`).
 pub fn wind_profile(sweeps: &[SweepMeta], grids: &[Fields]) -> Option<vad::WindProfile> {
     let inputs: Vec<vad::SweepIn> = sweeps
@@ -229,6 +259,7 @@ pub fn encode_volume(vol: &Volume) -> Encoded {
             files.push((meta.fields[*name].file.clone(), grid.to_f16_le()));
         }
     }
+    let cells = prods.as_ref().map(|(m, g)| volume_cells(&d.sweeps, &d.grids, m, g));
     let storm_motion = vad::bunkers(profile.as_ref());
     let meta = VolumeMeta {
         format_version: 1,
@@ -246,6 +277,7 @@ pub fn encode_volume(vol: &Volume) -> Encoded {
         wind_profile: profile,
         storm_motion,
         products: prods.map(|(m, _)| m),
+        cells,
         sweeps: d.sweeps,
     };
     Encoded { meta, files }
@@ -292,14 +324,14 @@ pub fn read_field(out: &Path, sw: &SweepMeta, name: &str) -> Result<Option<Grid>
     Grid::from_f16_le(sw.n_azimuth_bins, f.n_gates, &bytes).map(Some).ok_or_else(|| format!("{}: wrong size", f.file).into())
 }
 
-/// Recomputes the derived per-gate fields (AZSHR, KDP) and the column products of an already
-/// decoded volume from its REF, DVEL, PHI and RHO files. False if it has no REF (no products).
+/// Recomputes the derived per-gate fields (AZSHR, KDP), the column products and the cells of an already
+/// decoded volume from its REF, DVEL, PHI, RHO and ZDR files. False if it has no REF (no products).
 pub fn add_derived(out: &Path) -> Result<bool> {
     let mut meta = read_meta(out)?;
     let mut d = Decoded { sweeps: meta.sweeps.clone(), grids: Vec::new() };
     for sw in &meta.sweeps {
         let mut g = Fields::new();
-        for name in ["REF", "DVEL", "PHI", "RHO"] {
+        for name in ["REF", "DVEL", "PHI", "RHO", "ZDR"] {
             if let Some(grid) = read_field(out, sw, name)? {
                 g.insert(name.into(), grid);
             }
@@ -320,6 +352,7 @@ pub fn add_derived(out: &Path) -> Result<bool> {
             write_atomic(&out.join(&pm.fields[*name].file), &grid.to_f16_le())?;
         }
     }
+    meta.cells = prods.as_ref().map(|(m, g)| volume_cells(&d.sweeps, &d.grids, m, g));
     meta.sweeps = d.sweeps;
     meta.products = prods.map(|(m, _)| m);
     write_meta(out, &meta)?;
@@ -578,6 +611,30 @@ mod tests {
         let median = core[core.len() / 2];
         let want = 0.025 * (refl.data[top] - 30.0 - 2.0); // REF's max includes noise
         assert!((median - want).abs() < 0.3, "KDP in the core {median}, want ~{want}");
+    }
+
+    #[test]
+    fn cells_of_the_scene() {
+        // The fixture storm is one cell at the couplet, rotating, with debris (low RHO and ZDR)
+        // on the lowest tilt; the neighbouring radar's small scan sees the same storm.
+        let vols = synth::fixture_volumes();
+        let dir = tempdir::Dir::new("cells");
+        let out = write_volume(&vols[0], dir.path()).unwrap();
+        let meta = read_meta(&out).unwrap();
+        let cells = meta.cells.as_ref().expect("cells");
+        assert_eq!(cells.len(), 1, "{cells:?}");
+        let c = &cells[0];
+        assert!(c.max_dbz > 55.0 && c.area_km2 > 50.0 && c.vil > 20.0 && c.top_km > 3.0, "{c:?}");
+        assert!(c.rot >= 8.0 && c.tds, "rotation and debris: {c:?}");
+        // Its centroid is where the REF core is.
+        let s0 = &meta.sweeps[products::tilts(&meta.sweeps, "REF")[0]];
+        let refl = read_field(&out, s0, "REF").unwrap().unwrap();
+        let top = (0..refl.data.len()).max_by(|&i, &j| refl.data[i].total_cmp(&refl.data[j])).unwrap();
+        let az = ((top / refl.n_gates) as f64 + 0.5) * s0.azimuth_step_deg;
+        let f = &s0.fields["REF"];
+        let r = (f.first_gate_m as f64 + (top % refl.n_gates) as f64 * f.gate_spacing_m as f64) / 1000.0;
+        let (x, y) = (r * az.to_radians().sin(), r * az.to_radians().cos());
+        assert!((c.x_km - x).hypot(c.y_km - y) < 3.0, "centroid ({}, {}) vs core ({x:.1}, {y:.1})", c.x_km, c.y_km);
     }
 
     #[test]
