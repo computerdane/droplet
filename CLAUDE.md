@@ -51,7 +51,7 @@ gdformat scripts tests && gdlint scripts tests
   the budget, so loops bigger than the cache still stream as a rolling window. `prefetch=0` disables it.
 - `scripts/main.gd` – controller: site, frame, field, *target elevation* (kept across frames), playback,
   live, mosaic neighbours. Parses `key=value` user args (see its header) – screenshot.gd passes them through.
-- `scripts/hud.gd` – code-built UI (no keyboard focus anywhere, so shortcuts always work).
+- `scripts/hud.gd` – code-built UI (no keyboard focus except the fetch panel's text fields, so shortcuts work).
 - `scripts/ppi_view.gd` + `shaders/ppi.gdshader` – 2D plan view, basemap, rings, decluttered city labels.
 - `scripts/volume_view_3d.gd`, `scripts/cone_set.gd` + `shaders/cone.gdshader` – 3D: each tilt is a shared
   unit grid bent along the beam in the vertex shader (4/3 earth radius, vertical exaggeration); per-field
@@ -68,7 +68,7 @@ gdformat scripts tests && gdlint scripts tests
   textures directly. Default interpolates linearly between adjacent tilts; "Beams only" shows each tilt
   ±½ beamwidth (0.95°). `beam_height()` is the CPU twin, checked against cone.gdshader in smoke.gd.
 - `shaders/storm.gdshaderinc` – storm-relative velocity: `storm_motion` uniform (m/s east/north, radar-local),
-  subtracts its radial component × cos(elev). Included by ppi, cone and section shaders. `main._storm_vector()`
+  subtracts its radial component × cos(elev). Included by ppi, cone, section and volume shaders. `main._storm_vector()`
   is non-zero only for VEL/DVEL with SRM on (T, HUD row, `srm=from_deg,speed_ms`, meteorological "from");
   mosaic neighbours get it rotated into their frame (`storm_motion.rotated(rotation)`).
 - `scripts/fetcher.gd` + `scripts/fetch_panel.gd` – fetch from the UI (F): runs `python -u -m nexrad update|live`
