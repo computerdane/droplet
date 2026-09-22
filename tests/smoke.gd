@@ -5,6 +5,7 @@ extends SceneTree
 const RadarLibraryScript := preload("res://scripts/radar_library.gd")
 const RadarVolumeScript := preload("res://scripts/radar_volume.gd")
 const ColormapsScript := preload("res://scripts/colormaps.gd")
+const BasemapScript := preload("res://scripts/basemap.gd")
 
 
 func _initialize() -> void:
@@ -51,6 +52,7 @@ func _initialize() -> void:
 		)
 	failed = not _check_tilts(vol) or failed
 	failed = not _check_sequences(lib) or failed
+	failed = not _check_basemap(vol) or failed
 	quit(1 if failed else 0)
 
 
@@ -87,3 +89,23 @@ func _check_sequences(lib) -> bool:
 			i = b.y + 1
 		print("  %s sequences (volumes each): %s" % [site, " ".join(seqs)])
 	return true
+
+
+## Projection sanity (1° of latitude due north ≈ 111.19 km) and basemap loading if built.
+func _check_basemap(vol) -> bool:
+	var lat: float = vol.meta["latitude"]
+	var lon: float = vol.meta["longitude"]
+	var p: Vector2 = BasemapScript.project(lat + 1.0, lon, lat, lon)
+	if absf(p.x) > 1e-6 or absf(p.y - 111.195) > 0.01:
+		push_error("projection: 1 deg north -> %s" % p)
+		return false
+	var bm = BasemapScript.get_shared()
+	if bm == null:
+		print("  basemap: not built (python -m nexrad basemap)")
+		return true
+	var near: Array = bm.cities_near(lat, lon, 100.0)
+	var names := PackedStringArray()
+	for c in near.slice(0, 5):
+		names.append("%s %.0f km" % [c[0], (c[1] as Vector2).length()])
+	print("  basemap layers: %s  cities <100 km: %s" % [bm.meshes.keys(), ", ".join(names)])
+	return not bm.meshes.is_empty()

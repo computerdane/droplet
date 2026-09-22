@@ -40,6 +40,7 @@ var live := true
 var playing := false
 var fps := 4.0
 var view_is_3d := false
+var _site_lonlat := Vector2.INF  # site the views' basemaps are centred on
 
 @onready var view_2d: PpiView = $View2D
 @onready var view_3d: VolumeView3D = $View3D
@@ -240,6 +241,12 @@ func _on_play_tick() -> void:
 
 func _refresh() -> void:
 	sweep_index = volume.tilt_near(field_name, target_elev) if volume != null else -1
+	if volume != null:
+		var ll := Vector2(float(volume.meta["longitude"]), float(volume.meta["latitude"]))
+		if ll != _site_lonlat:
+			_site_lonlat = ll
+			view_2d.set_site(ll.y, ll.x)
+			view_3d.set_site(ll.y, ll.x)
 	if view_is_3d:
 		view_3d.show_volume(volume, field_name, sweep_index)
 	else:

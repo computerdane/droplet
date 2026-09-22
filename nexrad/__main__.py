@@ -10,6 +10,9 @@ History (archive mirror, ~5 min behind real time, back to ~2008):
 
 Live (chunks bucket, seconds behind real time):
     python -m nexrad live KTLX                            # poll, decode partial volumes as they grow
+
+Basemap (state/county lines and city labels, once):
+    python -m nexrad basemap                              # -> data/basemap/
 """
 
 from __future__ import annotations
@@ -26,12 +29,13 @@ from pathlib import Path
 import numpy as np
 import requests
 
-from . import chunks, level2
+from . import basemap, chunks, level2
 
 BUCKET = "https://unidata-nexrad-level2.s3.amazonaws.com"
 ROOT = Path(__file__).resolve().parent.parent
 RAW_DIR = ROOT / "data" / "raw"
 VOLUMES_DIR = ROOT / "data" / "volumes"
+BASEMAP_DIR = ROOT / "data" / "basemap"
 S3_NS = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
 KEY_TIME = re.compile(r"[A-Z]{4}(\d{8})_(\d{6})")
 
@@ -237,6 +241,7 @@ def main(argv: list[str] | None = None) -> None:
     lp = sub.add_parser("live")
     lp.add_argument("site")
     lp.add_argument("--interval", type=float, default=5.0, help="poll interval in seconds")
+    sub.add_parser("basemap")
     args = ap.parse_args(argv)
 
     if args.cmd == "latest":
@@ -252,6 +257,8 @@ def main(argv: list[str] | None = None) -> None:
             print(decode(Path(p)))
     elif args.cmd == "live":
         live(args.site, args.interval)
+    elif args.cmd == "basemap":
+        print(basemap.build(BASEMAP_DIR, RAW_DIR / "basemap"))
 
 
 if __name__ == "__main__":

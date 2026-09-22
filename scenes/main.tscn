@@ -25,6 +25,8 @@ offset_right = 500.0
 offset_bottom = 500.0
 mouse_filter = 2
 
+[node name="Basemap" type="Node2D" parent="View2D"]
+
 [node name="Overlay" type="Node2D" parent="View2D"]
 
 [node name="Camera" type="Camera2D" parent="View2D"]

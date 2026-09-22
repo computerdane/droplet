@@ -1,10 +1,12 @@
 class_name VolumeView3D
 extends Node3D
 ## 3D volume view: every tilt of one field as a cone (cone.gdshader), over a ground disk
-## with range rings and a height scale at the radar. Heights are exaggerated for legibility.
+## with basemap lines, city labels, range rings and a height scale at the radar.
+## Heights are exaggerated for legibility.
 
 enum Isolate { ALL, BELOW, SINGLE }
 
+const BASEMAP_SHADER := preload("res://shaders/basemap_3d.gdshader")
 const RADIAL_SEGMENTS := 64
 const AZIMUTH_SEGMENTS := 360
 const GROUND_RADIUS_KM := 480.0
@@ -14,6 +16,8 @@ const HEIGHT_MAX_KM := 20.0
 const DEFAULT_EXAGGERATION := 4.0
 const EXAGGERATION_MIN := 1.0
 const EXAGGERATION_MAX := 20.0
+const CITY_RADIUS_KM := 350.0
+const CITY_MAX_LABELS := 24
 const ISOLATE_NAMES := ["all tilts", "selected and below", "selected only"]
 
 ## Default display thresholds for 3D (drawing everything hides the storm inside clear air).
@@ -36,6 +40,8 @@ var _shader: Shader = preload("res://shaders/cone.gdshader")
 var _cones: Array[MeshInstance3D] = []
 var _height_lines: MeshInstance3D  # built in true km, scaled on y by exaggeration
 var _height_labels: Array[Label3D] = []
+var _basemap_mats: Array[ShaderMaterial] = []
+var _city_labels: Array[Label3D] = []
 
 @onready var camera: OrbitCamera = $Camera
 @onready var cones_root: Node3D = $Cones
@@ -44,6 +50,7 @@ var _height_labels: Array[Label3D] = []
 func _ready() -> void:
 	_cone_mesh = _build_cone_mesh()
 	_build_ground()
+	_build_basemap()
 	_build_height_scale()
 
 
@@ -181,6 +188,55 @@ func _build_ground() -> void:
 		lines.append(Vector3.ZERO)
 		lines.append(Vector3(sin(a), 0, -cos(a)) * (GROUND_RADIUS_KM - RING_STEP_KM + 20.0))
 	add_child(_line_instance(lines, Color(1, 1, 1, 0.16)))
+
+
+func _build_basemap() -> void:
+	var bm := Basemap.get_shared()
+	if bm == null:
+		return
+	var height := 0.04
+	for layer in Basemap.LAYER_STYLE:
+		if not bm.meshes.has(layer):
+			continue
+		var mi := MeshInstance3D.new()
+		mi.mesh = bm.meshes[layer]
+		var mat := ShaderMaterial.new()
+		mat.shader = BASEMAP_SHADER
+		mat.set_shader_parameter("color", Basemap.LAYER_STYLE[layer])
+		mat.set_shader_parameter("height_km", height)
+		mat.set_shader_parameter("fade_km", GROUND_RADIUS_KM)
+		height += 0.02  # later layers sit on top
+		mi.material_override = mat
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		var r := GROUND_RADIUS_KM
+		mi.custom_aabb = AABB(Vector3(-r, -1, -r), Vector3(2 * r, 2, 2 * r))
+		add_child(mi)
+		_basemap_mats.append(mat)
+
+
+## Centre the basemap and city labels on a radar site.
+func set_site(lat: float, lon: float) -> void:
+	for mat in _basemap_mats:
+		mat.set_shader_parameter("site_lonlat", Vector2(lon, lat))
+	for label in _city_labels:
+		label.queue_free()
+	_city_labels.clear()
+	var bm := Basemap.get_shared()
+	if bm == null:
+		return
+	for c in bm.cities_near(lat, lon, CITY_RADIUS_KM).slice(0, CITY_MAX_LABELS):
+		var label := Label3D.new()
+		label.text = "· " + c[0]
+		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		label.fixed_size = true
+		label.pixel_size = 0.0008
+		label.font_size = 22
+		label.outline_size = 6
+		label.modulate = Color(0.95, 0.95, 1.0, 0.8)
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		label.position = Vector3(c[1].x, 0.2, -c[1].y)
+		add_child(label)
+		_city_labels.append(label)
 
 
 func _build_height_scale() -> void:
