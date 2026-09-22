@@ -159,11 +159,15 @@ The decision is deferred until the wasm build is measured.
    a bare URL fetches the newest volume on a page without cross-origin isolation.
    Decoded volumes are deliberately not cached: 84 MB each against a 7 to 11 MB raw file
    that re-decodes in ~0.5 s.
-7. Next: hosting (a static host; see below), then the basemap (item 5).
+7. Done: hosted on GitHub Pages, https://computerdane.github.io/droplet/, built and deployed by
+   `.github/workflows/pages.yml` on every push to main. Godot's PWA service worker supplies
+   the isolation headers (one reload on the first visit); history, ranges and live all work
+   through it (`SMOKE_PAGES=1` smoke test).
+8. Next: the basemap (item 5).
 
 ### Hosting
 
-With the pure-client plan the app is static files and any host will do; the notes below are
+**Chosen for the pure client: GitHub Pages** (see "Client changes" 7). The notes below are
 for the thin-decode-layer fallback, where data and a worker live next to the app.
 
 **Chosen: bludgeonder (danix), same origin for app and data.** The box already has nginx

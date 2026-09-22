@@ -2,7 +2,8 @@
 // protocol, waits for the startup fetch to finish ("fetch: ... done" from main.gd) and saves a
 // screenshot. Fails on page errors or a failed fetch. Needs network (the Unidata buckets).
 //   nix shell nixpkgs#nodejs nixpkgs#chromium -c node web/smoke.mjs [DIR=export/web] [OUT=export/smoke.png] [QUERY]
-// QUERY defaults to "site=KTLX&time=20130520_200359" (the Moore tornado).
+// QUERY defaults to "site=KTLX&time=20130520_200359" (the Moore tornado). SMOKE_PAGES=1 serves without the
+// isolation headers, as GitHub Pages does (the service worker supplies them after one reload).
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,7 +12,7 @@ import { serve } from "./serve.mjs";
 
 const [dir = "export/web", out = "export/smoke.png", query = "site=KTLX&time=20130520_200359"] = process.argv.slice(2);
 const TIMEOUT_MS = +(process.env.SMOKE_TIMEOUT_MS || 120_000);
-const server = await serve(dir, 0);
+const server = await serve(dir, 0, { isolate: !process.env.SMOKE_PAGES });
 const url = `http://127.0.0.1:${server.address().port}/index.html?${query}`;
 const profile = mkdtempSync(join(tmpdir(), "droplet-smoke-"));
 const chrome = spawn(
@@ -44,6 +45,8 @@ const errors = [];
 ws.addEventListener("message", ({ data }) => {
   const msg = JSON.parse(data);
   if (msg.id && pending.has(msg.id)) return pending.get(msg.id)(msg.result);
+  // only the last page load counts (the service worker reloads the page to install itself)
+  if (msg.method === "Page.frameNavigated" && !msg.params.frame.parentId) errors.length = 0;
   if (msg.method === "Runtime.consoleAPICalled") {
     const text = msg.params.args.map((a) => a.value ?? a.description ?? "").join(" ");
     console.log(`[${msg.params.type}] ${text}`);

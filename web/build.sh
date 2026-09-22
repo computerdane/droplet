@@ -7,8 +7,14 @@ cd "$(dirname "$0")/.."
 out="${1:-export/web}"
 # export_presets.cfg is gitignored (the editor rewrites it); seed it from the committed copy.
 [ -f export_presets.cfg ] || cp web/export_presets.template.cfg export_presets.cfg
+# Godot only looks for export templates under its data dir; link the flake's there (CI, fresh machines).
+templates="${XDG_DATA_HOME:-$HOME/.local/share}/godot/export_templates"
+for t in "${GODOT_EXPORT_TEMPLATES:?run from the dev shell}"/*; do
+  [ -e "$templates/$(basename "$t")" ] || { mkdir -p "$templates" && ln -s "$t" "$templates/"; }
+done
 nexrad-wasm/build.sh
 mkdir -p "$out"
+touch "$out/.gdignore" # keep the editor from importing the export (and packing it)
 godot --headless --path . --import >/dev/null
 godot --headless --path . --export-release Web "$(realpath "$out")/index.html"
 cp nexrad-wasm/pkg/nexrad_wasm.js nexrad-wasm/pkg/nexrad_wasm_bg.wasm web/nexrad_worker.js "$out/"

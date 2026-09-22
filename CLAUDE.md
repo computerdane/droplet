@@ -26,8 +26,9 @@ cargo clippy --all-targets && cargo fmt --check    # lint (rustfmt.toml: 140 col
 nexrad-wasm/build.sh                               # browser decoder -> nexrad-wasm/pkg/ (wasm-bindgen + wasm-opt)
 nix shell nixpkgs#nodejs nixpkgs#chromium -c node nexrad-wasm/bench/bench.mjs OUT 5 data/raw/<file> ...  # time it headless, save output
 web/build.sh                                       # web app -> export/web/ (Godot export + wasm + worker)
-node web/serve.mjs                                 # serve it on :8060 with COOP/COEP
+node web/serve.mjs                                 # serve it on :8060 with COOP/COEP (--pages: without, like GitHub Pages)
 nix shell nixpkgs#nodejs nixpkgs#chromium -c node web/smoke.mjs   # headless: load ?site=KTLX&time=20130520_200359, screenshot
+SMOKE_PAGES=1 nix shell nixpkgs#nodejs nixpkgs#chromium -c node web/smoke.mjs   # same, served the way Pages serves it
 godot --editor                                     # open project
 godot                                               # run main scene
 godot --headless --path . --import                  # (re)build .godot/ cache after adding scripts/scenes
@@ -59,7 +60,11 @@ gdformat scripts tests && gdlint scripts tests
   An update of several volumes decodes on a pool of nested workers (`{"cmd": "decode"}`, min(4, cores − 2)) and
   passes the volumes on in key order. `build.sh` exports Godot (seeding the gitignored
   `export_presets.cfg` from `web/export_presets.template.cfg`) and copies the wasm + worker next to index.html;
-  `serve.mjs` serves with COOP/COEP; `smoke.mjs` drives headless Chromium over CDP.
+  `serve.mjs` serves with COOP/COEP; `smoke.mjs` drives headless Chromium over CDP. Hosted on GitHub Pages
+  (https://computerdane.github.io/droplet/, `.github/workflows/pages.yml` runs build.sh in the flake on every push
+  to main). Pages cannot send COOP/COEP, so the preset enables Godot's PWA service worker, which adds them, plus a
+  `head_include` that reloads once that worker controls the page (Godot's shell can reload too early). Changes to
+  the template reach a local `export_presets.cfg` only if you delete it (build.sh seeds it when missing).
 - `nexrad/src/level2.rs` – Archive2 / Message 31 decoder (bzip2 + flate2 only). LDM records are decompressed
   and parsed in parallel (rayon); torn or truncated records yield what decoded cleanly (`live` feeds it
   partial files). Output is float32 computed as `(raw - offset) / scale`, so float16 files match the old
