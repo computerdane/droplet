@@ -659,7 +659,7 @@ func _refresh() -> void:
 ## Warnings and tracked cells for the frame on screen (Overlays).
 func _refresh_overlays() -> void:
 	hud.set_overlays_on(overlays.warnings.enabled, overlays.cells_on)
-	overlays.update(view_2d, volume, _loop_volumes(), frame - _sequence().x)
+	overlays.update(view_2d, view_3d, volume, _loop_volumes(), frame - _sequence().x)
 	_readout_key.clear()
 	_update_info()
 
@@ -781,6 +781,7 @@ func _update_section() -> void:
 	_readout_key.clear()
 	var shown := section_on and view_2d.has_section
 	hud.set_section(section_on, shown)
+	view_3d.overlay.set_section(shown, view_2d.section_a, view_2d.section_b)
 	if shown:
 		hud.section.show_section(volume, _volume_field(), view_2d.section_a, view_2d.section_b)
 

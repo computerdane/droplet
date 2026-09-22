@@ -14,6 +14,7 @@ declare -A CASES=(
 	[ppi_ref]="field=REF zoom=3"
 	[ppi_dvel_srm_mosaic]="field=DVEL srm=auto mosaic=1 zoom=2"
 	[cones_mosaic]="view=3d mosaic=1 field=REF dist=300 pitch=35"
+	[cones_section]="view=3d field=REF dist=160 pitch=30 yaw=-30 section=-10,-15,50,45"
 	[volume_render]="view=3d render=volume field=REF dist=90 pitch=20 yaw=-30 density=0.3"
 	[section_vwp]="field=REF zoom=3 section=-10,-15,50,45 vwp=1"
 	[hodograph_hover]="field=VEL srm=auto winds=1 zoom=3 hover=700,360"

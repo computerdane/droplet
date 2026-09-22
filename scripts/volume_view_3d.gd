@@ -41,6 +41,7 @@ var isolate := ConeSet.Isolate.ALL
 var volume_render := false
 var density := DEFAULT_DENSITY
 var thresholds: Dictionary = {}  # field -> float; overrides DEFAULT_THRESHOLDS
+var overlay := Overlay3D.new()  # section curtain, warnings, cells
 var _neighbors: Array[ConeSet] = []
 var _renders: Array[VolumeRender] = []  # selected site first, then mosaic neighbours
 var _height_lines: MeshInstance3D  # built in true km, scaled on y by exaggeration
@@ -55,6 +56,8 @@ var _city_labels: Array[Label3D] = []
 
 func _ready() -> void:
 	_build_ground()
+	overlay.exaggeration = exaggeration
+	add_child(overlay)
 	Basemap.when_loaded(_on_basemap_loaded)
 	_build_height_scale()
 
@@ -84,6 +87,7 @@ func set_exaggeration(v: float) -> void:
 	exaggeration = clampf(v, EXAGGERATION_MIN, EXAGGERATION_MAX)
 	_place_height_scale()
 	cones.set_exaggeration(exaggeration)
+	overlay.set_exaggeration(exaggeration)
 	for n in _neighbors:
 		n.set_exaggeration(exaggeration)
 	for vr in _renders:

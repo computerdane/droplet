@@ -1,8 +1,9 @@
 class_name Overlays
 extends Node
-## Context over the 2D view for the volume on screen: NWS warnings in effect (Warnings) and the
-## storm cells of the selected site tracked through the loop (StormCells), with their lines in
-## the info text and the hover readout. main.gd calls update() on every refresh.
+## Context over the 2D and 3D views for the volume on screen: NWS warnings in effect
+## (Warnings) and the storm cells of the selected site tracked through the loop (StormCells),
+## with their lines in the info text and the hover readout. main.gd calls update() on every
+## refresh.
 
 ## A warnings download landed; main refreshes.
 signal changed
@@ -24,7 +25,9 @@ func _ready() -> void:
 
 
 ## `loop` is the selected site's loop (oldest first), `index` the frame on screen within it.
-func update(view: PpiView, volume: RadarVolume, loop: Array[RadarVolume], index: int) -> void:
+func update(
+	view: PpiView, view_3d: VolumeView3D, volume: RadarVolume, loop: Array[RadarVolume], index: int
+) -> void:
 	var t := RadarLibrary.unix_of(volume.name) if volume != null else 0
 	active_warnings = warnings.active_at(t)
 	cells = []
@@ -37,14 +40,14 @@ func update(view: PpiView, volume: RadarVolume, loop: Array[RadarVolume], index:
 			_cell_frames = StormCells.track(loop)
 		if index >= 0 and index < _cell_frames.size():
 			cells = _cell_frames[index]
-	if volume == null:
-		view.set_warnings([])
-		view.set_cells([])
-		return
-	var lat := float(volume.meta["latitude"])
-	var lon := float(volume.meta["longitude"])
-	view.set_warnings(Warnings.project(active_warnings, lat, lon))
+	var polys := []
+	if volume != null:
+		var lat := float(volume.meta["latitude"])
+		var lon := float(volume.meta["longitude"])
+		polys = Warnings.project(active_warnings, lat, lon)
+	view.set_warnings(polys)
 	view.set_cells(cells)
+	view_3d.overlay.set_overlays(polys, cells)
 
 
 func info_lines() -> PackedStringArray:

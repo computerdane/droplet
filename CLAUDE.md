@@ -126,6 +126,9 @@ gdformat scripts tests && gdlint scripts tests
   volume's time (each SVS update is its own polygon). Drawn in 2D (`PpiView.set_warnings`), listed in the info text, named in
   the readout (`Readout`). A / the Warnings button toggles; `warnings=0` for offline runs (goldens use it). The archive has only each
   warning's first polygon, so it stays up until the warning expires.
+- `scripts/overlay_3d.gd` – `Overlay3D` (child of VolumeView3D): one ImmediateMesh of coloured lines for the A-B section
+  curtain (with A/B labels), warning polygons on the ground and cell stalks (up to the echo top, coloured by rotation/TDS)
+  over their ground track and forecast. Fed by `main._update_section()` and `Overlays.update()`.
 - `scripts/readout.gd` – `Readout.plan_view()`: the 2D hover text (nearest radar's value, range/bearing, beam height,
   lat/lon, warnings containing the point).
 - `scripts/mosaic.gd` – `Mosaic.neighbors()` (other sites within 10 min / 900 km, projected + rotated),
@@ -256,13 +259,12 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Done: time animation + live following, column products (CREF, ET, VIL), azimuthal shear, KDP and rotation tracks, 3D cones, basemap, site picker, multi-site mosaic,
   background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
   storm-relative velocity, fetching from the UI, translucent volume rendering, VAD wind profile +
-  hodograph + automatic (Bunkers) storm motion, hover readout (2D, section, VWP), VWP time-height plot, NWS warning polygons, storm cell tracking with TDS flags.
-- Next ideas: dealiasing that uses the
-  previous volume as a temporal reference, the A-B section line drawn in 3D, mosaic cross-sections,
-  a hover readout in 3D (pick against the cones), a VAD-based temporal reference for dealiasing.
+  hodograph + automatic (Bunkers) storm motion, hover readout (2D, 3D, section, VWP), VWP time-height plot, NWS warning polygons, storm cell tracking with TDS flags.
+- Next ideas: dealiasing that uses the previous volume as a temporal reference, mosaic cross-sections,
+  a VAD-based temporal reference for dealiasing.
 - Web: decoded volumes are not persisted (raw files are, in
   the Cache API; re-decoding costs ~0.5 s/volume against 84 MB stored per decoded volume).
 - Mosaic uses whatever is on disk; `live` follows one site per process (the fetch panel can start several
   for a live mosaic). Fetching from the UI needs the `nexrad` binary (PATH or `DROPLET_NEXRAD`) and a source checkout (not an export).
 - The 3D ground disk/rings are centred on the selected site only.
-- Cross-sections use the selected site only (no mosaic), and the A-B line is not drawn in 3D.
+- Cross-sections use the selected site only (no mosaic). Cells and rotation tracks are the selected site's only.
