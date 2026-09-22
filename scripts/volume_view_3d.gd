@@ -30,6 +30,7 @@ const DEFAULT_THRESHOLDS := {
 	"DVEL": [10.0, true],
 }
 
+var storm_motion := Vector2.ZERO  # m/s east, north in the selected site's frame; zero = off
 var exaggeration := DEFAULT_EXAGGERATION
 var isolate := ConeSet.Isolate.ALL
 var thresholds: Dictionary = {}  # field -> float; overrides DEFAULT_THRESHOLDS
@@ -90,6 +91,7 @@ func show_volume(
 ) -> void:
 	var thr := threshold_of(field_name)
 	var abs_mode := threshold_is_abs(field_name)
+	cones.storm_motion = storm_motion
 	cones.show_volume(vol, field_name, sel_elev, isolate, thr, abs_mode, exaggeration, others)
 	while _neighbors.size() < neighbors.size():
 		var cs := ConeSet.new()
@@ -104,6 +106,7 @@ func show_volume(
 		var off: Vector2 = n["offset_km"]
 		cs.position = Vector3(off.x, 0, -off.y)
 		cs.rotation = Vector3(0, -float(n["rotation"]), 0)
+		cs.storm_motion = storm_motion.rotated(n["rotation"])
 		cs.show_volume(
 			n["volume"], field_name, sel_elev, isolate, thr, abs_mode, exaggeration, n["others"]
 		)

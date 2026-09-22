@@ -13,6 +13,8 @@ signal site_selected(site: String)
 signal view_toggled
 signal mosaic_toggled
 signal section_toggled
+signal srm_toggled
+signal srm_changed(d_from_deg: float, d_speed: float)
 signal field_selected(field_name: String)
 
 const SPEEDS := [1.0, 2.0, 4.0, 8.0, 15.0]
@@ -28,6 +30,10 @@ var mosaic_button: Button
 var section_button: Button
 var section: SectionView
 var field_buttons: Dictionary = {}  # name -> Button
+var srm_row: HBoxContainer
+var srm_button: Button
+var srm_dir_label: Label
+var srm_speed_label: Label
 var legend_tex: TextureRect
 var legend_lo: Label
 var legend_hi: Label
@@ -108,6 +114,8 @@ func _build_top_right() -> void:
 		fields.add_child(b)
 		field_buttons[fname] = b
 
+	_build_srm_row(box)
+
 	legend_tex = TextureRect.new()
 	legend_tex.custom_minimum_size = Vector2(LEGEND_WIDTH, 12)
 	legend_tex.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
@@ -126,6 +134,32 @@ func _build_top_right() -> void:
 	labels.add_child(legend_lo)
 	labels.add_child(legend_unit)
 	labels.add_child(legend_hi)
+
+
+## Storm-relative motion controls, shown for velocity fields: storm moving from a
+## direction (meteorological convention) at a speed.
+func _build_srm_row(box: VBoxContainer) -> void:
+	srm_row = _hbox()
+	srm_row.alignment = BoxContainer.ALIGNMENT_END
+	box.add_child(srm_row)
+	srm_button = _button("Storm-relative", "Subtract the storm motion from velocity (T)")
+	srm_button.toggle_mode = true
+	srm_button.pressed.connect(srm_toggled.emit)
+	srm_row.add_child(srm_button)
+	srm_row.add_child(_srm_step("<", "Storm motion from 10 degrees further left", -10.0, 0.0))
+	srm_dir_label = _label(13)
+	srm_row.add_child(srm_dir_label)
+	srm_row.add_child(_srm_step(">", "Storm motion from 10 degrees further right", 10.0, 0.0))
+	srm_row.add_child(_srm_step("-", "Storm slower by 1 m/s", 0.0, -1.0))
+	srm_speed_label = _label(13)
+	srm_row.add_child(srm_speed_label)
+	srm_row.add_child(_srm_step("+", "Storm faster by 1 m/s", 0.0, 1.0))
+
+
+func _srm_step(text: String, tip: String, d_from_deg: float, d_speed: float) -> Button:
+	var b := _button(text, tip)
+	b.pressed.connect(func() -> void: srm_changed.emit(d_from_deg, d_speed))
+	return b
 
 
 func _build_bottom_bar() -> void:
@@ -223,11 +257,18 @@ func set_mosaic(on: bool, available: bool) -> void:
 	mosaic_button.disabled = not available and not on
 
 
+func set_srm(available: bool, on: bool, from_deg: float, speed_ms: float) -> void:
+	srm_row.visible = available
+	srm_button.set_pressed_no_signal(on)
+	srm_dir_label.text = " from %03d° " % int(from_deg)
+	srm_speed_label.text = " %d m/s (%d kt) " % [int(speed_ms), roundi(speed_ms * 1.94384)]
+
+
 func set_view_3d(on: bool) -> void:
 	view_button.text = "2D" if on else "3D"
 
 
-func set_field(field_name: String, available: Array) -> void:
+func set_field(field_name: String, available: Array, storm_relative := false) -> void:
 	for n in field_buttons:
 		var b: Button = field_buttons[n]
 		b.set_pressed_no_signal(n == field_name)
@@ -237,6 +278,8 @@ func set_field(field_name: String, available: Array) -> void:
 	legend_lo.text = str(rng[0])
 	legend_hi.text = str(rng[1])
 	legend_unit.text = Colormaps.unit_of(field_name)
+	if storm_relative:
+		legend_unit.text = "storm-rel. " + legend_unit.text
 
 
 ## `frame` and `count` describe the position within the current sequence.

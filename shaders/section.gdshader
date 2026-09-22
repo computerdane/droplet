@@ -9,6 +9,8 @@
 // A and B are in the radar's local frame: km, +x east, +y south (as ppi.gdshader).
 shader_type canvas_item;
 
+#include "res://shaders/storm.gdshaderinc"
+
 uniform sampler2D sweep_a : filter_nearest, repeat_enable;
 uniform sampler2D sweep_b : filter_nearest, repeat_enable;
 uniform sampler2D colormap : filter_linear, repeat_disable;
@@ -56,10 +58,10 @@ void fragment() {
 	float az = degrees(atan(p.x, -p.y));
 	float u = (az < 0.0 ? az + 360.0 : az) / 360.0;
 
-	float va = sample_tilt(sweep_a, geom_a, r, u);
+	float va = storm_relative(sample_tilt(sweep_a, geom_a, r, u), u * 360.0, geom_a.x);
 	float v = va;
 	if (blend) {
-		float vb = sample_tilt(sweep_b, geom_b, r, u);
+		float vb = storm_relative(sample_tilt(sweep_b, geom_b, r, u), u * 360.0, geom_b.x);
 		bool ok_a = va > -900.0;
 		bool ok_b = vb > -900.0;
 		float t = (elev - geom_a.x) / (geom_b.x - geom_a.x);

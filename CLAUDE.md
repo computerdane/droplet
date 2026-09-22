@@ -60,6 +60,10 @@ gdformat scripts tests && gdlint scripts tests
   4/3-earth beam model (pixel height/distance → elevation angle + slant range) and samples the polar
   textures directly. Default interpolates linearly between adjacent tilts; "Beams only" shows each tilt
   ±½ beamwidth (0.95°). `beam_height()` is the CPU twin, checked against cone.gdshader in smoke.gd.
+- `shaders/storm.gdshaderinc` – storm-relative velocity: `storm_motion` uniform (m/s east/north, radar-local),
+  subtracts its radial component × cos(elev). Included by ppi, cone and section shaders. `main._storm_vector()`
+  is non-zero only for VEL/DVEL with SRM on (T, HUD row, `srm=from_deg,speed_ms`, meteorological "from");
+  mosaic neighbours get it rotated into their frame (`storm_motion.rotated(rotation)`).
 - `scripts/basemap.gd` + `shaders/basemap*.gdshader*` – lon/lat line meshes projected on the GPU
   (azimuthal equidistant around the site, haversine form for float32); `Basemap.project()` is the CPU twin.
 - `scripts/colormaps.gd` – per-field value ranges, units and gradient textures.
@@ -97,8 +101,9 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Verified against KTLX 2026-09-22 (VCP 212, bz2) and KTLX 2013-05-20 20:03Z (VCP 12, gz, the Moore tornado).
 - `live` starts on the in-progress volume (skipping it if joined after its first chunk), then follows each new one. It bootstraps by probing ~20 S3 listings to find the newest volume number; could cache the last number in `data/`.
 - Done: time animation + live following, 3D cones, basemap, site picker, multi-site mosaic,
-  background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections.
-- Next: storm-relative motion, translucent/volumetric 3D rendering
+  background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
+  storm-relative velocity (storm motion is manual; no automatic estimate yet).
+- Next: translucent/volumetric 3D rendering
   (cones are opaque with a threshold today), fetching new sites from the UI (currently CLI only).
 - Mosaic uses whatever is on disk; `live` follows one site per process (run several for a live mosaic).
 - The 3D ground disk/rings are centred on the selected site only.

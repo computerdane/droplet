@@ -3,12 +3,15 @@
 // +x east, -y north (screen y points down).
 shader_type canvas_item;
 
+#include "res://shaders/storm.gdshaderinc"
+
 uniform sampler2D sweep : filter_nearest, repeat_enable;   // R = value, width gates, height az bins
 uniform sampler2D colormap : filter_linear, repeat_disable;
 uniform float half_size = 500.0;      // km
 uniform float first_gate_km = 2.125;  // range to centre of gate 0
 uniform float gate_spacing_km = 0.25;
 uniform int n_gates = 1832;
+uniform float elevation_deg = 0.5;  // for storm-relative velocity
 uniform float cmap_min = -30.0;
 uniform float cmap_max = 80.0;
 uniform float missing_below = -900.0; // sentinel threshold: MISSING = -1000, RANGE_FOLDED = -2000
@@ -36,7 +39,7 @@ void fragment() {
 		discard;
 	}
 	vec2 uv = vec2((gate + 0.5) / float(n_gates), az / 360.0);
-	float v = texture(sweep, uv).r;
+	float v = storm_relative(texture(sweep, uv).r, az, elevation_deg);
 	if (v < -1500.0) {
 		if (show_range_folded) {
 			COLOR = range_folded_color;

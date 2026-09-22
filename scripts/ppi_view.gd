@@ -24,6 +24,7 @@ const CITY_RADIUS_KM := 600.0
 const BASEMAP_CULL_KM := 6000.0
 const SECTION_COLOR := Color(1, 1, 1, 0.95)
 
+var storm_motion := Vector2.ZERO  # m/s east, north; zero = ground-relative (see main.gd)
 var section_mode := false
 var has_section := false
 var section_a := Vector2.ZERO  # km, +x east, +y south (world = radar-local frame)
@@ -128,7 +129,7 @@ func show_sweep(
 	neighbors: Array = [],
 	others := PackedVector2Array()
 ) -> void:
-	_apply_sweep(ppi, vol, i, field_name, others)
+	_apply_sweep(ppi, vol, i, field_name, others, storm_motion)
 	while _neighbor_rects.size() < neighbors.size():
 		var holder := Node2D.new()
 		neighbors_root.add_child(holder)
@@ -151,11 +152,17 @@ func show_sweep(
 		holder.position = Vector2(off.x, -off.y)
 		holder.rotation = n["rotation"]
 		holder.visible = true
-		_apply_sweep(rect, n["volume"], n["sweep"], field_name, n["others"])
+		var storm := storm_motion.rotated(n["rotation"])  # into the neighbour's frame
+		_apply_sweep(rect, n["volume"], n["sweep"], field_name, n["others"], storm)
 
 
 static func _apply_sweep(
-	rect: ColorRect, vol: RadarVolume, i: int, field_name: String, others: PackedVector2Array
+	rect: ColorRect,
+	vol: RadarVolume,
+	i: int,
+	field_name: String,
+	others: PackedVector2Array,
+	storm: Vector2
 ) -> void:
 	if vol == null or i < 0:
 		rect.visible = false
@@ -172,6 +179,8 @@ static func _apply_sweep(
 	mat.set_shader_parameter("first_gate_km", float(f["first_gate_m"]) / 1000.0)
 	mat.set_shader_parameter("gate_spacing_km", float(f["gate_spacing_m"]) / 1000.0)
 	mat.set_shader_parameter("n_gates", int(f["n_gates"]))
+	mat.set_shader_parameter("elevation_deg", vol.elevation(i))
+	mat.set_shader_parameter("storm_motion", storm)
 	mat.set_shader_parameter("half_size", rect.size.x / 2.0)
 	rect.visible = true
 

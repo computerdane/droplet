@@ -13,6 +13,7 @@ const CONE_SHADER := preload("res://shaders/cone.gdshader")
 
 static var _mesh: ArrayMesh
 
+var storm_motion := Vector2.ZERO  # m/s east, north in this radar's frame; zero = off
 var _cones: Array[MeshInstance3D] = []
 
 
@@ -65,6 +66,7 @@ func show_volume(
 		mat.set_shader_parameter("threshold_abs", threshold_abs)
 		mat.set_shader_parameter("other_sites", others)
 		mat.set_shader_parameter("n_other_sites", others.size())
+		mat.set_shader_parameter("storm_motion", storm_motion)
 	set_exaggeration(exaggeration)
 
 

@@ -23,6 +23,7 @@ const GRID := Color(1, 1, 1, 0.12)
 const TEXT := Color(1, 1, 1, 0.8)
 const BEAM_LINE := Color(1, 1, 1, 0.18)
 
+var storm_motion := Vector2.ZERO  # m/s east, north; zero = ground-relative
 var _plot: Control
 var _overlay: Control
 var _rects: Array[ColorRect] = []
@@ -114,6 +115,7 @@ func show_section(vol: RadarVolume, field_name: String, a: Vector2, b: Vector2) 
 		mat.set_shader_parameter("a_km", a)
 		mat.set_shader_parameter("b_km", b)
 		mat.set_shader_parameter("h_max_km", H_MAX_KM)
+		mat.set_shader_parameter("storm_motion", storm_motion)
 	_mode_button.text = "Interpolated" if _interpolate else "Beams only"
 	_title = "Section A-B  %.0f km   %s   (km)" % [a.distance_to(b), field_name]
 	if vol == null or tilts.is_empty():

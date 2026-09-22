@@ -6,6 +6,8 @@
 shader_type spatial;
 render_mode unshaded, cull_disabled;
 
+#include "res://shaders/storm.gdshaderinc"
+
 uniform sampler2D sweep : filter_nearest, repeat_enable;
 uniform sampler2D colormap : source_color, filter_linear, repeat_disable;
 uniform float elevation_deg = 0.5;
@@ -48,7 +50,7 @@ void fragment() {
 			discard;
 		}
 	}
-	float v = texture(sweep, UV).r;
+	float v = storm_relative(texture(sweep, UV).r, UV.y * 360.0, elevation_deg);
 	if (v < -1500.0) {
 		if (!show_range_folded) {
 			discard;

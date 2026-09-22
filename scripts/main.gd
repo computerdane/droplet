@@ -12,6 +12,7 @@ extends Node
 ## live=0|1 play=0|1 fps=8 zoom=2 pan=-15,5 (2D centre, km east,north) view=2d|3d yaw=30
 ## pitch=25 dist=400 exag=4 isolate=0|1|2 threshold=20 mosaic=0|1 prefetch=0|1
 ## section=ax,ay,bx,by (cross-section A -> B, km east,north of the radar)
+## srm=240,10 (storm-relative velocity, storm moving from 240 degrees at 10 m/s)
 ##
 ## Upcoming loop frames (and their mosaic neighbours) are read in the background, see
 ## _preload_ahead() and VolumeCache.
@@ -24,6 +25,7 @@ const LIVE_RESCAN_SEC := 3.0
 const LOOP_DWELL_SEC := 1.0  # extra pause on the last frame of the loop
 const MOSAIC_MAX_SKEW_SEC := 10 * 60
 const MOSAIC_MAX_KM := 900.0
+const VELOCITY_FIELDS := ["VEL", "DVEL"]
 ## Share of the cache budget that loop frames ahead of the playhead may fill.
 const PRELOAD_BUDGET_FRACTION := 0.8
 const FIELD_KEYS := {
@@ -37,8 +39,8 @@ const FIELD_KEYS := {
 	KEY_8: "DVEL",
 }
 const HINT_COMMON := (
-	"Space play   Left/Right step   Home/End first/last   [ ] speed   L live   "
-	+ "Up/Down tilt   1-8 field   S site   M mosaic   V 2D/3D   R reset view   X section\n"
+	"Space play   Left/Right step   Home/End first/last   [ ] speed   L live   Up/Down tilt\n"
+	+ "1-8 field   S site   M mosaic   V 2D/3D   R reset view   X section   T storm-relative\n"
 )
 const HINT_2D := "wheel zoom   drag pan"
 const HINT_SECTION := "wheel zoom   left drag: section A to B   right drag pan"
@@ -63,6 +65,9 @@ var view_is_3d := false
 var mosaic := false
 var prefetch := true  # read upcoming loop frames in the background
 var section_on := false  # cross-section mode: line in the 2D view, panel in the HUD
+var srm_on := false  # storm-relative velocity
+var storm_from_deg := 240.0  # meteorological: direction the storm moves from
+var storm_speed := 10.0  # m/s
 var _neighbors: Array = []  # mosaic entries, see _find_neighbors()
 var _others := PackedVector2Array()  # neighbours in the selected site's frame
 var _site_lonlat := Vector2.INF  # site the views' basemaps are centred on
@@ -95,6 +100,12 @@ func _ready() -> void:
 		view_2d.cam.position = Vector2(p[0], -p[1])
 	_apply_3d_options(opts)
 	mosaic = opts.get("mosaic", "0") == "1"
+	if opts.has("srm"):
+		var m: PackedFloat64Array = opts["srm"].split_floats(",")
+		if m.size() == 2:
+			storm_from_deg = m[0]
+			storm_speed = m[1]
+			srm_on = true
 	if opts.has("section"):
 		var s: PackedFloat64Array = opts["section"].split_floats(",")
 		if s.size() == 4:
@@ -131,6 +142,8 @@ func _connect_hud() -> void:
 	hud.view_toggled.connect(func() -> void: _set_view_3d(not view_is_3d))
 	hud.mosaic_toggled.connect(_toggle_mosaic)
 	hud.section_toggled.connect(func() -> void: _set_section_on(not section_on))
+	hud.srm_toggled.connect(_toggle_srm)
+	hud.srm_changed.connect(_adjust_storm)
 
 
 func _apply_3d_options(opts: Dictionary) -> void:
@@ -208,6 +221,27 @@ func _set_section_on(on: bool) -> void:
 func _toggle_mosaic() -> void:
 	mosaic = not mosaic
 	_refresh()
+
+
+func _toggle_srm() -> void:
+	srm_on = not srm_on
+	_refresh()
+
+
+func _adjust_storm(d_from_deg: float, d_speed: float) -> void:
+	storm_from_deg = fposmod(storm_from_deg + d_from_deg, 360.0)
+	storm_speed = clampf(storm_speed + d_speed, 0.0, 60.0)
+	srm_on = true
+	_refresh()
+
+
+## Storm motion (m/s, +x east, +y north) to subtract, or zero when storm-relative display
+## is off or the field is not a velocity.
+func _storm_vector() -> Vector2:
+	if not (srm_on and VELOCITY_FIELDS.has(field_name)):
+		return Vector2.ZERO
+	var heading := deg_to_rad(storm_from_deg + 180.0)  # direction it moves towards
+	return Vector2(sin(heading), cos(heading)) * storm_speed
 
 
 func _set_field(f: String) -> void:
@@ -312,6 +346,10 @@ func _refresh() -> void:
 	for n in _neighbors:
 		on_screen.append((n["volume"] as RadarVolume).path)
 	cache.pin(on_screen)
+	var storm := _storm_vector()
+	view_2d.storm_motion = storm
+	view_3d.storm_motion = storm
+	hud.section.storm_motion = storm
 	if view_is_3d:
 		view_3d.show_volume(volume, field_name, target_elev, _neighbors, _others)
 	else:
@@ -323,7 +361,8 @@ func _refresh() -> void:
 			for f in volume.fields_of(i):
 				if not available.has(f):
 					available.append(f)
-	hud.set_field(field_name, available)
+	hud.set_field(field_name, available, storm != Vector2.ZERO)
+	hud.set_srm(VELOCITY_FIELDS.has(field_name), srm_on, storm_from_deg, storm_speed)
 	_update_section()
 	_update_info()
 	_update_playback()
@@ -483,6 +522,10 @@ func _update_info() -> void:
 		)
 	else:
 		lines.append("zoom %.2f px/km   cache %d MB" % [view_2d.zoom(), cache_mb])
+	if _storm_vector() != Vector2.ZERO:
+		lines.append(
+			"storm-relative: storm from %03d° at %d m/s" % [int(storm_from_deg), int(storm_speed)]
+		)
 	if mosaic:
 		lines.append("mosaic: " + _mosaic_summary())
 	hud.set_info("\n".join(lines))
@@ -541,6 +584,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_set_view_3d(not view_is_3d)
 		KEY_X:
 			_set_section_on(not section_on)
+		KEY_T:
+			_toggle_srm()
 		KEY_I:
 			view_3d.isolate = ((view_3d.isolate + 1) % ConeSet.Isolate.size()) as ConeSet.Isolate
 			_refresh()
