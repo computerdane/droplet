@@ -121,7 +121,11 @@ fn run(args: &[String]) -> Result<()> {
                 std::thread::sleep(std::time::Duration::from_secs_f64(interval.max(0.0)));
                 true
             };
-            chunks::live(&bucket, &site, &volumes_dir, None, sleep, &mut err)?;
+            let mut sink = |v: &level2::Volume| -> Result<String> {
+                let dir = volume::write_volume(v, &volumes_dir)?;
+                Ok(dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string())
+            };
+            chunks::live(&bucket, &site, &mut sink, None, sleep, &mut err)?;
         }
         "winds" => {
             let dirs: Vec<PathBuf> = if rest.is_empty() {

@@ -1,4 +1,0 @@
-# Only tool configuration: the sidecar is run as `python -m nexrad` from the dev shell.
-[tool.pytest.ini_options]
-testpaths = ["tests/python"]
-addopts = "-q"

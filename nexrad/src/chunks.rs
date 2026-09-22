@@ -8,15 +8,12 @@
 //! S + I... + E byte-for-byte yields a normal archive file, so the same decoder works
 //! on a partial volume as chunks arrive (typically within ~5-10 s of the sweep).
 
-use std::collections::HashSet;
-use std::io::Write;
-use std::path::Path;
-
 use crate::Result;
 use crate::archive::Bucket;
-use crate::level2::read_volume;
+use crate::level2::{Volume, read_volume};
 use crate::time::Utc;
-use crate::volume::write_volume;
+use std::collections::HashSet;
+use std::io::Write;
 
 pub const BUCKET: &str = "https://unidata-nexrad-level2-chunks.s3.amazonaws.com";
 pub const MAX_VOLUME: u32 = 999;
@@ -98,13 +95,14 @@ pub fn find_latest_volume(bucket: &dyn Bucket, site: &str) -> Result<u32> {
 }
 
 /// Follows `site` on the chunks bucket: starts on the in-progress volume (skipping it if
-/// joined after its first chunk), rewrites the partial volume in `out_dir` as chunks arrive,
-/// marks it complete on the E chunk, then moves on to the next number. `sleep` runs between
-/// polls and returns false to stop; `start` skips the ring search (tests).
+/// joined after its first chunk), hands the partial volume to `sink` (which stores it and
+/// returns its name) each time chunks arrive, marks it complete on the E chunk, then moves on
+/// to the next number. `sleep` runs between polls and returns false to stop; `start` skips the
+/// ring search (tests).
 pub fn live(
     bucket: &dyn Bucket,
     site: &str,
-    out_dir: &Path,
+    sink: &mut dyn FnMut(&Volume) -> Result<String>,
     start: Option<u32>,
     mut sleep: impl FnMut() -> bool,
     log: &mut dyn Write,
@@ -167,9 +165,8 @@ pub fn live(
             match read_volume(&buf) {
                 Ok(mut vol) => {
                     vol.complete = ends && fetched_all;
-                    match write_volume(&vol, out_dir) {
-                        Ok(out) => {
-                            let name = out.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                    match sink(&vol) {
+                        Ok(name) => {
                             let _ = writeln!(
                                 log,
                                 "{name}: {} sweeps ({} chunks){}",
@@ -210,6 +207,11 @@ mod tests {
     use super::*;
     use crate::archive::fakes::FakeBucket;
     use crate::synth::{self, Layout};
+
+    /// A `live` sink writing to `dir`, as the CLI does.
+    fn write_to(dir: &std::path::Path) -> impl FnMut(&Volume) -> Result<String> + '_ {
+        move |v| Ok(crate::volume::write_volume(v, dir)?.file_name().unwrap().to_string_lossy().into_owned())
+    }
 
     #[test]
     fn list_chunks_drops_leftovers_and_sorts_numerically() {
@@ -308,7 +310,7 @@ mod tests {
             visible.set((visible.get() + 3).min(n));
             polls.get() <= 12
         };
-        live(&b, "ktst", dir.path(), Some(7), sleep, &mut log).unwrap();
+        live(&b, "ktst", &mut write_to(dir.path()), Some(7), sleep, &mut log).unwrap();
         let log = String::from_utf8(log).unwrap();
         let name = format!("KTST_{}", vol.time.compact());
         let writes: Vec<&str> = log.lines().filter(|l| l.starts_with(&name)).collect();
@@ -335,7 +337,7 @@ mod tests {
         live(
             &b,
             "KTST",
-            dir.path(),
+            &mut write_to(dir.path()),
             Some(7),
             || {
                 polls += 1;

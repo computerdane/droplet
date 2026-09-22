@@ -82,9 +82,9 @@ Five layers, cheapest first. Each maps onto a tool already in the dev shell.
   VWP, hodograph and a pinned hover.
 - **Performance gate.** `frametimes.gd` fails above thresholds (median, p99, spike count),
   run nightly on a real loop rather than per commit.
-- **Web smoke.** After exporting, load the page in headless Chromium over the DevTools
-  protocol, assert the engine banner appears with zero console errors, screenshot. Once
-  the fixture volume ships in the web pck this can screenshot actual radar.
+- **Web smoke (done, `web/smoke.mjs`).** Serves the export, loads a permalink in headless
+  Chromium over the DevTools protocol, waits for the startup fetch to finish with zero
+  console errors, screenshots actual radar. Needs network (the Unidata buckets).
 
 One GitHub Actions workflow using the Nix flake: lint, `cargo test`, Godot import plus unit
 tests, Xvfb screenshots, web export uploaded as an artifact. A `nix flake check` target
@@ -141,13 +141,19 @@ The decision is deferred until the wasm build is measured.
 
 **Client changes, in order.**
 
-1. A volume source abstraction with a local-directory and an HTTP/worker implementation
-   behind `RadarLibrary`, `read_image()` and the two-byte readout (which on web reads from
-   the cached Image instead of seeking a file).
-2. The fetch panel drives the wasm worker instead of spawning the binary; hide process UI.
-3. Options come from the URL query string on web (permalinks, same screenshot harness).
-4. A platform-dependent cache budget and an explicit Compatibility renderer for web.
+1. Done: a volume source abstraction (`DirSource`, `MemorySource`) behind `RadarLibrary`,
+   `read_image()` and the two-byte readout.
+2. Done: the fetch panel drives `web/nexrad_worker.js` (nexrad-wasm in a Web Worker, one
+   per job) instead of spawning the binary. Measured in headless Chromium: the Moore volume
+   from a permalink in 3.9 s, a 30 min range (7 volumes) in 10 s, live KTLX seconds behind.
+3. Done: options come from the URL query string on web, and a URL without `fetch=` fetches
+   what it points at (`time=`, else live), so every link is a permalink.
+4. Done: web budgets (384 MB textures, 900 MB of decoded volumes in memory; the heap caps
+   at 2 GB). Web already renders with Compatibility.
 5. Basemap served from the same origin and cached in `user://`.
+6. Next: several workers per range and mosaic (decode is serial per worker), decoded
+   volumes cached in IndexedDB/OPFS, a web-aware fetch panel (hide "Live" when not
+   cross-origin isolated), then hosting.
 
 ### Hosting
 

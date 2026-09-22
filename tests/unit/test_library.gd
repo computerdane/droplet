@@ -81,3 +81,7 @@ func test_storm_motion() -> void:
 		check_eq(near.get("name", "").get_file(), "KTST_20240501_220000", "KTSU borrows")
 		var sm: Dictionary = lib.winds(with[0])["storm_motion"]
 		check_eq(sm["method"], "bunkers", "storm motion method")
+
+
+func test_option_times() -> void:
+	check_eq(AppOptions.iso_of_name_time("20130520_200359"), "2013-05-20T20:03:59Z", "time= as ISO")

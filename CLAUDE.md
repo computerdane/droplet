@@ -25,6 +25,9 @@ cargo test                                         # Rust tests (decoder, dealia
 cargo clippy --all-targets && cargo fmt --check    # lint (rustfmt.toml: 140 columns)
 nexrad-wasm/build.sh                               # browser decoder -> nexrad-wasm/pkg/ (wasm-bindgen + wasm-opt)
 nix shell nixpkgs#nodejs nixpkgs#chromium -c node nexrad-wasm/bench/bench.mjs OUT 5 data/raw/<file> ...  # time it headless, save output
+web/build.sh                                       # web app -> export/web/ (Godot export + wasm + worker)
+node web/serve.mjs                                 # serve it on :8060 with COOP/COEP
+nix shell nixpkgs#nodejs nixpkgs#chromium -c node web/smoke.mjs   # headless: load ?site=KTLX&time=20130520_200359, screenshot
 godot --editor                                     # open project
 godot                                               # run main scene
 godot --headless --path . --import                  # (re)build .godot/ cache after adding scripts/scenes
@@ -33,6 +36,7 @@ godot --headless --path . --script res://tests/run.gd -- volumes=res://data/volu
 godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 view=3d mosaic=1
 godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 vwp=1 hover=560,380
 godot --path . --script res://tests/screenshot.gd -- out.png volumes=res://tests/fixtures/volumes site=KTST
+godot --path . -- site=KTLX fetch=2013-05-20T20:00Z  # start with a fetch (also latest, live, <from>/<to>)
 godot --path . --script res://tests/frametimes.gd -- frames=1500 view=3d mosaic=1 play=1 fps=15 time=20130520_193407
 gdformat scripts tests && gdlint scripts tests
 ```
@@ -44,8 +48,16 @@ gdformat scripts tests && gdlint scripts tests
   so the library also builds for wasm. Unit tests sit next to the code (`#[cfg(test)]`, 43 of them).
 - `nexrad-wasm/` – wasm-bindgen wrapper (workspace member, `nexrad` without `native`): `decode(bytes)` →
   `{name, volume_json, files: Map<sNN_FIELD.bin, Uint8Array>}` via `volume::encode_volume()`, byte-identical to
-  `nexrad decode`. On wasm32 the record loop is serial (rayon is a non-wasm dependency). `bench/` = Web Worker page +
-  a Node driver that serves it to headless Chromium and writes the results to disk.
+  `nexrad decode`; `resolve_keys(site, at, from, to, bucket)` and `live(site, bucket, sleep, emit, log)` run the
+  CLI's key selection and live loop over a `Bucket` whose `list`/`get` are synchronous JS functions. On wasm32 the
+  record loop is serial (rayon is a non-wasm dependency). `bench/` = Web Worker page + a Node driver that serves
+  it to headless Chromium and writes the results to disk.
+- `web/` – the static web app. `nexrad_worker.js` = the browser's `nexrad` CLI: one module worker per job
+  (`{"cmd": "update"|"live", ...}` in; `line`/`volume`/`done`/`error` messages out, sweep buffers transferred),
+  sync XHR for listings (workers allow it; the Rust is blocking), raw archive files kept in the Cache API, live
+  sleeps via `Atomics.wait` (needs cross-origin isolation). `build.sh` exports Godot (seeding the gitignored
+  `export_presets.cfg` from `web/export_presets.template.cfg`) and copies the wasm + worker next to index.html;
+  `serve.mjs` serves with COOP/COEP; `smoke.mjs` drives headless Chromium over CDP.
 - `nexrad/src/level2.rs` – Archive2 / Message 31 decoder (bzip2 + flate2 only). LDM records are decompressed
   and parsed in parallel (rayon); torn or truncated records yield what decoded cleanly (`live` feeds it
   partial files). Output is float32 computed as `(raw - offset) / scale`, so float16 files match the old
@@ -131,9 +143,14 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/fetcher.gd` + `scripts/fetch_panel.gd` – fetch from the UI (F): runs `nexrad update|live` (the binary
   from `DROPLET_NEXRAD`, else PATH) via `OS.execute_with_pipe` (non-blocking), sets `DROPLET_ROOT` to the
   project, parses `[i/n]` progress and
-  volume names (`ICAO_YYYYMMDD_HHMMSS`) from its output. New volumes are rescanned immediately; a finished
+  volume names (`ICAO_YYYYMMDD_HHMMSS`) from its output. On web each job is a `web/nexrad_worker.js` Worker
+  (JavaScriptBridge; stop = terminate) and decoded volumes arrive through `volume_received` into main's
+  MemorySource. New volumes are rescanned immediately; a finished
   update jumps to its last volume, a live job takes over the view on its first volume. Processes are killed
   on exit. The fetch panel's LineEdits are the only focusable controls (focus released on close).
+- `scripts/app_options.gd` – `key=value` options from the command line, or the query string on web;
+  `fetch=` (and on web, any URL without it: the volume at `time=`, else live) starts a job at startup.
+  On web main.gd uses a MemorySource (900 MB budget, oldest evicted; the heap caps at 2 GB) and a 384 MB texture cache.
 - `scripts/basemap.gd` + `shaders/basemap*.gdshader*` – lon/lat line meshes projected on the GPU
   (azimuthal equidistant around the site, haversine form for float32); `Basemap.project()` is the CPU twin.
 - `scripts/hodograph.gd` – HUD hodograph (W): VAD profile coloured 0–1/1–3/3–6/6+ km, RM/LM, mean wind,
@@ -193,6 +210,8 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Next ideas: dealiasing that uses the
   previous volume as a temporal reference, the A-B section line drawn in 3D, mosaic cross-sections,
   a hover readout in 3D (pick against the cones), a VAD-based temporal reference for dealiasing.
+- Web: no basemap yet (res://data is not exported), each job decodes serially in one worker, and
+  decoded volumes are not persisted (raw files are, in the Cache API).
 - Mosaic uses whatever is on disk; `live` follows one site per process (the fetch panel can start several
   for a live mosaic). Fetching from the UI needs the `nexrad` binary (PATH or `DROPLET_NEXRAD`) and a source checkout (not an export).
 - The 3D ground disk/rings are centred on the selected site only.

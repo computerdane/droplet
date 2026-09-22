@@ -54,6 +54,29 @@ func test_memory_refresh_and_cache() -> void:
 	check_eq(mem.names().size(), 0, "removed")
 
 
+## A budget evicts the oldest other volumes, never the one just added.
+func test_memory_budget() -> void:
+	var names: Array = lib.volumes.slice(0, MAX_VOLUMES)
+	if names.size() < 2:
+		return
+	names.sort_custom(func(a: String, b: String) -> bool: return a.right(15) < b.right(15))
+	var mem = MemorySourceScript.new()
+	for v in names:
+		_copy(lib.source, mem, v)
+	var total: int = mem.size_bytes()
+	var newest: String = names[-1]
+	mem.remove_volume(newest)
+	var rest: int = mem.size_bytes()
+	check(rest > 0 and rest < total, "size_bytes counts sweeps")
+	mem.budget_bytes = total - rest  # room for the newest alone
+	_copy(lib.source, mem, newest)
+	check_eq(mem.names(), PackedStringArray([newest]), "older volumes evicted")
+	check_eq(mem.size_bytes(), total - rest, "bytes after eviction")
+	mem.budget_bytes = 1
+	_copy(lib.source, mem, newest)
+	check_eq(mem.names(), PackedStringArray([newest]), "the added volume stays")
+
+
 static func _copy(from: VolumeSource, to, name: String) -> void:
 	var text := from.read_meta(name)
 	var files := {}

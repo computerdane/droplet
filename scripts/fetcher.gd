@@ -1,17 +1,26 @@
 class_name Fetcher
 extends Node
-## Runs the nexrad CLI from the UI: `nexrad update ...` for history and `nexrad live SITE`
-## for live following, with non-blocking pipes polled every frame. Each job keeps its last
-## output line for the HUD and the volume directories it reported (names like
+## Runs fetch jobs from the UI: `update` for history and `live` for live following. Each job
+## keeps its last output line for the HUD and the volume names it reported (like
 ## KTLX_20130520_200359), so main.gd can jump to them.
-## Needs the `nexrad` binary on PATH (the dev shell adds nexrad/target/release, filled by
-## `cargo build --release`; override with DROPLET_NEXRAD) and a project directory on disk
-## (res:// as a real folder, i.e. not an exported build).
+##
+## Desktop: runs the nexrad CLI (`nexrad update ...`, `nexrad live SITE`) with non-blocking
+## pipes polled every frame; it writes volumes to data/volumes. Needs the `nexrad` binary on
+## PATH (the dev shell adds nexrad/target/release, filled by `cargo build --release`; override
+## with DROPLET_NEXRAD) and a project directory on disk (res:// as a real folder).
+##
+## Web: one Web Worker per job (web/nexrad_worker.js, running nexrad-wasm next to index.html),
+## which fetches straight from the Unidata buckets and hands each decoded volume over whole;
+## volume_received passes it on for a MemorySource.
 
 signal job_updated(job: Job)
 signal job_finished(job: Job)
+## Web only: a decoded volume (`files` = {sNN_FIELD.bin: PackedByteArray}), before the
+## job_updated that reports its name.
+signal volume_received(name: String, volume_json: String, files: Dictionary)
 
 const VOLUME_NAME := "[A-Z0-9]{4}_\\d{8}_\\d{6}"
+const WORKER_URL := "nexrad_worker.js"
 
 
 class Job:
@@ -28,6 +37,9 @@ class Job:
 	var running := true
 	var stopped := false  # killed from the UI
 	var exit_code := 0
+	var worker: JavaScriptObject  # web
+	var on_message: JavaScriptObject  # web: callbacks must outlive the worker
+	var on_error: JavaScriptObject
 	var _partial := {}  # pipe -> text received after its last newline
 
 	func describe() -> String:
@@ -41,6 +53,7 @@ class Job:
 
 
 var jobs: Array[Job] = []
+var web := OS.has_feature("web")
 var _volume_re := RegEx.create_from_string(VOLUME_NAME)
 var _progress_re := RegEx.create_from_string("^\\[\\d+/\\d+\\]")
 
@@ -48,6 +61,8 @@ var _progress_re := RegEx.create_from_string("^\\[\\d+/\\d+\\]")
 ## Fetch history for `site`: the newest volume, the one at/before `at`, or `from`..`to`
 ## (ISO times, e.g. 2013-05-20T20:00Z).
 func start_update(site: String, at := "", from := "", to := "") -> Job:
+	if web:
+		return _start_worker("update", site, {"at": at, "from": from, "to": to})
 	var args := PackedStringArray(["update", site])
 	if not from.is_empty() and not to.is_empty():
 		args.append_array(["--from", from, "--to", to])
@@ -57,13 +72,19 @@ func start_update(site: String, at := "", from := "", to := "") -> Job:
 
 
 func start_live(site: String) -> Job:
+	if web:
+		return _start_worker("live", site, {})
 	return _start("live", site, PackedStringArray(["live", site]))
 
 
 func stop(job: Job) -> void:
 	if job.running:
 		job.stopped = true
-		OS.kill(job.pid)
+		if job.worker != null:
+			job.worker.terminate()
+			_finish(job, 0)
+		else:
+			OS.kill(job.pid)
 
 
 func stop_all() -> void:
@@ -100,9 +121,75 @@ func _start(kind: String, site: String, args: PackedStringArray) -> Job:
 	return job
 
 
+func _start_worker(kind: String, site: String, request: Dictionary) -> Job:
+	var job := Job.new()
+	job.kind = kind
+	job.site = site
+	request["cmd"] = kind
+	request["site"] = site
+	job.args = PackedStringArray([JSON.stringify(request)])
+	var opts: JavaScriptObject = JavaScriptBridge.create_object("Object")
+	opts.type = "module"
+	job.worker = JavaScriptBridge.create_object("Worker", WORKER_URL, opts)
+	job.on_message = JavaScriptBridge.create_callback(_on_worker_message.bind(job))
+	job.on_error = JavaScriptBridge.create_callback(_on_worker_error.bind(job))
+	job.worker.onmessage = job.on_message
+	job.worker.onerror = job.on_error
+	job.worker.postMessage(job.args[0])
+	job.last_line = "starting"
+	jobs.append(job)
+	job_updated.emit(job)
+	return job
+
+
+func _on_worker_message(args: Array, job: Job) -> void:
+	if not job.running:
+		return
+	var data: JavaScriptObject = args[0].data
+	match str(data.type):
+		"line":
+			_add_line(job, str(data.line))
+		"volume":
+			var files := {}
+			var names: JavaScriptObject = data.names
+			for i in int(names.length):
+				var buf: JavaScriptObject = data.buffers.at(i)
+				files[str(names.at(i))] = JavaScriptBridge.js_buffer_to_packed_byte_array(buf)
+			var name := str(data.name)
+			volume_received.emit(name, str(data.volume_json), files)
+			if not job.volumes.has(name):
+				job.volumes.append(name)
+		"done":
+			job.worker.terminate()
+			_finish(job, 0)
+			return
+		"error":
+			job.last_line = str(data.message)
+			job.worker.terminate()
+			_finish(job, 1)
+			return
+	job_updated.emit(job)
+
+
+## Uncaught worker errors, e.g. nexrad_worker.js or the wasm module failing to load.
+func _on_worker_error(args: Array, job: Job) -> void:
+	if job.running:
+		args[0].preventDefault()
+		job.last_line = "worker failed: %s" % str(args[0].message)
+		job.worker.terminate()
+		_finish(job, 1)
+
+
+func _finish(job: Job, exit_code: int) -> void:
+	job.running = false
+	job.exit_code = exit_code
+	job_updated.emit(job)
+	job_finished.emit(job)
+
+
 func _process(_delta: float) -> void:
 	for job in jobs:
-		if not job.running:
+		if not job.running or job.worker != null:
 			continue
 		var out := _read(job, job.stdio)
 		var err := _read(job, job.stderr)
@@ -110,10 +197,7 @@ func _process(_delta: float) -> void:
 		if not OS.is_process_running(job.pid):
 			_read(job, job.stdio)
 			_read(job, job.stderr)
-			job.running = false
-			job.exit_code = OS.get_process_exit_code(job.pid)
-			job_updated.emit(job)
-			job_finished.emit(job)
+			_finish(job, OS.get_process_exit_code(job.pid))
 		elif changed:
 			job_updated.emit(job)
 	# Keep finished jobs around briefly for the HUD, but not forever.
@@ -132,17 +216,20 @@ func _read(job: Job, pipe: FileAccess) -> bool:
 	var got := false
 	for i in lines.size() - 1:
 		var line := lines[i].strip_edges()
-		if line.is_empty():
-			continue
-		got = true
-		job.last_line = line
-		var pm := _progress_re.search(line)
-		if pm != null:
-			job.progress = pm.get_string()
-		var m := _volume_re.search(line)
-		if m != null and not job.volumes.has(m.get_string()):
-			job.volumes.append(m.get_string())
+		if not line.is_empty():
+			got = true
+			_add_line(job, line)
 	return got
+
+
+func _add_line(job: Job, line: String) -> void:
+	job.last_line = line
+	var pm := _progress_re.search(line)
+	if pm != null:
+		job.progress = pm.get_string()
+	var m := _volume_re.search(line)
+	if m != null and not job.volumes.has(m.get_string()):
+		job.volumes.append(m.get_string())
 
 
 func _notification(what: int) -> void:

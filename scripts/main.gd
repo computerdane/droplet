@@ -17,7 +17,12 @@ extends Node
 ## (storm motion from the VAD profile, see _auto_storm) winds=0|1 (hodograph panel)
 ## vwp=0|1 (VAD winds over the loop as barbs) hover=x,y (pin the hover readout to that
 ## canvas point, for screenshots) volumes=res://tests/fixtures/volumes (DirSource root; default
-## res://data/volumes)
+## res://data/volumes) fetch=latest|live|2013-05-20T20:00Z|<from>/<to> (start a fetch job for
+## site=, default KTLX; see AppOptions)
+##
+## On web the options come from the page's query string instead (?site=KTLX&time=...), volumes
+## live in memory (MemorySource, filled by the wasm worker through Fetcher), and a page with no
+## fetch= fetches what the other options point at, so any URL is a permalink.
 ##
 ## Hovering the 2D view, the cross-section or the VWP shows a readout of the value under
 ## the mouse next to it (see _update_readout); 2D values are read straight from the sweep
@@ -39,6 +44,11 @@ const AUTO_STORM_MAX_SEC := 60 * 60
 const VELOCITY_FIELDS := ["VEL", "DVEL"]
 ## Share of the cache budget that loop frames ahead of the playhead may fill.
 const PRELOAD_BUDGET_FRACTION := 0.8
+## Web: texture cache budget (the desktop's 1 GiB would not fit next to the in-memory volumes
+## in a 32-bit wasm heap).
+const WEB_CACHE_BUDGET_BYTES := 384 << 20
+## Web: sweep bytes of decoded volumes held in memory (MemorySource evicts the oldest).
+const WEB_MEMORY_BUDGET_BYTES := 900 << 20
 const FIELD_KEYS := {
 	KEY_1: "REF",
 	KEY_2: "VEL",
@@ -111,13 +121,16 @@ func _ready() -> void:
 	add_child(fetcher)
 	fetcher.job_updated.connect(_on_job_updated)
 	fetcher.job_finished.connect(_on_job_finished)
+	fetcher.volume_received.connect(_on_volume_received)
 	_connect_hud()
 	get_window().mouse_entered.connect(func() -> void: _mouse_in_window = true)
 	get_window().mouse_exited.connect(func() -> void: _mouse_in_window = false)
 
-	var opts := _parse_options()
+	var opts := AppOptions.parse()
 	if opts.has("volumes"):
 		_set_source(DirSource.new(opts["volumes"]))
+	elif fetcher.web:
+		_set_source(MemorySource.new(WEB_MEMORY_BUDGET_BYTES), WEB_CACHE_BUDGET_BYTES)
 	ui_scale = clampf(float(opts.get("ui_scale", ui_scale)), 0.5, 4.0)
 	get_window().size_changed.connect(_fit_ui_scale)
 	_fit_ui_scale()
@@ -160,6 +173,7 @@ func _ready() -> void:
 		live = false
 	_set_live(opts.get("live", "1" if live else "0") == "1")
 	_set_playing(opts.get("play", "0") == "1")
+	AppOptions.start_fetch(opts, fetcher)
 
 
 func _process(_delta: float) -> void:
@@ -227,14 +241,6 @@ func _fit_ui_scale() -> void:
 		return
 	var screen_scale := DisplayServer.screen_get_scale(win.current_screen)
 	win.content_scale_factor = maxf(stretch, screen_scale) * ui_scale / stretch
-
-
-func _parse_options() -> Dictionary:
-	var out := {}
-	for a in OS.get_cmdline_user_args():
-		if "=" in a:
-			out[a.get_slice("=", 0)] = a.get_slice("=", 1)
-	return out
 
 
 # --- state changes -------------------------------------------------------------------
@@ -448,8 +454,15 @@ func _on_job_updated(job: Fetcher.Job) -> void:
 	_update_info()
 
 
+func _on_volume_received(name: String, volume_json: String, files: Dictionary) -> void:
+	var mem := library.source as MemorySource
+	if mem != null:
+		mem.add_volume(name, volume_json, files)
+
+
 ## A finished update jumps to the last volume it fetched.
 func _on_job_finished(job: Fetcher.Job) -> void:
+	print("fetch: ", job.describe())  # the web smoke test waits for this line
 	if job.kind != "update" or job.stopped or job.volumes.is_empty():
 		return
 	_rescan()
@@ -464,9 +477,9 @@ func _on_job_finished(job: Fetcher.Job) -> void:
 
 ## Switches where volumes come from; drops everything loaded from the old source. Call before
 ## a site is selected (the frame on screen is not kept).
-func _set_source(source: VolumeSource) -> void:
+func _set_source(source: VolumeSource, budget_bytes := cache.budget_bytes) -> void:
 	library = RadarLibrary.new(source)
-	cache = VolumeCache.new(source, cache.budget_bytes)
+	cache = VolumeCache.new(source, budget_bytes)
 
 
 ## Re-reads the volume source, keeping the frame on screen.
@@ -819,6 +832,8 @@ func _update_playback() -> void:
 func _update_info() -> void:
 	if volume == null:
 		var help := "Run:  nexrad update KTLX   (or: nexrad live KTLX)"
+		if fetcher.web:
+			help = "Press F to fetch radar data"
 		hud.set_info("No volumes in %s\n%s" % [library.source.describe(), help])
 		return
 	var lines := PackedStringArray()
