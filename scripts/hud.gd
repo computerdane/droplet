@@ -12,17 +12,21 @@ signal live_toggled
 signal site_selected(site: String)
 signal view_toggled
 signal mosaic_toggled
+signal section_toggled
 signal field_selected(field_name: String)
 
 const SPEEDS := [1.0, 2.0, 4.0, 8.0, 15.0]
 const DEFAULT_SPEED_INDEX := 2
 const LEGEND_WIDTH := 280
+const SECTION_SIZE := Vector2(560, 270)
 
 var info: Label
 var hint: Label
 var site_option: OptionButton
 var view_button: Button
 var mosaic_button: Button
+var section_button: Button
+var section: SectionView
 var field_buttons: Dictionary = {}  # name -> Button
 var legend_tex: TextureRect
 var legend_lo: Label
@@ -43,6 +47,7 @@ func _ready() -> void:
 	_build_info()
 	_build_top_right()
 	_build_bottom_bar()
+	_build_section()
 
 
 func _build_info() -> void:
@@ -82,6 +87,10 @@ func _build_top_right() -> void:
 	mosaic_button.toggle_mode = true
 	mosaic_button.pressed.connect(mosaic_toggled.emit)
 	row.add_child(mosaic_button)
+	section_button = _button("Section", "Vertical cross-section: drag A to B in the 2D view (X)")
+	section_button.toggle_mode = true
+	section_button.pressed.connect(section_toggled.emit)
+	row.add_child(section_button)
 	view_button = _button("3D", "Toggle 2D plan view / 3D volume (V)")
 	view_button.pressed.connect(view_toggled.emit)
 	row.add_child(view_button)
@@ -171,6 +180,25 @@ func _build_bottom_bar() -> void:
 	live_button.toggle_mode = true
 	live_button.pressed.connect(live_toggled.emit)
 	row.add_child(live_button)
+
+
+## Cross-section panel, bottom right above the playback bar and clear of the hint text.
+func _build_section() -> void:
+	section = SectionView.new()
+	section.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	section.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	section.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	section.offset_left = -SECTION_SIZE.x - 12
+	section.offset_right = -12
+	section.offset_top = -SECTION_SIZE.y - 100
+	section.offset_bottom = -100
+	section.visible = false
+	add_child(section)
+
+
+func set_section(on: bool, shown: bool) -> void:
+	section_button.set_pressed_no_signal(on)
+	section.visible = shown
 
 
 func set_info(text: String) -> void:

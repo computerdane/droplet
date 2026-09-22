@@ -11,6 +11,7 @@ extends Node
 ## Command-line options (after `--`): site=KTLX time=20130520_200359 field=VEL elev=0.5
 ## live=0|1 play=0|1 fps=8 zoom=2 pan=-15,5 (2D centre, km east,north) view=2d|3d yaw=30
 ## pitch=25 dist=400 exag=4 isolate=0|1|2 threshold=20 mosaic=0|1 prefetch=0|1
+## section=ax,ay,bx,by (cross-section A -> B, km east,north of the radar)
 ##
 ## Upcoming loop frames (and their mosaic neighbours) are read in the background, see
 ## _preload_ahead() and VolumeCache.
@@ -37,9 +38,10 @@ const FIELD_KEYS := {
 }
 const HINT_COMMON := (
 	"Space play   Left/Right step   Home/End first/last   [ ] speed   L live   "
-	+ "Up/Down tilt   1-8 field   S site   M mosaic   V 2D/3D   R reset view\n"
+	+ "Up/Down tilt   1-8 field   S site   M mosaic   V 2D/3D   R reset view   X section\n"
 )
 const HINT_2D := "wheel zoom   drag pan"
+const HINT_SECTION := "wheel zoom   left drag: section A to B   right drag pan"
 const HINT_3D := (
 	"left drag orbit   right drag pan   wheel zoom   I isolate tilts   , . threshold   "
 	+ "PgUp/PgDn height exaggeration"
@@ -60,6 +62,7 @@ var fps := 4.0
 var view_is_3d := false
 var mosaic := false
 var prefetch := true  # read upcoming loop frames in the background
+var section_on := false  # cross-section mode: line in the 2D view, panel in the HUD
 var _neighbors: Array = []  # mosaic entries, see _find_neighbors()
 var _others := PackedVector2Array()  # neighbours in the selected site's frame
 var _site_lonlat := Vector2.INF  # site the views' basemaps are centred on
@@ -77,6 +80,7 @@ func _ready() -> void:
 	play_timer.one_shot = true
 	play_timer.timeout.connect(_on_play_tick)
 	view_2d.view_changed.connect(_update_info)
+	view_2d.section_changed.connect(_update_section)
 	view_3d.camera.moved.connect(_update_info)
 	_connect_hud()
 
@@ -91,6 +95,11 @@ func _ready() -> void:
 		view_2d.cam.position = Vector2(p[0], -p[1])
 	_apply_3d_options(opts)
 	mosaic = opts.get("mosaic", "0") == "1"
+	if opts.has("section"):
+		var s: PackedFloat64Array = opts["section"].split_floats(",")
+		if s.size() == 4:
+			view_2d.set_section(Vector2(s[0], -s[1]), Vector2(s[2], -s[3]))
+			_set_section_on(true)
 	prefetch = opts.get("prefetch", "1") == "1"
 	_set_view_3d(opts.get("view", "2d") == "3d")
 	var sites := library.sites()
@@ -121,6 +130,7 @@ func _connect_hud() -> void:
 	hud.field_selected.connect(_set_field)
 	hud.view_toggled.connect(func() -> void: _set_view_3d(not view_is_3d))
 	hud.mosaic_toggled.connect(_toggle_mosaic)
+	hud.section_toggled.connect(func() -> void: _set_section_on(not section_on))
 
 
 func _apply_3d_options(opts: Dictionary) -> void:
@@ -179,8 +189,20 @@ func _set_view_3d(on: bool) -> void:
 	view_2d.set_active(not on)
 	view_3d.set_active(on)
 	hud.set_view_3d(on)
-	hud.set_hint(HINT_COMMON + (HINT_3D if on else HINT_2D))
+	_update_hint()
 	_refresh()
+
+
+func _update_hint() -> void:
+	var extra := HINT_3D if view_is_3d else (HINT_SECTION if section_on else HINT_2D)
+	hud.set_hint(HINT_COMMON + extra)
+
+
+func _set_section_on(on: bool) -> void:
+	section_on = on
+	view_2d.set_section_mode(on)
+	_update_hint()
+	_update_section()
 
 
 func _toggle_mosaic() -> void:
@@ -302,9 +324,17 @@ func _refresh() -> void:
 				if not available.has(f):
 					available.append(f)
 	hud.set_field(field_name, available)
+	_update_section()
 	_update_info()
 	_update_playback()
 	_preload_ahead()
+
+
+func _update_section() -> void:
+	var shown := section_on and view_2d.has_section
+	hud.set_section(section_on, shown)
+	if shown:
+		hud.section.show_section(volume, field_name, view_2d.section_a, view_2d.section_b)
 
 
 ## Queues background reads of the frames after the current one, wrapping around the loop,
@@ -509,6 +539,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_toggle_mosaic()
 		KEY_V:
 			_set_view_3d(not view_is_3d)
+		KEY_X:
+			_set_section_on(not section_on)
 		KEY_I:
 			view_3d.isolate = ((view_3d.isolate + 1) % ConeSet.Isolate.size()) as ConeSet.Isolate
 			_refresh()

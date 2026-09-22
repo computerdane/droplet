@@ -7,6 +7,7 @@ const RadarVolumeScript := preload("res://scripts/radar_volume.gd")
 const ColormapsScript := preload("res://scripts/colormaps.gd")
 const BasemapScript := preload("res://scripts/basemap.gd")
 const VolumeCacheScript := preload("res://scripts/volume_cache.gd")
+const SectionViewScript := preload("res://scripts/section_view.gd")
 
 
 func _initialize() -> void:
@@ -55,6 +56,7 @@ func _initialize() -> void:
 	failed = not _check_sequences(lib) or failed
 	failed = not _check_basemap(vol) or failed
 	failed = not _check_preload(lib) or failed
+	failed = not _check_beam_model() or failed
 	quit(1 if failed else 0)
 
 
@@ -145,3 +147,21 @@ func _check_preload(lib) -> bool:
 	if not ok:
 		push_error("preload: %d of %d bytes loaded" % [cache.used_bytes(), expected])
 	return ok
+
+
+## The cross-section's beam height at a ground range must match cone.gdshader's forward
+## model (slant range -> height, ground range), replicated here.
+func _check_beam_model() -> bool:
+	var ke_a := 8494.67
+	var worst := 0.0
+	for elev in [0.5, 3.0, 19.5]:
+		for r in [10.0, 100.0, 300.0]:
+			var th := deg_to_rad(elev)
+			var num: float = r * r + 2.0 * r * ke_a * sin(th)
+			var h: float = num / (sqrt(num + ke_a * ke_a) + ke_a)
+			var s: float = ke_a * asin(r * cos(th) / (ke_a + h))
+			worst = maxf(worst, absf(SectionViewScript.beam_height(elev, s) - h))
+	print("  section beam model: max height error %.4f km" % worst)
+	if worst > 0.01:
+		push_error("section beam height disagrees with cone.gdshader")
+	return worst <= 0.01

@@ -55,6 +55,11 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/volume_view_3d.gd`, `scripts/cone_set.gd` + `shaders/cone.gdshader` – 3D: each tilt is a shared
   unit grid bent along the beam in the vertex shader (4/3 earth radius, vertical exaggeration); per-field
   display threshold; `scripts/orbit_camera.gd`.
+- `scripts/section_view.gd` + `shaders/section.gdshader` – vertical cross-section panel (X, or `section=ax,ay,bx,by`;
+  left drag A→B in 2D, right drag pans). One full-plot ColorRect per elevation band; the shader inverts the
+  4/3-earth beam model (pixel height/distance → elevation angle + slant range) and samples the polar
+  textures directly. Default interpolates linearly between adjacent tilts; "Beams only" shows each tilt
+  ±½ beamwidth (0.95°). `beam_height()` is the CPU twin, checked against cone.gdshader in smoke.gd.
 - `scripts/basemap.gd` + `shaders/basemap*.gdshader*` – lon/lat line meshes projected on the GPU
   (azimuthal equidistant around the site, haversine form for float32); `Basemap.project()` is the CPU twin.
 - `scripts/colormaps.gd` – per-field value ranges, units and gradient textures.
@@ -92,9 +97,9 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Verified against KTLX 2026-09-22 (VCP 212, bz2) and KTLX 2013-05-20 20:03Z (VCP 12, gz, the Moore tornado).
 - `live` starts on the in-progress volume (skipping it if joined after its first chunk), then follows each new one. It bootstraps by probing ~20 S3 listings to find the newest volume number; could cache the last number in `data/`.
 - Done: time animation + live following, 3D cones, basemap, site picker, multi-site mosaic,
-  background prefetch of loop frames, velocity dealiasing (DVEL).
-- Next: storm-relative motion,
-  vertical cross-sections (RHI-style slice through the cones), translucent/volumetric 3D rendering
+  background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections.
+- Next: storm-relative motion, translucent/volumetric 3D rendering
   (cones are opaque with a threshold today), fetching new sites from the UI (currently CLI only).
 - Mosaic uses whatever is on disk; `live` follows one site per process (run several for a live mosaic).
 - The 3D ground disk/rings are centred on the selected site only.
+- Cross-sections use the selected site only (no mosaic), and the A-B line is not drawn in 3D.

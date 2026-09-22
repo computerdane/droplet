@@ -2,9 +2,11 @@ class_name PpiView
 extends Node2D
 ## 2D plan view: one sweep drawn by ppi.gdshader on a quad centred on the radar, with the
 ## basemap, range rings and city labels on top. World units are km, +x east, -y north.
-## Wheel zooms, drag pans.
+## Wheel zooms, drag pans. In section mode a left drag draws the cross-section line A -> B
+## instead (right or middle drag still pans).
 
 signal view_changed
+signal section_changed
 
 const BASEMAP_SHADER := preload("res://shaders/basemap_2d.gdshader")
 const PPI_SHADER := preload("res://shaders/ppi.gdshader")
@@ -20,8 +22,14 @@ const CITY_COLOR := Color(0.95, 0.95, 1.0, 0.85)
 const CITY_MAX_LABELS := 40
 const CITY_RADIUS_KM := 600.0
 const BASEMAP_CULL_KM := 6000.0
+const SECTION_COLOR := Color(1, 1, 1, 0.95)
 
+var section_mode := false
+var has_section := false
+var section_a := Vector2.ZERO  # km, +x east, +y south (world = radar-local frame)
+var section_b := Vector2.ZERO
 var _dragging := false
+var _drawing_section := false
 var _cities: Array = []  # from Basemap.cities_near, most populous first
 var _basemap_mats: Array[ShaderMaterial] = []
 var _neighbor_rects: Array[ColorRect] = []
@@ -76,6 +84,20 @@ func set_active(on: bool) -> void:
 	cam.enabled = on
 	if on:
 		cam.make_current()
+
+
+func set_section(a: Vector2, b: Vector2) -> void:
+	section_a = a
+	section_b = b
+	has_section = a != b
+	overlay.queue_redraw()
+	section_changed.emit()
+
+
+func set_section_mode(on: bool) -> void:
+	section_mode = on
+	_drawing_section = false
+	overlay.queue_redraw()
 
 
 func reset_camera() -> void:
@@ -163,6 +185,25 @@ func _draw_overlay() -> void:
 	overlay.draw_line(Vector2(-s, 0), Vector2(s, 0), Color.WHITE, -1.0)
 	overlay.draw_line(Vector2(0, -s), Vector2(0, s), Color.WHITE, -1.0)
 	_draw_cities()
+	if section_mode and has_section:
+		_draw_section_line()
+
+
+func _draw_section_line() -> void:
+	var z := cam.zoom.x
+	overlay.draw_line(section_a, section_b, Color(0, 0, 0, 0.6), 4.0 / z)
+	overlay.draw_line(section_a, section_b, SECTION_COLOR, 2.0 / z)
+	var font := ThemeDB.fallback_font
+	for end in [[section_a, "A"], [section_b, "B"]]:
+		overlay.draw_set_transform(end[0], 0.0, Vector2.ONE / z)
+		overlay.draw_circle(Vector2.ZERO, 4.0, SECTION_COLOR)
+		overlay.draw_string_outline(
+			font, Vector2(7, -6), end[1], HORIZONTAL_ALIGNMENT_LEFT, -1, 16, 4, Color.BLACK
+		)
+		overlay.draw_string(
+			font, Vector2(7, -6), end[1], HORIZONTAL_ALIGNMENT_LEFT, -1, 16, SECTION_COLOR
+		)
+	overlay.draw_set_transform(Vector2.ZERO)
 
 
 ## City dots and names at constant screen size; greedy declutter, biggest cities first.
@@ -218,12 +259,22 @@ func _unhandled_input(event: InputEvent) -> void:
 			MOUSE_BUTTON_WHEEL_DOWN:
 				if e.pressed:
 					_zoom_at(e.position, 1.0 / ZOOM_STEP)
+			MOUSE_BUTTON_LEFT when section_mode:
+				_drawing_section = e.pressed
+				if e.pressed:
+					set_section(_to_world(e.position), _to_world(e.position))
 			MOUSE_BUTTON_LEFT, MOUSE_BUTTON_MIDDLE, MOUSE_BUTTON_RIGHT:
 				_dragging = e.pressed
+	elif event is InputEventMouseMotion and _drawing_section:
+		set_section(section_a, _to_world((event as InputEventMouseMotion).position))
 	elif event is InputEventMouseMotion and _dragging:
 		cam.position -= (event as InputEventMouseMotion).relative / cam.zoom
 		overlay.queue_redraw()
 		view_changed.emit()
+
+
+func _to_world(screen_pos: Vector2) -> Vector2:
+	return cam.position + (screen_pos - get_viewport_rect().size / 2.0) / cam.zoom.x
 
 
 func _zoom_at(screen_pos: Vector2, factor: float) -> void:
