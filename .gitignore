@@ -1,0 +1,15 @@
+# Godot
+.godot/
+*.import
+export/
+export_presets.cfg
+
+# Nix / direnv
+.direnv/
+result
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
