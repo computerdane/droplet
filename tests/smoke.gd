@@ -49,4 +49,41 @@ func _initialize() -> void:
 				]
 			)
 		)
+	failed = not _check_tilts(vol) or failed
+	failed = not _check_sequences(lib) or failed
 	quit(1 if failed else 0)
+
+
+## Tilts must be sorted by elevation, unique per angle, and each carry the field.
+func _check_tilts(vol) -> bool:
+	var ok := true
+	for f in ["REF", "VEL"]:
+		var tilts: Array[int] = vol.tilts(f)
+		var elevs := PackedStringArray()
+		for j in tilts.size():
+			var i := tilts[j]
+			elevs.append("%.1f" % vol.elevation(i))
+			if not vol.has_field(i, f):
+				ok = false
+			if j > 0 and vol.elevation(i) - vol.elevation(tilts[j - 1]) < 0.2:
+				ok = false
+		print("  %s tilts: %s" % [f, " ".join(elevs)])
+	if not ok:
+		push_error("tilt selection broken")
+	return ok
+
+
+func _check_sequences(lib) -> bool:
+	for site in lib.sites():
+		var list: Array[String] = lib.for_site(site)
+		var seqs := PackedStringArray()
+		var i := 0
+		while i < list.size():
+			var b: Vector2i = RadarLibraryScript.sequence_bounds(list, i)
+			if b.x != i or b.y < i:
+				push_error("sequence_bounds(%d) = %s" % [i, b])
+				return false
+			seqs.append(str(b.y - b.x + 1))
+			i = b.y + 1
+		print("  %s sequences (volumes each): %s" % [site, " ".join(seqs)])
+	return true

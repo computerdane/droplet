@@ -1,21 +1,20 @@
-[gd_scene load_steps=5 format=3 uid="uid://droplet_main_scene"]
+[gd_scene load_steps=6 format=3 uid="uid://droplet_main_scene"]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
 [ext_resource type="Shader" path="res://shaders/ppi.gdshader" id="2_ppi"]
+[ext_resource type="Script" path="res://scripts/ppi_view.gd" id="3_ppi_view"]
+[ext_resource type="Script" path="res://scripts/hud.gd" id="4_hud"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_ppi"]
 shader = ExtResource("2_ppi")
 
-[sub_resource type="LabelSettings" id="LabelSettings_hud"]
-font_size = 14
-font_color = Color(0.9, 0.9, 0.95, 1)
-shadow_size = 2
-shadow_color = Color(0, 0, 0, 0.8)
-
-[node name="Main" type="Node2D"]
+[node name="Main" type="Node"]
 script = ExtResource("1_main")
 
-[node name="PPI" type="ColorRect" parent="."]
+[node name="View2D" type="Node2D" parent="."]
+script = ExtResource("3_ppi_view")
+
+[node name="PPI" type="ColorRect" parent="View2D"]
 material = SubResource("ShaderMaterial_ppi")
 offset_left = -500.0
 offset_top = -500.0
@@ -23,16 +22,22 @@ offset_right = 500.0
 offset_bottom = 500.0
 mouse_filter = 2
 
-[node name="Camera" type="Camera2D" parent="."]
-zoom = Vector2(2, 2)
+[node name="Overlay" type="Node2D" parent="View2D"]
+
+[node name="Camera" type="Camera2D" parent="View2D"]
 
 [node name="LiveTimer" type="Timer" parent="."]
 
-[node name="HUD" type="CanvasLayer" parent="."]
+[node name="PlayTimer" type="Timer" parent="."]
 
-[node name="Label" type="Label" parent="HUD"]
-offset_left = 12.0
-offset_top = 10.0
-offset_right = 700.0
-offset_bottom = 120.0
-label_settings = SubResource("LabelSettings_hud")
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="Hud" type="Control" parent="UI"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("4_hud")

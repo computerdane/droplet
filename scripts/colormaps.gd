@@ -13,6 +13,16 @@ const RANGES := {
 	"CFP": [0.0, 60.0],  # dB
 }
 
+const UNITS := {
+	"REF": "dBZ",
+	"VEL": "m/s (- toward)",
+	"SW": "m/s",
+	"ZDR": "dB",
+	"PHI": "deg",
+	"RHO": "CC",
+	"CFP": "dB",
+}
+
 ## Stops as [value, colour] pairs.
 const STOPS := {
 	"REF":
@@ -76,6 +86,10 @@ static var _cache: Dictionary = {}
 
 static func range_of(field_name: String) -> Array:
 	return RANGES.get(field_name, [0.0, 1.0])
+
+
+static func unit_of(field_name: String) -> String:
+	return UNITS.get(field_name, "")
 
 
 static func texture_for(field_name: String) -> GradientTexture1D:
