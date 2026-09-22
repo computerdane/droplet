@@ -195,9 +195,10 @@ def live(site: str, interval: float) -> None:
     volume = chunks.find_latest_volume(site)
     seen: set[str] = set()
     buf = bytearray()
+    finished: dt.datetime | None = None  # start time of the last volume we completed
 
     while True:
-        keys = chunks.list_chunks(site, volume)
+        keys = chunks.list_chunks(site, volume, newer_than=finished)
         new = [k for k in keys if k not in seen]
         if new:
             if not buf and not new[0].endswith("-S"):
@@ -205,6 +206,7 @@ def live(site: str, interval: float) -> None:
                 print(f"{site}/{volume}: mid-volume, waiting for next", file=sys.stderr)
                 seen.update(keys)
                 if keys[-1].endswith("-E"):
+                    finished = chunks.chunk_time(keys[-1])
                     volume, seen = chunks.next_volume(volume), set()
                 time.sleep(interval)
                 continue
@@ -216,9 +218,14 @@ def live(site: str, interval: float) -> None:
                 vol.complete = keys[-1].endswith("-E")
                 out = write_volume(vol)
                 print(f"{out.name}: {len(vol.sweeps())} sweeps ({len(seen)} chunks){' complete' if vol.complete else ''}", file=sys.stderr)
-            except ValueError as e:
+            except ValueError as e:  # e.g. only the metadata chunk has arrived so far
                 print(f"{site}/{volume}: {e}", file=sys.stderr)
+            except (OSError, EOFError) as e:
+                # A torn or foreign chunk; keep following rather than die. The next volume
+                # starts from a fresh buffer.
+                print(f"{site}/{volume}: decode failed: {e}", file=sys.stderr)
             if keys[-1].endswith("-E"):
+                finished = chunks.chunk_time(keys[-1])
                 volume, seen, buf = chunks.next_volume(volume), set(), bytearray()
                 continue
         time.sleep(interval)
