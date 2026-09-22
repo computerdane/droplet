@@ -27,6 +27,7 @@ const DEFAULT_THRESHOLDS := {
 	"PHI": [-10.0, false],
 	"RHO": [0.8, false],
 	"CFP": [-10.0, false],
+	"DVEL": [10.0, true],
 }
 
 var exaggeration := DEFAULT_EXAGGERATION

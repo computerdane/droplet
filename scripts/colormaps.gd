@@ -11,6 +11,7 @@ const RANGES := {
 	"PHI": [0.0, 360.0],  # degrees
 	"RHO": [0.2, 1.05],  # unitless
 	"CFP": [0.0, 60.0],  # dB
+	"DVEL": [-64.0, 64.0],  # m/s, dealiased VEL
 }
 
 const UNITS := {
@@ -21,6 +22,7 @@ const UNITS := {
 	"PHI": "deg",
 	"RHO": "CC",
 	"CFP": "dB",
+	"DVEL": "m/s (- toward)",
 }
 
 ## Stops as [value, colour] pairs.
@@ -81,6 +83,9 @@ const STOPS := {
 	"CFP": [[0.0, "101010"], [20.0, "2050c0"], [40.0, "f0f000"], [60.0, "f00000"]],
 }
 
+## Fields drawn with another field's colours.
+const SAME_AS := {"DVEL": "VEL"}
+
 static var _cache: Dictionary = {}
 
 
@@ -95,7 +100,9 @@ static func unit_of(field_name: String) -> String:
 static func texture_for(field_name: String) -> GradientTexture1D:
 	if _cache.has(field_name):
 		return _cache[field_name]
-	var stops: Array = STOPS.get(field_name, [[0.0, "000000"], [1.0, "ffffff"]])
+	var stops: Array = STOPS.get(
+		SAME_AS.get(field_name, field_name), [[0.0, "000000"], [1.0, "ffffff"]]
+	)
 	var lo: float = stops[0][0]
 	var hi: float = stops[-1][0]
 	var grad := Gradient.new()

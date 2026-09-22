@@ -16,6 +16,8 @@ python -m nexrad update KTLX --at 2013-05-20T20:00Z # historical volume (Moore, 
 python -m nexrad update KTLX --from ... --to ...    # a range of volumes
 python -m nexrad live KTLX                          # poll chunks bucket, rewrite partial volume as it grows
 python -m nexrad basemap                            # once: Census states/counties + cities -> data/basemap/
+python -m nexrad decode data/raw/*_V06*             # re-decode everything (e.g. after decoder/dealias changes)
+python -m nexrad.dealias                            # dealiaser self-test on a synthetic aliased sweep
 godot --editor                                      # open project
 godot                                               # run main scene
 godot --headless --path . --import                  # (re)build .godot/ cache after adding scripts/scenes
@@ -30,8 +32,13 @@ gdformat scripts tests && gdlint scripts tests
 - `nexrad/level2.py` – Archive2 / Message 31 decoder (numpy + bz2 only; no MetPy/Py-ART since neither is in nixpkgs).
 - `nexrad/chunks.py` – real-time chunks bucket: locate newest volume in the 1..999 ring, list/fetch chunks.
   Reused ring directories keep the previous trip's chunks; always key on the newest timestamp prefix.
+- `nexrad/dealias.py` – region-based velocity dealiasing (Py-ART-style, numpy only, ~0.5 s/volume):
+  label same-band regions with a vectorised union-find, merge along the longest boundaries, skip
+  ambiguous boundaries (mean jump ≈ Vn), then pick each component's absolute fold by agreement with the
+  tilt below (`dealias_volume` goes bottom-up; the lowest tilt uses "most gates unchanged").
+  Weak spots: violent-storm cores aloft and isolated small echoes can still come out one fold off.
 - `nexrad/basemap.py` – Census 1:500k state/county shapefiles (stdlib reader) + Natural Earth cities.
-- `nexrad/__main__.py` – CLI; `write_volume()` defines the on-disk format Godot reads.
+- `nexrad/__main__.py` – CLI; `write_volume()` defines the on-disk format Godot reads; `add_dealiased()` adds DVEL.
 - `data/raw/` – downloaded archive files (gitignored). `data/volumes/` – decoded, `data/basemap/` – basemap buffers (all gitignored).
 - `scripts/radar_library.gd` – indexes `data/volumes`, per-site lists, sequences (split at >30 min gaps).
 - `scripts/radar_volume.gd` – one volume, lazy float16 textures; `tilts(field)` = one sweep per
@@ -61,6 +68,8 @@ gdformat scripts tests && gdlint scripts tests
 - Sentinels: `-1000` missing/below threshold, `-2000` range folded. Shader discards `< -900`, paints purple `< -1500`.
 - Per field: `n_gates`, `first_gate_m` (range to centre of gate 0), `gate_spacing_m`. Fields on the same sweep can differ (REF often 1832 gates, others 1192).
 - Split-cut VCPs produce two sweeps at ~the same elevation: a surveillance cut (REF/ZDR/PHI/RHO/CFP) and a Doppler cut (REF/VEL/SW). `RadarVolume.tilts()` / `tilt_near()` pick one sweep per elevation that has the requested field.
+- `DVEL` = dealiased `VEL`, written next to every VEL sweep with the same geometry (VEL stays raw).
+  Volumes decoded before it existed (e.g. old `live` output with no raw file) simply lack it.
 - `complete: false` marks a partial volume still being filled by `live`. Files are written via atomic rename so Godot never reads a torn file; `main.gd` re-scans every 3 s while live.
 
 ## Mosaic
@@ -83,8 +92,8 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Verified against KTLX 2026-09-22 (VCP 212, bz2) and KTLX 2013-05-20 20:03Z (VCP 12, gz, the Moore tornado).
 - `live` starts on the in-progress volume (skipping it if joined after its first chunk), then follows each new one. It bootstraps by probing ~20 S3 listings to find the newest volume number; could cache the last number in `data/`.
 - Done: time animation + live following, 3D cones, basemap, site picker, multi-site mosaic,
-  background prefetch of loop frames.
-- Next: velocity dealiasing (aliasing is obvious in VEL at low Nyquist), storm-relative motion,
+  background prefetch of loop frames, velocity dealiasing (DVEL).
+- Next: storm-relative motion,
   vertical cross-sections (RHI-style slice through the cones), translucent/volumetric 3D rendering
   (cones are opaque with a threshold today), fetching new sites from the UI (currently CLI only).
 - Mosaic uses whatever is on disk; `live` follows one site per process (run several for a live mosaic).

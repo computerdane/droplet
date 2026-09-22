@@ -9,8 +9,8 @@ extends Node
 ## do not make the tilt jump around.
 ##
 ## Command-line options (after `--`): site=KTLX time=20130520_200359 field=VEL elev=0.5
-## live=0|1 play=0|1 fps=8 zoom=2 view=2d|3d yaw=30 pitch=25 dist=400 exag=4
-## isolate=0|1|2 threshold=20 mosaic=0|1 prefetch=0|1
+## live=0|1 play=0|1 fps=8 zoom=2 pan=-15,5 (2D centre, km east,north) view=2d|3d yaw=30
+## pitch=25 dist=400 exag=4 isolate=0|1|2 threshold=20 mosaic=0|1 prefetch=0|1
 ##
 ## Upcoming loop frames (and their mosaic neighbours) are read in the background, see
 ## _preload_ahead() and VolumeCache.
@@ -26,11 +26,18 @@ const MOSAIC_MAX_KM := 900.0
 ## Share of the cache budget that loop frames ahead of the playhead may fill.
 const PRELOAD_BUDGET_FRACTION := 0.8
 const FIELD_KEYS := {
-	KEY_1: "REF", KEY_2: "VEL", KEY_3: "SW", KEY_4: "ZDR", KEY_5: "PHI", KEY_6: "RHO", KEY_7: "CFP"
+	KEY_1: "REF",
+	KEY_2: "VEL",
+	KEY_3: "SW",
+	KEY_4: "ZDR",
+	KEY_5: "PHI",
+	KEY_6: "RHO",
+	KEY_7: "CFP",
+	KEY_8: "DVEL",
 }
 const HINT_COMMON := (
 	"Space play   Left/Right step   Home/End first/last   [ ] speed   L live   "
-	+ "Up/Down tilt   1-7 field   S site   M mosaic   V 2D/3D   R reset view\n"
+	+ "Up/Down tilt   1-8 field   S site   M mosaic   V 2D/3D   R reset view\n"
 )
 const HINT_2D := "wheel zoom   drag pan"
 const HINT_3D := (
@@ -79,6 +86,9 @@ func _ready() -> void:
 	fps = float(opts.get("fps", fps))
 	if opts.has("zoom"):
 		view_2d.set_zoom(float(opts["zoom"]))
+	if opts.has("pan"):
+		var p: PackedFloat64Array = opts["pan"].split_floats(",")
+		view_2d.cam.position = Vector2(p[0], -p[1])
 	_apply_3d_options(opts)
 	mosaic = opts.get("mosaic", "0") == "1"
 	prefetch = opts.get("prefetch", "1") == "1"

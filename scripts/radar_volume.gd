@@ -5,7 +5,7 @@ extends RefCounted
 
 const MISSING := -1000.0
 const RANGE_FOLDED := -2000.0
-const FIELDS := ["REF", "VEL", "SW", "ZDR", "PHI", "RHO", "CFP"]
+const FIELDS := ["REF", "VEL", "SW", "ZDR", "PHI", "RHO", "CFP", "DVEL"]
 const ELEVATION_MERGE_DEG := 0.2
 
 var path: String

@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import requests
 
-from . import basemap, chunks, level2
+from . import basemap, chunks, dealias, level2
 
 BUCKET = "https://unidata-nexrad-level2.s3.amazonaws.com"
 ROOT = Path(__file__).resolve().parent.parent
@@ -121,11 +121,13 @@ def write_volume(vol: level2.Volume) -> Path:
     out.mkdir(parents=True, exist_ok=True)
 
     sweeps_meta = []
+    grids: list[dict[str, np.ndarray]] = []
     for i, radials in enumerate(vol.sweeps()):
         res = radials[0].azimuth_resolution
         step = 0.5 if res == 1 else 1.0
         n_bins = int(round(360.0 / step))
         fields_meta = {}
+        grids.append({})
 
         names = sorted({m for r in radials for m in r.moments})
         for name in names:
@@ -138,12 +140,9 @@ def write_volume(vol: level2.Volume) -> Path:
                     continue
                 b = int(r.azimuth / step) % n_bins
                 grid[b, : m.n_gates] = m.values
-            fname = f"s{i:02d}_{name}.bin"
-            tmp = out / (fname + ".tmp")
-            grid.astype("<f2").tofile(tmp)
-            tmp.replace(out / fname)  # atomic swap so Godot never reads a half-written file
+            grids[i][name] = grid
             fields_meta[name] = {
-                "file": fname,
+                "file": f"s{i:02d}_{name}.bin",
                 "n_gates": n_gates,
                 "first_gate_m": moments[0].first_gate_m,
                 "gate_spacing_m": moments[0].gate_spacing_m,
@@ -164,6 +163,14 @@ def write_volume(vol: level2.Volume) -> Path:
             }
         )
 
+    add_dealiased(sweeps_meta, grids)
+    for sw, fields in zip(sweeps_meta, grids):
+        for name, grid in fields.items():
+            fname = sw["fields"][name]["file"]
+            tmp = out / (fname + ".tmp")
+            grid.astype("<f2").tofile(tmp)
+            tmp.replace(out / fname)  # atomic swap so Godot never reads a half-written file
+
     meta = {
         "format_version": 1,
         "icao": vol.icao,
@@ -183,6 +190,24 @@ def write_volume(vol: level2.Volume) -> Path:
     tmp.write_text(json.dumps(meta, indent=2))
     tmp.replace(out / "volume.json")
     return out
+
+
+def add_dealiased(sweeps_meta: list[dict], grids: list[dict[str, np.ndarray]]) -> None:
+    """Adds a DVEL field (dealiased VEL, same geometry) to every sweep that has VEL."""
+    have = [i for i, g in enumerate(grids) if "VEL" in g and sweeps_meta[i]["nyquist_ms"]]
+    inputs = [
+        {
+            "vel": grids[i]["VEL"],
+            "nyquist": sweeps_meta[i]["nyquist_ms"],
+            "elevation_deg": sweeps_meta[i]["elevation_deg"],
+            "first_gate_m": sweeps_meta[i]["fields"]["VEL"]["first_gate_m"],
+            "gate_spacing_m": sweeps_meta[i]["fields"]["VEL"]["gate_spacing_m"],
+        }
+        for i in have
+    ]
+    for i, dvel in zip(have, dealias.dealias_volume(inputs)):
+        grids[i]["DVEL"] = dvel
+        sweeps_meta[i]["fields"]["DVEL"] = dict(sweeps_meta[i]["fields"]["VEL"], file=f"s{i:02d}_DVEL.bin")
 
 
 def decode(path: Path) -> Path:
