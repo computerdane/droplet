@@ -1,0 +1,84 @@
+extends "res://tests/test_case.gd"
+## RadarLibrary indexing, sequences, tilt selection and storm motion lookup.
+
+const RadarLibraryScript := preload("res://scripts/radar_library.gd")
+const RadarVolumeScript := preload("res://scripts/radar_volume.gd")
+
+
+func test_fixture_set() -> void:
+	if not fixtures:
+		return
+	check_eq(lib.sites(), ["KTST", "KTSU"], "sites")
+	check_eq(lib.for_site("KTST").size(), 2, "KTST volumes")
+	check_eq(lib.latest("KTST").get_file(), "KTST_20240501_220500", "latest KTST")
+	for v in lib.volumes:
+		var vol = RadarVolumeScript.load_from_dir(v)
+		check(vol.is_complete(), "%s complete" % v.get_file())
+		for i in vol.sweep_count():
+			check(vol.has_field(i, "VEL") == vol.has_field(i, "DVEL"), "DVEL next to VEL")
+
+
+## Tilts must be sorted by elevation, unique per angle, and each carry the field.
+func test_tilts() -> void:
+	for v in lib.volumes:
+		var vol = RadarVolumeScript.load_from_dir(v)
+		for f in ["REF", "VEL"]:
+			var tilts: Array[int] = vol.tilts(f)
+			for j in tilts.size():
+				check(vol.has_field(tilts[j], f), "%s tilt %d has %s" % [v.get_file(), j, f])
+				if j > 0:
+					var step: float = vol.elevation(tilts[j]) - vol.elevation(tilts[j - 1])
+					check(step >= 0.2, "%s %s tilts %d apart by %.2f" % [v.get_file(), f, j, step])
+	if not fixtures:
+		return
+	# Split cut at 0.5 (surveillance sweep 0, Doppler sweep 1) and a SAILS repeat (sweep 7),
+	# all with the same gate count: the latest wins.
+	var vol = RadarVolumeScript.load_from_dir(lib.for_site("KTST")[0])
+	var elevs := []
+	for i in vol.tilts("REF"):
+		elevs.append(snappedf(vol.elevation(i), 0.5))
+	check_eq(elevs, [0.5, 1.5, 3.0, 5.0, 7.5, 11.0], "REF tilt elevations")
+	check_eq(vol.tilts("REF")[0], 7, "REF 0.5 tilt")
+	check_eq(vol.tilts("ZDR"), [0, 2] as Array[int], "ZDR tilts")
+	check_eq(vol.tilt_near("VEL", 0.9), 7, "VEL tilt near 0.9")
+	check_eq(vol.tilt_near("VEL", 1.1), 2, "VEL tilt near 1.1")
+
+
+func test_sequences() -> void:
+	for site in lib.sites():
+		var list: Array[String] = lib.for_site(site)
+		var i := 0
+		while i < list.size():
+			var b: Vector2i = RadarLibraryScript.sequence_bounds(list, i)
+			if not check(b.x == i and b.y >= i, "sequence_bounds(%d) = %s" % [i, b]):
+				return
+			i = b.y + 1
+	if fixtures:
+		var ktst: Array[String] = lib.for_site("KTST")
+		check_eq(RadarLibraryScript.sequence_bounds(ktst, 1), Vector2i(0, 1), "KTST loop")
+
+
+## Every volume with a VAD storm motion must find its own; one without must find the nearest
+## in time (same site first).
+func test_storm_motion() -> void:
+	var with: Array[String] = []
+	for v in lib.volumes:
+		if lib.winds(v).get("storm_motion") is Dictionary:
+			with.append(v)
+	if with.is_empty():
+		note("none computed (python -m nexrad winds)")
+		check(not fixtures, "fixtures carry storm motion")
+		return
+	for v in lib.volumes:
+		var near: Dictionary = lib.storm_motion_near(v, 3600)
+		if with.has(v):
+			check_eq(near.get("path", ""), v, "own storm motion")
+		if not near.is_empty():
+			var dt: int = absi(lib.unix_of(near["path"]) - lib.unix_of(v))
+			check(dt <= 3600, "%s: storm motion from %d s away" % [v.get_file(), dt])
+	if fixtures:
+		# KTSU scans two tilts, too shallow for a profile; it borrows KTST's nearest volume.
+		var near: Dictionary = lib.storm_motion_near(lib.latest("KTSU"), 3600)
+		check_eq(near.get("path", "").get_file(), "KTST_20240501_220000", "KTSU borrows")
+		var sm: Dictionary = lib.winds(with[0])["storm_motion"]
+		check_eq(sm["method"], "bunkers", "storm motion method")

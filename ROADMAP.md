@@ -19,16 +19,15 @@ relative velocity (manual or automatic); hodograph; VWP time-height barbs; hover
 2D, section and VWP; in-app fetch panel driving the sidecar; LRU volume cache with
 background prefetch; responsive HUD; `key=value` options for scripted runs.
 
-**Tests and tooling.** `tests/smoke.gd` (tilt selection, sequences, projection, preload,
-beam model, storm motion lookup, readout), `tests/screenshot.gd`, `tests/frametimes.gd`,
+**Tests and tooling.** `tests/run.gd` runs the Godot unit tests in `tests/unit/` (tilt
+selection, sequences, projection, preload, beam model, storm motion lookup, readout) against
+the synthetic fixtures, or real data with `volumes=`, `tests/screenshot.gd`, `tests/frametimes.gd`,
 gdformat and gdlint. `nexrad/synth.py` generates synthetic Archive2 files and fixture
 volumes; `pytest` covers the decoder, dealiasing, VAD, chunk ring, `live()`, key selection
 and the volume writer without network or real data (57 tests, ~10 s). All green.
 
 **Gaps.**
 
-- The Godot tests still read `data/volumes` by default. smoke.gd passes unchanged against the
-  fixtures (verified by hand), but there is no runner that points it there yet.
 - Nothing runs in CI yet.
 - Screenshots are eyeballed; nothing catches a shader regression automatically.
 - The hover readout skips 3D, sections use one site, live follows one site per process.
@@ -37,8 +36,8 @@ and the volume writer without network or real data (57 tests, ~10 s). All green.
 
 Ordered by what unblocks the most.
 
-1. **Test fixtures and CI.** Done: synthetic volume generator, pytest. Left: a Godot test
-   runner that works without real data, golden screenshots under Xvfb, GitHub Actions.
+1. **Test fixtures and CI.** Done: synthetic volume generator, pytest, Godot test runner
+   on the fixtures. Left: golden screenshots under Xvfb, GitHub Actions.
    Prerequisite for everything below being safe to ship. See "Automated testing".
 2. **Web build and hosting.** See "Web build". Includes URL-state permalinks, which fall
    out of the existing `key=value` options.
@@ -70,8 +69,9 @@ Five layers, cheapest first. Each maps onto a tool already in the dev shell.
   volumes (KTST ×2 and a KTSU neighbour, ~3.8 MB) to `tests/fixtures/volumes/`. They are
   generated deterministically rather than committed (~0.9 MB compressed per regeneration
   would pile up in history); CI runs the generator first. `volumes=` points the app at
-  them. Next: a runner script discovers `test_*.gd` files, points `RadarLibrary` at the
-  fixture root, and ports the smoke checks onto it. Keep one optional pass over real data.
+  them. Done: `tests/run.gd` discovers `tests/unit/test_*.gd`, points `RadarLibrary` at the
+  fixture root and asserts exact fixture facts (split cut + SAILS tilt choice, KTSU borrowing
+  KTST's storm motion); `volumes=res://data/volumes` is the optional pass over real data.
 - **Golden screenshots.** Xvfb plus the Compatibility driver render deterministically in
   software. Capture a fixed set of views of the fixture volume, compare against committed
   PNGs with a pixel-difference tolerance, regenerate goldens only with an explicit flag.

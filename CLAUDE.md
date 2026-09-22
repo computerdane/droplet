@@ -25,7 +25,8 @@ pytest                                              # Python tests (tests/python
 godot --editor                                      # open project
 godot                                               # run main scene
 godot --headless --path . --import                  # (re)build .godot/ cache after adding scripts/scenes
-godot --headless --path . --script res://tests/smoke.gd
+godot --headless --path . --script res://tests/run.gd   # Godot unit tests on the fixtures
+godot --headless --path . --script res://tests/run.gd -- volumes=res://data/volumes only=readout
 godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 view=3d mosaic=1
 godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 vwp=1 hover=560,380
 godot --path . --script res://tests/screenshot.gd -- out.png volumes=res://tests/fixtures/volumes site=KTST
@@ -58,6 +59,9 @@ gdformat scripts tests && gdlint scripts tests
   (the self-tests, plus DVEL and the VAD profile scored against the scene's unaliased truth), chunk ring and
   `live()` against fake S3 listings, archive key selection, `write_volume` layout/values, the fixture set.
   `fakes.py` stands in for S3. No network, ~10 s.
+- `tests/run.gd` – Godot unit tests: every `test_*` method of `tests/unit/test_*.gd` (which extend
+  `tests/test_case.gd`: `check()`, `check_eq()`, `note()`, `lib`, `fixtures`) against the fixture volumes by default
+  (`volumes=` for real data; fixture-only assertions are gated on `fixtures`). Exits 1 on any failure or no volumes.
 - `nexrad/basemap.py` – Census 1:500k state/county shapefiles (stdlib reader) + Natural Earth cities.
 - `nexrad/__main__.py` – CLI; `write_volume()` defines the on-disk format Godot reads; `add_dealiased()` adds DVEL.
 - `data/raw/` – downloaded archive files (gitignored). `data/volumes/` – decoded, `data/basemap/` – basemap buffers (all gitignored).
@@ -90,7 +94,7 @@ gdformat scripts tests && gdlint scripts tests
   left drag A→B in 2D, right drag pans). One full-plot ColorRect per elevation band; the shader inverts the
   4/3-earth beam model (pixel height/distance → elevation angle + slant range) and samples the polar
   textures directly. Default interpolates linearly between adjacent tilts; "Beams only" shows each tilt
-  ±½ beamwidth (0.95°). `beam_height()` is the CPU twin, checked against cone.gdshader in smoke.gd.
+  ±½ beamwidth (0.95°). `beam_height()` is the CPU twin, checked against cone.gdshader in tests/unit/test_geometry.gd.
 - `shaders/storm.gdshaderinc` – storm-relative velocity: `storm_motion` uniform (m/s east/north, radar-local),
   subtracts its radial component × cos(elev). Included by ppi, cone, section and volume shaders. `main._storm_vector()`
   is non-zero only for VEL/DVEL with SRM on (T, HUD row, `srm=from_deg,speed_ms` or `srm=auto`, meteorological
