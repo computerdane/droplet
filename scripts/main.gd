@@ -740,9 +740,12 @@ func _mosaic_summary() -> String:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not (event is InputEventKey and event.pressed and not event.echo):
+	if not (event is InputEventKey and event.pressed):
 		return
 	var e := event as InputEventKey
+	# Key repeat only for stepping frames, so holding Left/Right scrubs through the loop.
+	if e.echo and not (e.keycode in [KEY_LEFT, KEY_RIGHT] and not e.shift_pressed):
+		return
 	match e.keycode:
 		KEY_SPACE:
 			_set_playing(not playing)
