@@ -203,7 +203,10 @@ gdformat scripts tests && gdlint scripts tests
   (`main._readout_2d`: nearest radar as in the mosaic shaders, value + range/bearing + beam height + lat/lon
   via `Basemap.unproject`). Values come from `RadarVolume.value_at()`, which reads 2 bytes of the sweep file via `VolumeSource.read_half()`
   (no texture needed); `RadarVolume.storm_relative()` is the CPU twin of storm.gdshaderinc. Hovering the section
-  marks the point on the A-B line in 2D. Not in 3D. `hover=x,y` pins it (canvas units) for screenshots.
+  marks the point on the A-B line in 2D. In 3D `VolumeView3D.pick()` casts the mouse ray through every ConeSet
+  (`ConeSet.pick`: steps along the ray converting points to beam elevation, finds the shown tilts it crosses, applies
+  the shader's threshold and nearest-radar discard; `tests/pick_check.gd`, run by golden.sh, checks it against the
+  rendered pixels), `Readout.volume_3d()` formats it. `hover=x,y` pins it (canvas units) for screenshots.
 - `scripts/colormaps.gd` – per-field value ranges, units and gradient textures.
 - `nexrad/`, `data/` and `tests/fixtures/` carry a `.gdignore` so the editor does not try to import them; `res://data/...` is still readable via FileAccess in dev builds. Exported builds will need `user://`.
 

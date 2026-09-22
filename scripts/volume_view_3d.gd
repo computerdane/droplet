@@ -140,6 +140,31 @@ func show_volume(
 		mat.set_shader_parameter("fade_km", MOSAIC_FADE_KM if neighbors else GROUND_RADIUS_KM)
 
 
+## What is under screen point `screen` (viewport pixels): the nearest drawn cone of any
+## radar (ConeSet.pick, plus "site_offset" and "rotation" of that radar in the selected site's
+## frame), else {"ground": Vector2 km east, north} where the ray meets the ground, else {}.
+func pick(screen: Vector2) -> Dictionary:
+	var origin := camera.project_ray_origin(screen)
+	var dir := camera.project_ray_normal(screen)
+	var max_t := camera.distance * 2.0 + 2.0 * GROUND_RADIUS_KM
+	var step := clampf(camera.distance / 500.0, 0.05, 1.0)
+	var best := {}
+	var sets: Array[ConeSet] = [cones]
+	sets.append_array(_neighbors)
+	for cs in sets:
+		var to_local := cs.global_transform.affine_inverse()
+		var hit := cs.pick(to_local * origin, (to_local.basis * dir).normalized(), max_t, step)
+		if not hit.is_empty() and (best.is_empty() or hit["t"] < best["t"]):
+			hit["site_offset"] = Vector2(cs.position.x, -cs.position.z)
+			hit["rotation"] = -cs.rotation.y
+			best = hit
+	if best.is_empty() and dir.y < -1e-4:
+		var g := origin + dir * (-origin.y / dir.y)
+		if Vector2(g.x, g.z).length() < MOSAIC_FADE_KM:
+			best = {"ground": Vector2(g.x, -g.z)}
+	return best
+
+
 func _show_renders(
 	vol: RadarVolume,
 	field_name: String,

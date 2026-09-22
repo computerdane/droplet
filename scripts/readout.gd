@@ -57,3 +57,55 @@ static func plan_view(p: Vector2, ctx: Dictionary) -> String:
 	var overlays: Overlays = ctx["overlays"]
 	lines.append_array(overlays.readout_lines(Vector2(ll.y, ll.x), Vector2(p.x, -p.y)))
 	return "\n".join(lines)
+
+
+## Readout for a VolumeView3D.pick() result: the value on the cone under the mouse with its
+## tilt, range/bearing, beam height and lat/lon, or just the ground position. `ctx` as in
+## plan_view (field, site_lonlat, overlays).
+static func volume_3d(hit: Dictionary, ctx: Dictionary) -> String:
+	var lines := PackedStringArray()
+	var pos: Vector2  # km east, north of the selected radar
+	var field_name: String = ctx["field"]
+	if hit.has("sweep"):
+		var vol: RadarVolume = hit["volume"]
+		var az: float = hit["az"]
+		var s: float = hit["s"]
+		var elev := vol.elevation(hit["sweep"])
+		lines.append(
+			(
+				"%s  %s   tilt %.2f°"
+				% [field_name, Colormaps.format_value(field_name, hit["value"]), elev]
+			)
+		)
+		lines.append(
+			(
+				"%s  %.1f km @ %03d°   beam %.2f km ARL"
+				% [vol.icao(), hit["r"], roundi(az) % 360, hit["h"]]
+			)
+		)
+		# The hit is in its own radar's frame (+y south); rotate and shift into the selected one.
+		var local := Vector2(s * sin(deg_to_rad(az)), -s * cos(deg_to_rad(az)))
+		var off: Vector2 = hit["site_offset"]
+		var south := local.rotated(hit["rotation"]) + Vector2(off.x, -off.y)
+		pos = Vector2(south.x, -south.y)
+	elif hit.has("ground"):
+		pos = hit["ground"]
+		lines.append(
+			(
+				"ground  %.1f km @ %03d°"
+				% [pos.length(), roundi(fposmod(rad_to_deg(atan2(pos.x, pos.y)), 360.0)) % 360]
+			)
+		)
+	else:
+		return ""
+	var site_ll: Vector2 = ctx["site_lonlat"]
+	var ll := Basemap.unproject(pos, site_ll.y, site_ll.x)
+	lines.append(
+		(
+			"%.3f°%s  %.3f°%s"
+			% [absf(ll.x), "N" if ll.x >= 0 else "S", absf(ll.y), "E" if ll.y >= 0 else "W"]
+		)
+	)
+	var overlays: Overlays = ctx["overlays"]
+	lines.append_array(overlays.readout_lines(Vector2(ll.y, ll.x), pos))
+	return "\n".join(lines)

@@ -61,6 +61,13 @@ for name in "${names[@]}"; do
 		true
 	[[ -f "$out/$name.diff.png" || ! -f "tests/golden/$name.png" ]] && failed+=("$name")
 done
+# The 3D hover pick must report what the cones draw.
+if ((${#names[@]} == ${#CASES[@]})) && ! ((update)); then
+	# shellcheck disable=SC2086
+	godot --rendering-driver opengl3 --resolution 1280x800 --path . --script res://tests/pick_check.gd -- \
+		$COMMON view=3d threshold=-40 dist=150 pitch=40 >"$out/pick_check.log" 2>&1 || failed+=(pick_check)
+	grep pick_check: "$out/pick_check.log" || cat "$out/pick_check.log"
+fi
 echo "output: $out"
 if ((${#failed[@]})); then
 	echo "failed: ${failed[*]}"

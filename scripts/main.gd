@@ -727,7 +727,9 @@ func _update_readout() -> void:
 			if c.is_visible_in_tree() and c.get_global_rect().has_point(mouse):
 				hovered = c
 	var world := view_2d.get_canvas_transform().affine_inverse() * mouse
-	var key: Array = [_mouse_in_window, hovered, mouse if hovered != null else world]
+	var screen := hovered != null or view_is_3d
+	var cam3d: Variant = view_3d.camera.global_transform if view_is_3d else null
+	var key: Array = [_mouse_in_window, hovered, mouse if screen else world, cam3d]
 	if key == _readout_key:
 		return
 	_readout_key = key
@@ -749,6 +751,9 @@ func _update_readout() -> void:
 		var hodo := hud.hodograph
 		if not (hodo.visible and hodo.get_global_rect().has_point(mouse)):
 			text = _readout_2d(world)
+	elif hovered == null and volume != null:
+		var ctx := {"field": _volume_field(), "site_lonlat": _site_lonlat, "overlays": overlays}
+		text = Readout.volume_3d(view_3d.pick(mouse + Vector2(0.5, 0.5)), ctx)  # pixel centre
 	view_2d.set_hover_marker(marker)
 	hud.set_readout(text, hud.get_global_transform().affine_inverse() * mouse)
 
