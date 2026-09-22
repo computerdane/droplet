@@ -7,6 +7,7 @@ extends Node2D
 signal view_changed
 
 const BASEMAP_SHADER := preload("res://shaders/basemap_2d.gdshader")
+const PPI_SHADER := preload("res://shaders/ppi.gdshader")
 const ZOOM_STEP := 1.15
 const ZOOM_MIN := 0.25
 const ZOOM_MAX := 400.0
@@ -23,11 +24,13 @@ const BASEMAP_CULL_KM := 6000.0
 var _dragging := false
 var _cities: Array = []  # from Basemap.cities_near, most populous first
 var _basemap_mats: Array[ShaderMaterial] = []
+var _neighbor_rects: Array[ColorRect] = []
 
 @onready var ppi: ColorRect = $PPI
 @onready var cam: Camera2D = $Camera
 @onready var overlay: Node2D = $Overlay
 @onready var basemap_root: Node2D = $Basemap
+@onready var neighbors_root: Node2D = $Neighbors
 
 
 func _ready() -> void:
@@ -93,12 +96,52 @@ func set_zoom(z: float) -> void:
 
 
 ## Show sweep `i` of `vol` for `field_name`; pass i < 0 to blank the display.
-func show_sweep(vol: RadarVolume, i: int, field_name: String) -> void:
+## `neighbors` are mosaic entries from main.gd: {volume, sweep, offset_km (+y north),
+## rotation, others}; `others` holds the other radars in each site's local frame so the
+## shader can keep only the pixels nearest to its own radar.
+func show_sweep(
+	vol: RadarVolume,
+	i: int,
+	field_name: String,
+	neighbors: Array = [],
+	others := PackedVector2Array()
+) -> void:
+	_apply_sweep(ppi, vol, i, field_name, others)
+	while _neighbor_rects.size() < neighbors.size():
+		var holder := Node2D.new()
+		neighbors_root.add_child(holder)
+		var rect := ColorRect.new()
+		rect.position = ppi.position
+		rect.size = ppi.size
+		rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		rect.material = ShaderMaterial.new()
+		(rect.material as ShaderMaterial).shader = PPI_SHADER
+		holder.add_child(rect)
+		_neighbor_rects.append(rect)
+	for k in _neighbor_rects.size():
+		var rect := _neighbor_rects[k]
+		var holder := rect.get_parent() as Node2D
+		if k >= neighbors.size():
+			holder.visible = false
+			continue
+		var n: Dictionary = neighbors[k]
+		var off: Vector2 = n["offset_km"]
+		holder.position = Vector2(off.x, -off.y)
+		holder.rotation = n["rotation"]
+		holder.visible = true
+		_apply_sweep(rect, n["volume"], n["sweep"], field_name, n["others"])
+
+
+static func _apply_sweep(
+	rect: ColorRect, vol: RadarVolume, i: int, field_name: String, others: PackedVector2Array
+) -> void:
 	if vol == null or i < 0:
-		ppi.visible = false
+		rect.visible = false
 		return
+	var mat := rect.material as ShaderMaterial
+	mat.set_shader_parameter("other_sites", others)
+	mat.set_shader_parameter("n_other_sites", others.size())
 	var f: Dictionary = vol.sweep(i)["fields"][field_name]
-	var mat := ppi.material as ShaderMaterial
 	mat.set_shader_parameter("sweep", vol.get_texture(i, field_name))
 	mat.set_shader_parameter("colormap", Colormaps.texture_for(field_name))
 	var rng := Colormaps.range_of(field_name)
@@ -107,8 +150,8 @@ func show_sweep(vol: RadarVolume, i: int, field_name: String) -> void:
 	mat.set_shader_parameter("first_gate_km", float(f["first_gate_m"]) / 1000.0)
 	mat.set_shader_parameter("gate_spacing_km", float(f["gate_spacing_m"]) / 1000.0)
 	mat.set_shader_parameter("n_gates", int(f["n_gates"]))
-	mat.set_shader_parameter("half_size", ppi.size.x / 2.0)
-	ppi.visible = true
+	mat.set_shader_parameter("half_size", rect.size.x / 2.0)
+	rect.visible = true
 
 
 func _draw_overlay() -> void:

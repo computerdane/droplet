@@ -10,16 +10,22 @@ extends Node
 ##
 ## Command-line options (after `--`): site=KTLX time=20130520_200359 field=VEL elev=0.5
 ## live=0|1 play=0|1 fps=8 zoom=2 view=2d|3d yaw=30 pitch=25 dist=400 exag=4
-## isolate=0|1|2 threshold=20
+## isolate=0|1|2 threshold=20 mosaic=0|1
+##
+## Mosaic mode also draws every other site's volume nearest in time (within
+## MOSAIC_MAX_SKEW_SEC), placed at its projected offset from the selected site and rotated
+## for meridian convergence; the selected site draws on top.
 
 const LIVE_RESCAN_SEC := 3.0
 const LOOP_DWELL_SEC := 1.0  # extra pause on the last frame of the loop
+const MOSAIC_MAX_SKEW_SEC := 10 * 60
+const MOSAIC_MAX_KM := 900.0
 const FIELD_KEYS := {
 	KEY_1: "REF", KEY_2: "VEL", KEY_3: "SW", KEY_4: "ZDR", KEY_5: "PHI", KEY_6: "RHO", KEY_7: "CFP"
 }
 const HINT_COMMON := (
 	"Space play   Left/Right step   Home/End first/last   [ ] speed   L live   "
-	+ "Up/Down tilt   1-7 field   S site   V 2D/3D   R reset view\n"
+	+ "Up/Down tilt   1-7 field   S site   M mosaic   V 2D/3D   R reset view\n"
 )
 const HINT_2D := "wheel zoom   drag pan"
 const HINT_3D := (
@@ -40,6 +46,9 @@ var live := true
 var playing := false
 var fps := 4.0
 var view_is_3d := false
+var mosaic := false
+var _neighbors: Array = []  # mosaic entries, see _find_neighbors()
+var _others := PackedVector2Array()  # neighbours in the selected site's frame
 var _site_lonlat := Vector2.INF  # site the views' basemaps are centred on
 
 @onready var view_2d: PpiView = $View2D
@@ -65,6 +74,7 @@ func _ready() -> void:
 	if opts.has("zoom"):
 		view_2d.set_zoom(float(opts["zoom"]))
 	_apply_3d_options(opts)
+	mosaic = opts.get("mosaic", "0") == "1"
 	_set_view_3d(opts.get("view", "2d") == "3d")
 	var sites := library.sites()
 	var want_site: String = opts.get("site", "").to_upper()
@@ -89,6 +99,7 @@ func _connect_hud() -> void:
 	hud.site_selected.connect(_select_site)
 	hud.field_selected.connect(_set_field)
 	hud.view_toggled.connect(func() -> void: _set_view_3d(not view_is_3d))
+	hud.mosaic_toggled.connect(_toggle_mosaic)
 
 
 func _apply_3d_options(opts: Dictionary) -> void:
@@ -99,7 +110,7 @@ func _apply_3d_options(opts: Dictionary) -> void:
 		float(opts.get("dist", cam.distance))
 	)
 	view_3d.set_exaggeration(float(opts.get("exag", view_3d.exaggeration)))
-	view_3d.isolate = int(opts.get("isolate", view_3d.isolate)) as VolumeView3D.Isolate
+	view_3d.isolate = int(opts.get("isolate", view_3d.isolate)) as ConeSet.Isolate
 	if opts.has("threshold"):
 		view_3d.thresholds[field_name] = float(opts["threshold"])
 
@@ -148,6 +159,11 @@ func _set_view_3d(on: bool) -> void:
 	view_3d.set_active(on)
 	hud.set_view_3d(on)
 	hud.set_hint(HINT_COMMON + (HINT_3D if on else HINT_2D))
+	_refresh()
+
+
+func _toggle_mosaic() -> void:
+	mosaic = not mosaic
 	_refresh()
 
 
@@ -247,10 +263,13 @@ func _refresh() -> void:
 			_site_lonlat = ll
 			view_2d.set_site(ll.y, ll.x)
 			view_3d.set_site(ll.y, ll.x)
+	_neighbors = _find_neighbors()
+	_others = _assign_others(_neighbors)
 	if view_is_3d:
-		view_3d.show_volume(volume, field_name, sweep_index)
+		view_3d.show_volume(volume, field_name, target_elev, _neighbors, _others)
 	else:
-		view_2d.show_sweep(volume, sweep_index, field_name)
+		view_2d.show_sweep(volume, sweep_index, field_name, _neighbors, _others)
+	hud.set_mosaic(mosaic, library.sites().size() > 1)
 	var available: Array = []
 	if volume != null:
 		for i in volume.sweep_count():
@@ -260,6 +279,68 @@ func _refresh() -> void:
 	hud.set_field(field_name, available)
 	_update_info()
 	_update_playback()
+
+
+## Other sites' volumes nearest in time to the current one, for mosaic mode:
+## [{site, volume, sweep, offset_km (+y north), rotation (rad, clockwise), skew_sec}]
+func _find_neighbors() -> Array:
+	var out := []
+	if not mosaic or volume == null:
+		return out
+	var t := RadarLibrary.unix_of(volume.path)
+	var lat0 := float(volume.meta["latitude"])
+	var lon0 := float(volume.meta["longitude"])
+	for s in library.sites():
+		if s == site:
+			continue
+		var list := library.for_site(s)
+		var i := RadarLibrary.nearest_in_time(list, t)
+		var skew := RadarLibrary.unix_of(list[i]) - t
+		if absi(skew) > MOSAIC_MAX_SKEW_SEC:
+			continue
+		var v := cache.get_volume(list[i], true)
+		if v == null:
+			continue
+		var lat := float(v.meta["latitude"])
+		var lon := float(v.meta["longitude"])
+		var off := Basemap.project(lat, lon, lat0, lon0)
+		if off.length() > MOSAIC_MAX_KM:
+			continue
+		# The neighbour's north, as seen in the selected site's projection.
+		var north := Basemap.project(lat + 0.05, lon, lat0, lon0) - off
+		(
+			out
+			. append(
+				{
+					"site": s,
+					"volume": v,
+					"sweep": v.tilt_near(field_name, target_elev),
+					"offset_km": off,
+					"rotation": atan2(north.x, north.y),
+					"skew_sec": skew,
+				}
+			)
+		)
+	return out
+
+
+## For nearest-radar compositing, give each neighbour the positions of all the other
+## radars in its own local frame (+x east, +y south, as both shaders use). Returns the
+## neighbours' positions in the selected site's frame.
+static func _assign_others(neighbors: Array) -> PackedVector2Array:
+	var pos := PackedVector2Array([Vector2.ZERO])  # selected site first
+	var rot := PackedFloat32Array([0.0])
+	for n in neighbors:
+		var off: Vector2 = n["offset_km"]
+		pos.append(Vector2(off.x, -off.y))
+		rot.append(n["rotation"])
+	for k in neighbors.size():
+		var others := PackedVector2Array()
+		for j in pos.size():
+			if j != k + 1:
+				others.append((pos[j] - pos[k + 1]).rotated(-rot[k + 1]))
+		neighbors[k]["others"] = others
+	return pos.slice(1)
 
 
 func _update_playback() -> void:
@@ -295,7 +376,7 @@ func _update_info() -> void:
 	var cache_mb := cache.used_bytes() >> 20
 	if view_is_3d:
 		var thr := view_3d.threshold_of(field_name)
-		var abs_mode: bool = VolumeView3D.DEFAULT_THRESHOLDS.get(field_name, [0, false])[1]
+		var abs_mode := view_3d.threshold_is_abs(field_name)
 		(
 			lines
 			. append(
@@ -314,7 +395,20 @@ func _update_info() -> void:
 		)
 	else:
 		lines.append("zoom %.2f px/km   cache %d MB" % [view_2d.zoom(), cache_mb])
+	if mosaic:
+		lines.append("mosaic: " + _mosaic_summary())
 	hud.set_info("\n".join(lines))
+
+
+func _mosaic_summary() -> String:
+	if _neighbors.is_empty():
+		return "no other site within %d min" % (MOSAIC_MAX_SKEW_SEC / 60)
+	var parts := PackedStringArray()
+	for n in _neighbors:
+		var skew: int = n["skew_sec"]
+		var sign := "-" if skew < 0 else "+"
+		parts.append("%s %s%d:%02d" % [n["site"], sign, absi(skew) / 60, absi(skew) % 60])
+	return ", ".join(parts)
 
 
 # --- input ---------------------------------------------------------------------------
@@ -353,12 +447,12 @@ func _unhandled_input(event: InputEvent) -> void:
 				view_3d.camera.reset()
 			else:
 				view_2d.reset_camera()
+		KEY_M:
+			_toggle_mosaic()
 		KEY_V:
 			_set_view_3d(not view_is_3d)
 		KEY_I:
-			view_3d.isolate = (
-				((view_3d.isolate + 1) % VolumeView3D.Isolate.size()) as VolumeView3D.Isolate
-			)
+			view_3d.isolate = ((view_3d.isolate + 1) % ConeSet.Isolate.size()) as ConeSet.Isolate
 			_refresh()
 		KEY_COMMA:
 			view_3d.adjust_threshold(field_name, -1)

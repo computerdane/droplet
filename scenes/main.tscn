@@ -1,4 +1,4 @@
-[gd_scene load_steps=8 format=3 uid="uid://droplet_main_scene"]
+[gd_scene load_steps=9 format=3 uid="uid://droplet_main_scene"]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
 [ext_resource type="Shader" path="res://shaders/ppi.gdshader" id="2_ppi"]
@@ -7,6 +7,7 @@
 
 [ext_resource type="Script" path="res://scripts/volume_view_3d.gd" id="5_view3d"]
 [ext_resource type="Script" path="res://scripts/orbit_camera.gd" id="6_orbit"]
+[ext_resource type="Script" path="res://scripts/cone_set.gd" id="7_cone_set"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_ppi"]
 shader = ExtResource("2_ppi")
@@ -16,6 +17,8 @@ script = ExtResource("1_main")
 
 [node name="View2D" type="Node2D" parent="."]
 script = ExtResource("3_ppi_view")
+
+[node name="Neighbors" type="Node2D" parent="View2D"]
 
 [node name="PPI" type="ColorRect" parent="View2D"]
 material = SubResource("ShaderMaterial_ppi")
@@ -36,6 +39,7 @@ visible = false
 script = ExtResource("5_view3d")
 
 [node name="Cones" type="Node3D" parent="View3D"]
+script = ExtResource("7_cone_set")
 
 [node name="Camera" type="Camera3D" parent="View3D"]
 script = ExtResource("6_orbit")

@@ -20,6 +20,12 @@ uniform float threshold = -10000.0;
 uniform bool threshold_abs = false;
 uniform bool show_range_folded = false;
 uniform vec4 range_folded_color : source_color = vec4(0.55, 0.0, 0.55, 1.0);
+// Mosaic: other radars in this cone's local frame (km, +x east, +y south); ground points
+// closer to one of them belong to that radar (nearest-radar compositing).
+uniform vec2 other_sites[16];
+uniform int n_other_sites = 0;
+
+varying vec2 ground;  // local ground position, +x east, +y south
 
 const float KE_A = 8494.67;  // 4/3 * 6371 km
 
@@ -31,10 +37,17 @@ void vertex() {
 	float h = num / (sqrt(num + KE_A * KE_A) + KE_A);
 	float s = KE_A * asin(r * cos(th) / (KE_A + h));  // ground range
 	float az = UV.y * TAU;
-	VERTEX = vec3(s * sin(az), h * exaggeration, -s * cos(az));
+	ground = vec2(s * sin(az), -s * cos(az));
+	VERTEX = vec3(ground.x, h * exaggeration, ground.y);
 }
 
 void fragment() {
+	float r = length(ground);
+	for (int i = 0; i < n_other_sites; i++) {
+		if (distance(ground, other_sites[i]) < r) {
+			discard;
+		}
+	}
 	float v = texture(sweep, UV).r;
 	if (v < -1500.0) {
 		if (!show_range_folded) {

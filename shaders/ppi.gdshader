@@ -14,10 +14,19 @@ uniform float cmap_max = 80.0;
 uniform float missing_below = -900.0; // sentinel threshold: MISSING = -1000, RANGE_FOLDED = -2000
 uniform vec4 range_folded_color : source_color = vec4(0.55, 0.0, 0.55, 1.0);
 uniform bool show_range_folded = true;
+// Mosaic: other radars in this quad's local frame (km, +x east, +y south). A pixel closer
+// to one of them belongs to that radar (nearest-radar compositing, lowest beam wins).
+uniform vec2 other_sites[16];
+uniform int n_other_sites = 0;
 
 void fragment() {
 	vec2 p = (UV - 0.5) * 2.0 * half_size;
 	float r = length(p);
+	for (int i = 0; i < n_other_sites; i++) {
+		if (distance(p, other_sites[i]) < r) {
+			discard;
+		}
+	}
 	float az = degrees(atan(p.x, -p.y));
 	if (az < 0.0) {
 		az += 360.0;

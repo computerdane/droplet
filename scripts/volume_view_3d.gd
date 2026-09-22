@@ -4,12 +4,8 @@ extends Node3D
 ## with basemap lines, city labels, range rings and a height scale at the radar.
 ## Heights are exaggerated for legibility.
 
-enum Isolate { ALL, BELOW, SINGLE }
-
-const BASEMAP_SHADER := preload("res://shaders/basemap_3d.gdshader")
-const RADIAL_SEGMENTS := 64
-const AZIMUTH_SEGMENTS := 360
 const GROUND_RADIUS_KM := 480.0
+const MOSAIC_FADE_KM := 1000.0
 const RING_STEP_KM := 50.0
 const HEIGHT_TICK_KM := 5.0
 const HEIGHT_MAX_KM := 20.0
@@ -19,6 +15,7 @@ const EXAGGERATION_MAX := 20.0
 const CITY_RADIUS_KM := 350.0
 const CITY_MAX_LABELS := 24
 const ISOLATE_NAMES := ["all tilts", "selected and below", "selected only"]
+const BASEMAP_SHADER := preload("res://shaders/basemap_3d.gdshader")
 
 ## Default display thresholds for 3D (drawing everything hides the storm inside clear air).
 ## [value, use |value|]
@@ -33,22 +30,19 @@ const DEFAULT_THRESHOLDS := {
 }
 
 var exaggeration := DEFAULT_EXAGGERATION
-var isolate := Isolate.ALL
+var isolate := ConeSet.Isolate.ALL
 var thresholds: Dictionary = {}  # field -> float; overrides DEFAULT_THRESHOLDS
-var _cone_mesh: ArrayMesh
-var _shader: Shader = preload("res://shaders/cone.gdshader")
-var _cones: Array[MeshInstance3D] = []
+var _neighbors: Array[ConeSet] = []
 var _height_lines: MeshInstance3D  # built in true km, scaled on y by exaggeration
 var _height_labels: Array[Label3D] = []
 var _basemap_mats: Array[ShaderMaterial] = []
 var _city_labels: Array[Label3D] = []
 
 @onready var camera: OrbitCamera = $Camera
-@onready var cones_root: Node3D = $Cones
+@onready var cones: ConeSet = $Cones
 
 
 func _ready() -> void:
-	_cone_mesh = _build_cone_mesh()
 	_build_ground()
 	_build_basemap()
 	_build_height_scale()
@@ -63,106 +57,57 @@ func threshold_of(field_name: String) -> float:
 	return thresholds.get(field_name, DEFAULT_THRESHOLDS.get(field_name, [-10000.0])[0])
 
 
+func threshold_is_abs(field_name: String) -> bool:
+	return DEFAULT_THRESHOLDS.get(field_name, [0.0, false])[1]
+
+
 func adjust_threshold(field_name: String, steps: int) -> void:
 	var rng := Colormaps.range_of(field_name)
 	var step: float = (rng[1] - rng[0]) / 22.0
 	var t := threshold_of(field_name)
-	var lo: float = rng[0] - step
-	if DEFAULT_THRESHOLDS.get(field_name, [0.0, false])[1]:
-		lo = 0.0
+	var lo: float = 0.0 if threshold_is_abs(field_name) else rng[0] - step
 	thresholds[field_name] = clampf(snappedf(t + steps * step, 0.01), lo, rng[1])
 
 
 func set_exaggeration(v: float) -> void:
 	exaggeration = clampf(v, EXAGGERATION_MIN, EXAGGERATION_MAX)
 	_place_height_scale()
-	for c in _cones:
-		(c.material_override as ShaderMaterial).set_shader_parameter("exaggeration", exaggeration)
-		c.custom_aabb = _cone_aabb()
+	cones.set_exaggeration(exaggeration)
+	for n in _neighbors:
+		n.set_exaggeration(exaggeration)
 
 
-## Draw all tilts of `field_name`, honouring the isolate mode relative to tilt `selected`.
-func show_volume(vol: RadarVolume, field_name: String, selected: int) -> void:
-	var tilts: Array[int] = vol.tilts(field_name) if vol != null else ([] as Array[int])
-	var sel_elev := vol.elevation(selected) if selected >= 0 else 0.0
-	var shown: Array[int] = []
-	for i in tilts:
-		match isolate:
-			Isolate.SINGLE:
-				if i == selected:
-					shown.append(i)
-			Isolate.BELOW:
-				if vol.elevation(i) <= sel_elev:
-					shown.append(i)
-			_:
-				shown.append(i)
-	while _cones.size() < shown.size():
-		_cones.append(_new_cone())
-	var rng := Colormaps.range_of(field_name)
-	var abs_mode: bool = DEFAULT_THRESHOLDS.get(field_name, [0.0, false])[1]
-	for k in _cones.size():
-		var cone := _cones[k]
-		cone.visible = k < shown.size()
-		if not cone.visible:
+## Draw all tilts of `field_name`, honouring the isolate mode relative to `sel_elev`.
+## `neighbors` are mosaic entries from main.gd: {volume, offset_km (+y north), rotation,
+## others}; `others` is the other radars in the selected site's frame (see ConeSet).
+func show_volume(
+	vol: RadarVolume,
+	field_name: String,
+	sel_elev: float,
+	neighbors: Array = [],
+	others := PackedVector2Array()
+) -> void:
+	var thr := threshold_of(field_name)
+	var abs_mode := threshold_is_abs(field_name)
+	cones.show_volume(vol, field_name, sel_elev, isolate, thr, abs_mode, exaggeration, others)
+	while _neighbors.size() < neighbors.size():
+		var cs := ConeSet.new()
+		add_child(cs)
+		_neighbors.append(cs)
+	for k in _neighbors.size():
+		var cs := _neighbors[k]
+		cs.visible = k < neighbors.size()
+		if not cs.visible:
 			continue
-		var i := shown[k]
-		var f: Dictionary = vol.sweep(i)["fields"][field_name]
-		var mat := cone.material_override as ShaderMaterial
-		mat.set_shader_parameter("sweep", vol.get_texture(i, field_name))
-		mat.set_shader_parameter("colormap", Colormaps.texture_for(field_name))
-		mat.set_shader_parameter("cmap_min", rng[0])
-		mat.set_shader_parameter("cmap_max", rng[1])
-		mat.set_shader_parameter("elevation_deg", vol.elevation(i))
-		mat.set_shader_parameter("first_gate_km", float(f["first_gate_m"]) / 1000.0)
-		mat.set_shader_parameter("gate_spacing_km", float(f["gate_spacing_m"]) / 1000.0)
-		mat.set_shader_parameter("n_gates", int(f["n_gates"]))
-		mat.set_shader_parameter("threshold", threshold_of(field_name))
-		mat.set_shader_parameter("threshold_abs", abs_mode)
-		# Draw low tilts first; with opaque cones this only matters for equal depth.
-		cone.sorting_offset = -vol.elevation(i)
-
-
-func _new_cone() -> MeshInstance3D:
-	var mi := MeshInstance3D.new()
-	mi.mesh = _cone_mesh
-	var mat := ShaderMaterial.new()
-	mat.shader = _shader
-	mat.set_shader_parameter("exaggeration", exaggeration)
-	mi.material_override = mat
-	mi.custom_aabb = _cone_aabb()
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	cones_root.add_child(mi)
-	return mi
-
-
-func _cone_aabb() -> AABB:
-	var r := GROUND_RADIUS_KM + 20.0
-	return AABB(Vector3(-r, -1.0, -r), Vector3(2 * r, 30.0 * exaggeration + 2.0, 2 * r))
-
-
-## Unit grid; cone.gdshader positions the vertices. UV.x = range fraction, UV.y = azimuth.
-static func _build_cone_mesh() -> ArrayMesh:
-	var verts := PackedVector3Array()
-	var uvs := PackedVector2Array()
-	var idx := PackedInt32Array()
-	for a in AZIMUTH_SEGMENTS + 1:
-		for r in RADIAL_SEGMENTS + 1:
-			var uv := Vector2(float(r) / RADIAL_SEGMENTS, float(a) / AZIMUTH_SEGMENTS)
-			uvs.append(uv)
-			verts.append(Vector3(uv.x, 0, uv.y))  # placeholder; replaced in the shader
-	var row := RADIAL_SEGMENTS + 1
-	for a in AZIMUTH_SEGMENTS:
-		for r in RADIAL_SEGMENTS:
-			var i := a * row + r
-			idx.append_array([i, i + 1, i + row, i + 1, i + row + 1, i + row])
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_TEX_UV] = uvs
-	arrays[Mesh.ARRAY_INDEX] = idx
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	return mesh
+		var n: Dictionary = neighbors[k]
+		var off: Vector2 = n["offset_km"]
+		cs.position = Vector3(off.x, 0, -off.y)
+		cs.rotation = Vector3(0, -float(n["rotation"]), 0)
+		cs.show_volume(
+			n["volume"], field_name, sel_elev, isolate, thr, abs_mode, exaggeration, n["others"]
+		)
+	for mat in _basemap_mats:
+		mat.set_shader_parameter("fade_km", MOSAIC_FADE_KM if neighbors else GROUND_RADIUS_KM)
 
 
 func _build_ground() -> void:

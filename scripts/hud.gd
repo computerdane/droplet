@@ -11,6 +11,7 @@ signal speed_selected(fps: float)
 signal live_toggled
 signal site_selected(site: String)
 signal view_toggled
+signal mosaic_toggled
 signal field_selected(field_name: String)
 
 const SPEEDS := [1.0, 2.0, 4.0, 8.0, 15.0]
@@ -21,6 +22,7 @@ var info: Label
 var hint: Label
 var site_option: OptionButton
 var view_button: Button
+var mosaic_button: Button
 var field_buttons: Dictionary = {}  # name -> Button
 var legend_tex: TextureRect
 var legend_lo: Label
@@ -76,6 +78,10 @@ func _build_top_right() -> void:
 	site_option.tooltip_text = "Radar site (sites with decoded volumes)"
 	site_option.item_selected.connect(func(i: int) -> void: site_selected.emit(_sites[i]))
 	row.add_child(site_option)
+	mosaic_button = _button("Mosaic", "Also draw other sites at the same time (M)")
+	mosaic_button.toggle_mode = true
+	mosaic_button.pressed.connect(mosaic_toggled.emit)
+	row.add_child(mosaic_button)
 	view_button = _button("3D", "Toggle 2D plan view / 3D volume (V)")
 	view_button.pressed.connect(view_toggled.emit)
 	row.add_child(view_button)
@@ -182,6 +188,11 @@ func set_sites(sites: Array[String], current: String) -> void:
 		site_option.add_item(s)
 	site_option.select(_sites.find(current))
 	site_option.disabled = _sites.size() < 2
+
+
+func set_mosaic(on: bool, available: bool) -> void:
+	mosaic_button.set_pressed_no_signal(on)
+	mosaic_button.disabled = not available and not on
 
 
 func set_view_3d(on: bool) -> void:
