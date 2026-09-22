@@ -9,6 +9,7 @@ const SEQUENCE_GAP_SEC := 30 * 60
 
 var root: String
 var volumes: Array[String] = []  # paths, sorted ascending by (site, time)
+var _winds: Dictionary = {}  # path -> {mtime, wind_profile, storm_motion}, see winds()
 
 
 func _init(p_root: String = DEFAULT_ROOT) -> void:
@@ -47,6 +48,47 @@ func for_site(site: String) -> Array[String]:
 func latest(site: String = "") -> String:
 	var list := volumes if site.is_empty() else for_site(site)
 	return list[-1] if not list.is_empty() else ""
+
+
+## The VAD wind profile and Bunkers storm motion the sidecar stored in volume.json
+## (nexrad/vad.py): {"wind_profile": Dictionary or null, "storm_motion": Dictionary or null}.
+## Memoised per path until volume.json changes.
+func winds(path: String) -> Dictionary:
+	var file := path.path_join("volume.json")
+	var mtime := FileAccess.get_modified_time(file)
+	var hit: Dictionary = _winds.get(path, {})
+	if hit.get("mtime", -1) == mtime:
+		return hit
+	var parsed = JSON.parse_string(FileAccess.get_file_as_string(file))
+	var meta: Dictionary = parsed if parsed is Dictionary else {}
+	hit = {
+		"mtime": mtime,
+		"wind_profile": meta.get("wind_profile"),
+		"storm_motion": meta.get("storm_motion"),
+	}
+	_winds[path] = hit
+	return hit
+
+
+## The storm motion estimate nearest to the volume at `path`: its own, else the same
+## site's nearest in time, else any other site's, within `max_sec`. Returns
+## {"path": source volume, "storm_motion": Dictionary} or {} if there is none.
+func storm_motion_near(path: String, max_sec: int) -> Dictionary:
+	var t := unix_of(path)
+	var site := site_of(path)
+	var candidates: Array = []
+	for v in volumes:
+		var d := absi(unix_of(v) - t)
+		if d <= max_sec:
+			# Other sites only after every volume of this one (storm motion is regional, but
+			# the selected site's own profile is the most representative).
+			candidates.append([0 if site_of(v) == site else 1, d, v])
+	candidates.sort()
+	for c in candidates:
+		var sm = winds(c[2]).get("storm_motion")
+		if sm is Dictionary:
+			return {"path": c[2], "storm_motion": sm}
+	return {}
 
 
 ## [first, last] indices into `list` of the run of volumes around `i` with no gap

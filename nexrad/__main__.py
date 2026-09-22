@@ -7,6 +7,7 @@ History (archive mirror, ~5 min behind real time, back to ~2008):
     python -m nexrad fetch KTLX --from 2013-05-20T19:30Z --to 2013-05-20T21:30Z
     python -m nexrad decode data/raw/KTLX*                # raw -> data/volumes/<ICAO>_<time>/
     python -m nexrad update KTLX [--at ...]               # fetch + decode
+    python -m nexrad winds [data/volumes/KTLX_*]          # (re)compute VAD winds + storm motion
 
 Live (chunks bucket, seconds behind real time):
     python -m nexrad live KTLX                            # poll, decode partial volumes as they grow
@@ -29,7 +30,7 @@ from pathlib import Path
 import numpy as np
 import requests
 
-from . import basemap, chunks, dealias, level2
+from . import basemap, chunks, dealias, level2, vad
 
 BUCKET = "https://unidata-nexrad-level2.s3.amazonaws.com"
 ROOT = Path(__file__).resolve().parent.parent
@@ -164,6 +165,7 @@ def write_volume(vol: level2.Volume) -> Path:
         )
 
     add_dealiased(sweeps_meta, grids)
+    profile = wind_profile(sweeps_meta, grids)
     for sw, fields in zip(sweeps_meta, grids):
         for name, grid in fields.items():
             fname = sw["fields"][name]["file"]
@@ -184,12 +186,54 @@ def write_volume(vol: level2.Volume) -> Path:
         "layout": "row-major [azimuth_bin][gate]; bin b covers [b*step, (b+1)*step) degrees clockwise from north",
         "missing": level2.MISSING,
         "range_folded": level2.RANGE_FOLDED,
+        "wind_profile": profile,
+        "storm_motion": vad.bunkers(profile),
         "sweeps": sweeps_meta,
     }
+    write_meta(out, meta)
+    return out
+
+
+def write_meta(out: Path, meta: dict) -> None:
     tmp = out / "volume.json.tmp"
     tmp.write_text(json.dumps(meta, indent=2))
     tmp.replace(out / "volume.json")
-    return out
+
+
+def wind_profile(sweeps_meta: list[dict], grids: list[dict[str, np.ndarray]]) -> dict | None:
+    """VAD wind profile from every sweep with DVEL (see nexrad/vad.py)."""
+    inputs = [
+        {
+            "dvel": g["DVEL"],
+            "vel": g.get("VEL"),
+            "nyquist": sw["nyquist_ms"],
+            "elevation_deg": sw["elevation_deg"],
+            "first_gate_m": sw["fields"]["DVEL"]["first_gate_m"],
+            "gate_spacing_m": sw["fields"]["DVEL"]["gate_spacing_m"],
+        }
+        for sw, g in zip(sweeps_meta, grids)
+        if "DVEL" in g
+    ]
+    return vad.wind_profile(inputs)
+
+
+def add_winds(out: Path) -> dict | None:
+    """Recomputes wind_profile / storm_motion of an already decoded volume from its files."""
+    meta = json.loads((out / "volume.json").read_text())
+    grids = []
+    for sw in meta["sweeps"]:
+        g = {}
+        for name in ("VEL", "DVEL"):
+            f = sw["fields"].get(name)
+            if f:
+                raw = np.fromfile(out / f["file"], dtype="<f2").astype(np.float32)
+                g[name] = raw.reshape(sw["n_azimuth_bins"], f["n_gates"])
+        grids.append(g)
+    profile = wind_profile(meta["sweeps"], grids)
+    meta["wind_profile"] = profile
+    meta["storm_motion"] = vad.bunkers(profile)
+    write_meta(out, meta)
+    return meta["storm_motion"]
 
 
 def add_dealiased(sweeps_meta: list[dict], grids: list[dict[str, np.ndarray]]) -> None:
@@ -273,6 +317,8 @@ def main(argv: list[str] | None = None) -> None:
     lp = sub.add_parser("live")
     lp.add_argument("site")
     lp.add_argument("--interval", type=float, default=5.0, help="poll interval in seconds")
+    wp = sub.add_parser("winds")
+    wp.add_argument("path", nargs="*", help="volume directories (default: all of data/volumes)")
     sub.add_parser("basemap")
     args = ap.parse_args(argv)
 
@@ -293,6 +339,17 @@ def main(argv: list[str] | None = None) -> None:
             print(decode(Path(p)))
     elif args.cmd == "live":
         live(args.site, args.interval)
+    elif args.cmd == "winds":
+        dirs = [Path(p) for p in args.path] or sorted(d for d in VOLUMES_DIR.iterdir() if (d / "volume.json").exists())
+        for d in dirs:
+            sm = add_winds(d)
+            if sm:
+                u, v = sm["right"]
+                frm = (np.degrees(np.arctan2(-u, -v)) + 360.0) % 360.0
+                desc = f"storm (Bunkers right) from {frm:03.0f} deg at {np.hypot(u, v):.1f} m/s, 0-1 km SRH {sm['srh_0_1km']:.0f}"
+            else:
+                desc = "no storm motion (profile too sparse)"
+            print(f"{d.name}: {desc}")
     elif args.cmd == "basemap":
         print(basemap.build(BASEMAP_DIR, RAW_DIR / "basemap"))
 

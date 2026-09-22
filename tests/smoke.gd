@@ -57,6 +57,7 @@ func _initialize() -> void:
 	failed = not _check_basemap(vol) or failed
 	failed = not _check_preload(lib) or failed
 	failed = not _check_beam_model() or failed
+	failed = not _check_storm_motion(lib) or failed
 	quit(1 if failed else 0)
 
 
@@ -161,6 +162,35 @@ func _check_preload(lib) -> bool:
 
 ## The cross-section's beam height at a ground range must match cone.gdshader's forward
 ## model (slant range -> height, ground range), replicated here.
+## Every volume with a VAD storm motion must find its own; a volume without one must find
+## the nearest one in time (same site first). Skipped when nothing has been computed.
+func _check_storm_motion(lib) -> bool:
+	var with: Array[String] = []
+	for v in lib.volumes:
+		if lib.winds(v).get("storm_motion") is Dictionary:
+			with.append(v)
+	if with.is_empty():
+		print("  storm motion: none computed (python -m nexrad winds)")
+		return true
+	var ok := true
+	for v in lib.volumes:
+		var near: Dictionary = lib.storm_motion_near(v, 3600)
+		if with.has(v) and near.get("path", "") != v:
+			ok = false
+		if not near.is_empty() and absi(lib.unix_of(near["path"]) - lib.unix_of(v)) > 3600:
+			ok = false
+	var sm: Dictionary = lib.winds(with[0])["storm_motion"]
+	print(
+		(
+			"  storm motion: %d/%d volumes, %s right mover %s, 0-1 km SRH %d"
+			% [with.size(), lib.volumes.size(), with[0].get_file(), sm["right"], sm["srh_0_1km"]]
+		)
+	)
+	if not ok:
+		push_error("storm_motion_near broken")
+	return ok
+
+
 func _check_beam_model() -> bool:
 	var ke_a := 8494.67
 	var worst := 0.0

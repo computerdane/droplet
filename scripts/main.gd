@@ -13,7 +13,8 @@ extends Node
 ## pitch=25 dist=400 exag=4 isolate=0|1|2 threshold=20 render=cones|volume density=0.05
 ## mosaic=0|1 prefetch=0|1
 ## section=ax,ay,bx,by (cross-section A -> B, km east,north of the radar)
-## srm=240,10 (storm-relative velocity, storm moving from 240 degrees at 10 m/s)
+## srm=240,10 (storm-relative velocity, storm moving from 240 degrees at 10 m/s) or srm=auto
+## (storm motion from the VAD profile, see _auto_storm) winds=0|1 (hodograph panel)
 ##
 ## Upcoming loop frames (and their mosaic neighbours) are read in the background, see
 ## _preload_ahead() and VolumeCache.
@@ -26,6 +27,8 @@ const LIVE_RESCAN_SEC := 3.0
 const LOOP_DWELL_SEC := 1.0  # extra pause on the last frame of the loop
 const MOSAIC_MAX_SKEW_SEC := 10 * 60
 const MOSAIC_MAX_KM := 900.0
+## Automatic storm motion may come from a volume (any site) up to this far away in time.
+const AUTO_STORM_MAX_SEC := 60 * 60
 const VELOCITY_FIELDS := ["VEL", "DVEL"]
 ## Share of the cache budget that loop frames ahead of the playhead may fill.
 const PRELOAD_BUDGET_FRACTION := 0.8
@@ -41,7 +44,8 @@ const FIELD_KEYS := {
 }
 const HINT_COMMON := (
 	"Space play   Left/Right step   Home/End first/last   [ ] speed   L live   Up/Down tilt\n"
-	+ "1-8 field   S site   M mosaic   V 2D/3D   R reset view   X section   T storm-rel.   F fetch\n"
+	+ "1-8 field   S site   M mosaic   V 2D/3D   R reset view   X section   F fetch\n"
+	+ "T storm-relative   W winds (hodograph)\n"
 )
 const HINT_2D := "wheel zoom   drag pan"
 const HINT_SECTION := "wheel zoom   left drag: section A to B   right drag pan"
@@ -70,6 +74,9 @@ var section_on := false  # cross-section mode: line in the 2D view, panel in the
 var srm_on := false  # storm-relative velocity
 var storm_from_deg := 240.0  # meteorological: direction the storm moves from
 var storm_speed := 10.0  # m/s
+var srm_auto := true  # storm motion from the VAD profile when there is one, else manual
+var winds_shown := false  # hodograph panel
+var _auto_storm: Dictionary = {}  # RadarLibrary.storm_motion_near() for the current volume
 var _neighbors: Array = []  # mosaic entries, see _find_neighbors()
 var _others := PackedVector2Array()  # neighbours in the selected site's frame
 var _site_lonlat := Vector2.INF  # site the views' basemaps are centred on
@@ -105,12 +112,16 @@ func _ready() -> void:
 		view_2d.cam.position = Vector2(p[0], -p[1])
 	_apply_3d_options(opts)
 	mosaic = opts.get("mosaic", "0") == "1"
-	if opts.has("srm"):
+	if opts.get("srm", "") == "auto":
+		srm_on = true
+	elif opts.has("srm"):
 		var m: PackedFloat64Array = opts["srm"].split_floats(",")
 		if m.size() == 2:
 			storm_from_deg = m[0]
 			storm_speed = m[1]
 			srm_on = true
+			srm_auto = false
+	winds_shown = opts.get("winds", "0") == "1"
 	if opts.has("section"):
 		var s: PackedFloat64Array = opts["section"].split_floats(",")
 		if s.size() == 4:
@@ -148,6 +159,8 @@ func _connect_hud() -> void:
 	hud.mosaic_toggled.connect(_toggle_mosaic)
 	hud.section_toggled.connect(func() -> void: _set_section_on(not section_on))
 	hud.srm_toggled.connect(_toggle_srm)
+	hud.srm_auto_toggled.connect(_toggle_srm_auto)
+	hud.winds_toggled.connect(_toggle_winds)
 	hud.fetch_toggled.connect(_toggle_fetch_panel)
 	hud.fetch_panel.update_requested.connect(
 		func(s: String, at: String, from: String, to: String) -> void:
@@ -242,7 +255,23 @@ func _toggle_srm() -> void:
 	_refresh()
 
 
+func _toggle_srm_auto() -> void:
+	srm_auto = not srm_auto
+	srm_on = srm_on or srm_auto
+	_refresh()
+
+
+func _toggle_winds() -> void:
+	winds_shown = not winds_shown
+	_refresh()
+
+
+## Nudging the storm motion switches to manual, starting from the automatic estimate.
 func _adjust_storm(d_from_deg: float, d_speed: float) -> void:
+	var cur := Hodograph.from_dir_speed(_storm_motion())
+	storm_from_deg = cur.x
+	storm_speed = cur.y
+	srm_auto = false
 	storm_from_deg = fposmod(storm_from_deg + d_from_deg, 360.0)
 	storm_speed = clampf(storm_speed + d_speed, 0.0, 60.0)
 	srm_on = true
@@ -254,6 +283,16 @@ func _adjust_storm(d_from_deg: float, d_speed: float) -> void:
 func _storm_vector() -> Vector2:
 	if not (srm_on and VELOCITY_FIELDS.has(field_name)):
 		return Vector2.ZERO
+	return _storm_motion()
+
+
+## Storm motion in effect (m/s, +x east, +y north): the Bunkers right mover of the nearest
+## VAD profile in auto mode, else the manual direction and speed. Estimates borrowed from
+## another site are used unrotated (meridian convergence is a degree or two).
+func _storm_motion() -> Vector2:
+	if srm_auto and not _auto_storm.is_empty():
+		var rm: Array = _auto_storm["storm_motion"]["right"]
+		return Vector2(float(rm[0]), float(rm[1]))
 	var heading := deg_to_rad(storm_from_deg + 180.0)  # direction it moves towards
 	return Vector2(sin(heading), cos(heading)) * storm_speed
 
@@ -411,6 +450,9 @@ func _refresh() -> void:
 	for n in _neighbors:
 		on_screen.append((n["volume"] as RadarVolume).path)
 	cache.pin(on_screen)
+	_auto_storm = (
+		library.storm_motion_near(volume.path, AUTO_STORM_MAX_SEC) if volume != null else {}
+	)
 	var storm := _storm_vector()
 	view_2d.storm_motion = storm
 	view_3d.storm_motion = storm
@@ -427,11 +469,54 @@ func _refresh() -> void:
 				if not available.has(f):
 					available.append(f)
 	hud.set_field(field_name, available, storm != Vector2.ZERO)
-	hud.set_srm(VELOCITY_FIELDS.has(field_name), srm_on, storm_from_deg, storm_speed)
+	var motion := Hodograph.from_dir_speed(_storm_motion())
+	hud.set_srm(
+		VELOCITY_FIELDS.has(field_name),
+		srm_on,
+		srm_auto,
+		not _auto_storm.is_empty(),
+		motion.x,
+		motion.y
+	)
+	_update_winds()
 	_update_section()
 	_update_info()
 	_update_playback()
 	_preload_ahead()
+
+
+func _update_winds() -> void:
+	hud.set_winds_shown(winds_shown)
+	if not winds_shown:
+		return
+	if volume == null:
+		hud.hodograph.show_winds(null, null, Vector2.INF, "VAD winds", "")
+		return
+	var own := library.winds(volume.path)
+	var motion = own.get("storm_motion")
+	if motion == null and not _auto_storm.is_empty():
+		motion = _auto_storm["storm_motion"]
+	var title := "VAD winds  %s %s  (m/s)" % [volume.icao(), _clock(volume.path)]
+	var in_use := _storm_motion() if srm_on else Vector2.INF
+	hud.hodograph.show_winds(own.get("wind_profile"), motion, in_use, title, _storm_source())
+
+
+## "HH:MMZ" of a volume path.
+static func _clock(path: String) -> String:
+	var t := path.get_file().get_slice("_", 2)
+	return "%s:%sZ" % [t.substr(0, 2), t.substr(2, 2)]
+
+
+## Where the storm motion in effect comes from, for the info text and hodograph.
+func _storm_source() -> String:
+	var m := Hodograph.from_dir_speed(_storm_motion())
+	var what := "storm from %03d° at %d m/s" % [roundi(m.x) % 360, roundi(m.y)]
+	if not (srm_auto and not _auto_storm.is_empty()):
+		return what + " (manual)"
+	var src: String = _auto_storm["path"]
+	if volume != null and src == volume.path:
+		return what + " (Bunkers RM)"
+	return what + " (Bunkers RM, %s %s)" % [RadarLibrary.site_of(src), _clock(src)]
 
 
 func _update_section() -> void:
@@ -597,9 +682,7 @@ func _update_info() -> void:
 	else:
 		lines.append("zoom %.2f px/km   cache %d MB" % [view_2d.zoom(), cache_mb])
 	if _storm_vector() != Vector2.ZERO:
-		lines.append(
-			"storm-relative: storm from %03d° at %d m/s" % [int(storm_from_deg), int(storm_speed)]
-		)
+		lines.append("storm-relative: " + _storm_source())
 	if mosaic:
 		lines.append("mosaic: " + _mosaic_summary())
 	for job in fetcher.running_jobs():
@@ -662,6 +745,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_set_section_on(not section_on)
 		KEY_T:
 			_toggle_srm()
+		KEY_W:
+			_toggle_winds()
 		KEY_F:
 			_toggle_fetch_panel()
 		KEY_B:

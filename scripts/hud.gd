@@ -16,6 +16,8 @@ signal mosaic_toggled
 signal section_toggled
 signal fetch_toggled
 signal srm_toggled
+signal srm_auto_toggled
+signal winds_toggled
 signal srm_changed(d_from_deg: float, d_speed: float)
 signal field_selected(field_name: String)
 
@@ -23,6 +25,7 @@ const SPEEDS := [1.0, 2.0, 4.0, 8.0, 15.0]
 const DEFAULT_SPEED_INDEX := 2
 const LEGEND_WIDTH := 280
 const SECTION_SIZE := Vector2(560, 270)
+const HODOGRAPH_SIZE := Vector2(280, 300)
 
 var info: Label
 var hint: Label
@@ -35,6 +38,9 @@ var fetch_panel: FetchPanel
 var field_buttons: Dictionary = {}  # name -> Button
 var srm_row: HBoxContainer
 var srm_button: Button
+var srm_auto_button: Button
+var winds_button: Button
+var hodograph: Hodograph
 var srm_dir_label: Label
 var srm_speed_label: Label
 var legend_tex: TextureRect
@@ -109,6 +115,10 @@ func _build_top_right() -> void:
 	section_button.toggle_mode = true
 	section_button.pressed.connect(section_toggled.emit)
 	row.add_child(section_button)
+	winds_button = _button("Winds", "VAD wind profile hodograph and storm motion (W)")
+	winds_button.toggle_mode = true
+	winds_button.pressed.connect(winds_toggled.emit)
+	row.add_child(winds_button)
 	view_button = _button("3D", "Toggle 2D plan view / 3D volume (V)")
 	view_button.pressed.connect(view_toggled.emit)
 	row.add_child(view_button)
@@ -147,6 +157,12 @@ func _build_top_right() -> void:
 	labels.add_child(legend_unit)
 	labels.add_child(legend_hi)
 
+	hodograph = Hodograph.new()
+	hodograph.custom_minimum_size = HODOGRAPH_SIZE
+	hodograph.size_flags_horizontal = Control.SIZE_SHRINK_END
+	hodograph.visible = false
+	box.add_child(hodograph)
+
 
 ## Storm-relative motion controls, shown for velocity fields: storm moving from a
 ## direction (meteorological convention) at a speed.
@@ -158,6 +174,12 @@ func _build_srm_row(box: VBoxContainer) -> void:
 	srm_button.toggle_mode = true
 	srm_button.pressed.connect(srm_toggled.emit)
 	srm_row.add_child(srm_button)
+	srm_auto_button = _button(
+		"Auto", "Storm motion from the VAD wind profile (Bunkers right mover)"
+	)
+	srm_auto_button.toggle_mode = true
+	srm_auto_button.pressed.connect(srm_auto_toggled.emit)
+	srm_row.add_child(srm_auto_button)
 	srm_row.add_child(_srm_step("<", "Storm motion from 10 degrees further left", -10.0, 0.0))
 	srm_dir_label = _label(13)
 	srm_row.add_child(srm_dir_label)
@@ -269,11 +291,20 @@ func set_mosaic(on: bool, available: bool) -> void:
 	mosaic_button.disabled = not available and not on
 
 
-func set_srm(available: bool, on: bool, from_deg: float, speed_ms: float) -> void:
+func set_srm(
+	available: bool, on: bool, auto: bool, auto_available: bool, from_deg: float, speed_ms: float
+) -> void:
 	srm_row.visible = available
 	srm_button.set_pressed_no_signal(on)
-	srm_dir_label.text = " from %03d° " % int(from_deg)
-	srm_speed_label.text = " %d m/s (%d kt) " % [int(speed_ms), roundi(speed_ms * 1.94384)]
+	srm_auto_button.set_pressed_no_signal(auto)
+	srm_auto_button.disabled = not auto_available and not auto
+	srm_dir_label.text = " from %03d° " % (roundi(from_deg) % 360)
+	srm_speed_label.text = " %d m/s (%d kt) " % [roundi(speed_ms), roundi(speed_ms * 1.94384)]
+
+
+func set_winds_shown(on: bool) -> void:
+	winds_button.set_pressed_no_signal(on)
+	hodograph.visible = on
 
 
 func set_view_3d(on: bool) -> void:

@@ -18,6 +18,8 @@ python -m nexrad live KTLX                          # poll chunks bucket, rewrit
 python -m nexrad basemap                            # once: Census states/counties + cities -> data/basemap/
 python -m nexrad decode data/raw/*_V06*             # re-decode everything (e.g. after decoder/dealias changes)
 python -m nexrad.dealias                            # dealiaser self-test on a synthetic aliased sweep
+python -m nexrad winds [data/volumes/...]           # (re)compute VAD winds + storm motion without re-decoding
+python -m nexrad.vad                                # VAD self-test on synthetic sweeps
 godot --editor                                      # open project
 godot                                               # run main scene
 godot --headless --path . --import                  # (re)build .godot/ cache after adding scripts/scenes
@@ -37,6 +39,11 @@ gdformat scripts tests && gdlint scripts tests
   ambiguous boundaries (mean jump ≈ Vn), then pick each component's absolute fold by agreement with the
   tilt below (`dealias_volume` goes bottom-up; the lowest tilt uses "most gates unchanged").
   Weak spots: violent-storm cores aloft and isolated small echoes can still come out one fold off.
+- `nexrad/vad.py` – VAD wind profile: per 1 km ring (5–60 km slant range, tilts ≤ 20°) least-squares fit of
+  [1, sin, cos] to DVEL, then refit on raw VEL unfolded against that fit (immune to dealias errors); rings
+  need 25 % coverage, samples in all 8 sectors, rms ≤ 4.5 m/s; median per 250 m height bin. `bunkers()`
+  = Bunkers right/left mover + 0–1/0–3 km SRH, only when the profile spans ≤ 1 km to ≥ 5 km AGL
+  (clear-air-only volumes often top out ~3 km and get none).
 - `nexrad/basemap.py` – Census 1:500k state/county shapefiles (stdlib reader) + Natural Earth cities.
 - `nexrad/__main__.py` – CLI; `write_volume()` defines the on-disk format Godot reads; `add_dealiased()` adds DVEL.
 - `data/raw/` – downloaded archive files (gitignored). `data/volumes/` – decoded, `data/basemap/` – basemap buffers (all gitignored).
@@ -69,7 +76,9 @@ gdformat scripts tests && gdlint scripts tests
   ±½ beamwidth (0.95°). `beam_height()` is the CPU twin, checked against cone.gdshader in smoke.gd.
 - `shaders/storm.gdshaderinc` – storm-relative velocity: `storm_motion` uniform (m/s east/north, radar-local),
   subtracts its radial component × cos(elev). Included by ppi, cone, section and volume shaders. `main._storm_vector()`
-  is non-zero only for VEL/DVEL with SRM on (T, HUD row, `srm=from_deg,speed_ms`, meteorological "from");
+  is non-zero only for VEL/DVEL with SRM on (T, HUD row, `srm=from_deg,speed_ms` or `srm=auto`, meteorological
+  "from"). Auto (default) = Bunkers RM from `RadarLibrary.storm_motion_near()`: this volume's, else the same
+  site's nearest within 60 min, else another site's (used unrotated); nudging < > - + switches to manual.
   mosaic neighbours get it rotated into their frame (`storm_motion.rotated(rotation)`).
 - `scripts/fetcher.gd` + `scripts/fetch_panel.gd` – fetch from the UI (F): runs `python -u -m nexrad update|live`
   via `OS.execute_with_pipe` (non-blocking), sets PYTHONPATH to the project, parses `[i/n]` progress and
@@ -78,6 +87,8 @@ gdformat scripts tests && gdlint scripts tests
   on exit. The fetch panel's LineEdits are the only focusable controls (focus released on close).
 - `scripts/basemap.gd` + `shaders/basemap*.gdshader*` – lon/lat line meshes projected on the GPU
   (azimuthal equidistant around the site, haversine form for float32); `Basemap.project()` is the CPU twin.
+- `scripts/hodograph.gd` – HUD hodograph (W): VAD profile coloured 0–1/1–3/3–6/6+ km, RM/LM, mean wind,
+  the storm motion in use (×), SRH.
 - `scripts/colormaps.gd` – per-field value ranges, units and gradient textures.
 - `nexrad/` and `data/` carry a `.gdignore` so the editor does not try to import them; `res://data/...` is still readable via FileAccess in dev builds. Exported builds will need `user://`.
 
@@ -91,6 +102,9 @@ gdformat scripts tests && gdlint scripts tests
 - Split-cut VCPs produce two sweeps at ~the same elevation: a surveillance cut (REF/ZDR/PHI/RHO/CFP) and a Doppler cut (REF/VEL/SW). `RadarVolume.tilts()` / `tilt_near()` pick one sweep per elevation that has the requested field.
 - `DVEL` = dealiased `VEL`, written next to every VEL sweep with the same geometry (VEL stays raw).
   Volumes decoded before it existed (e.g. old `live` output with no raw file) simply lack it.
+- `wind_profile` = `{height_m, u_ms, v_ms, n}` (parallel lists, m above the radar, m/s east/north) or null;
+  `storm_motion` = `{method, right, left, mean_0_6km, shear_0_6km: [u, v], srh_0_1km, srh_0_3km}` or null
+  (nexrad/vad.py). Added without a format_version bump; older volume.json lacks them (`python -m nexrad winds`).
 - `complete: false` marks a partial volume still being filled by `live`. Files are written via atomic rename so Godot never reads a torn file; `main.gd` re-scans every 3 s while live.
 
 ## Mosaic
@@ -114,11 +128,12 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - `live` starts on the in-progress volume (skipping it if joined after its first chunk), then follows each new one. It bootstraps by probing ~20 S3 listings to find the newest volume number; could cache the last number in `data/`.
 - Done: time animation + live following, 3D cones, basemap, site picker, multi-site mosaic,
   background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
-  storm-relative velocity (storm motion is manual; no automatic estimate yet), fetching from the UI,
-  translucent volume rendering.
-- Next ideas: automatic storm motion (e.g. Bunkers from a VAD wind profile), dealiasing that uses the
+  storm-relative velocity, fetching from the UI, translucent volume rendering, VAD wind profile +
+  hodograph + automatic (Bunkers) storm motion.
+- Next ideas: dealiasing that uses the
   previous volume as a temporal reference, the A-B section line drawn in 3D, mosaic cross-sections,
-  a hover readout (value/height) in the section panel.
+  a hover readout (value/height) in the section panel, the VAD profile as a
+  time-height plot (VWP), a VAD-based temporal reference for dealiasing.
 - Mosaic uses whatever is on disk; `live` follows one site per process (the fetch panel can start several
   for a live mosaic). Fetching from the UI needs the dev shell's `python` and a source checkout (not an export).
 - The 3D ground disk/rings are centred on the selected site only.
