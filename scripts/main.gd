@@ -16,7 +16,7 @@ extends Node
 ## srm=240,10 (storm-relative velocity, storm moving from 240 degrees at 10 m/s) or srm=auto
 ## (storm motion from the VAD profile, see _auto_storm) winds=0|1 (hodograph panel)
 ## vwp=0|1 (VAD winds over the loop as barbs) hover=x,y (pin the hover readout to that
-## canvas point, for screenshots) volumes=res://tests/fixtures/volumes (library root; default
+## canvas point, for screenshots) volumes=res://tests/fixtures/volumes (DirSource root; default
 ## res://data/volumes)
 ##
 ## Hovering the 2D view, the cross-section or the VWP shows a readout of the value under
@@ -63,9 +63,9 @@ const HINT_3D := (
 
 var library := RadarLibrary.new()
 var fetcher := Fetcher.new()
-var cache := VolumeCache.new()
+var cache := VolumeCache.new(library.source)
 var site := ""
-var frames: Array[String] = []  # volume dirs for `site`, ascending time
+var frames: Array[String] = []  # volume names for `site`, ascending time
 var frame := -1
 var volume: RadarVolume
 var sweep_index := -1  # sweep shown, resolved from field + target_elev
@@ -117,8 +117,7 @@ func _ready() -> void:
 
 	var opts := _parse_options()
 	if opts.has("volumes"):
-		library.root = opts["volumes"]
-		library.scan()
+		_set_source(DirSource.new(opts["volumes"]))
 	ui_scale = clampf(float(opts.get("ui_scale", ui_scale)), 0.5, 4.0)
 	get_window().size_changed.connect(_fit_ui_scale)
 	_fit_ui_scale()
@@ -429,7 +428,7 @@ func _toggle_fetch_panel() -> void:
 	if hud.fetch_panel.visible:
 		hud.fetch_panel.close_panel()
 	else:
-		var t := RadarLibrary.unix_of(volume.path) if volume != null else 0
+		var t := RadarLibrary.unix_of(volume.name) if volume != null else 0
 		hud.fetch_panel.open_panel(site, t)
 
 
@@ -458,18 +457,25 @@ func _on_job_finished(job: Fetcher.Job) -> void:
 	_set_playing(false)
 	if job.site != site:
 		_select_site(job.site)
-	var i := frames.find(library.root.path_join(job.volumes[-1]))
+	var i := frames.find(job.volumes[-1])
 	if i >= 0:
 		_go_to(i)
 
 
-## Re-reads the volume directory, keeping the frame on screen.
+## Switches where volumes come from; drops everything loaded from the old source. Call before
+## a site is selected (the frame on screen is not kept).
+func _set_source(source: VolumeSource) -> void:
+	library = RadarLibrary.new(source)
+	cache = VolumeCache.new(source, cache.budget_bytes)
+
+
+## Re-reads the volume source, keeping the frame on screen.
 func _rescan() -> void:
 	library.scan()
 	hud.set_sites(library.sites(), site)
 	frames = library.for_site(site)
 	if volume != null:
-		frame = maxi(frames.find(volume.path), 0)
+		frame = maxi(frames.find(volume.name), 0)
 	_update_playback()
 
 
@@ -489,7 +495,7 @@ func _on_live_tick() -> void:
 		_update_playback()  # new frames join the loop on the next pass
 		return
 	var newest := frames.size() - 1
-	var same := volume != null and frames[newest] == volume.path
+	var same := volume != null and frames[newest] == volume.name
 	if same and volume.is_complete():
 		return
 	_go_to(newest)  # new volume, or the current partial one grew
@@ -519,12 +525,12 @@ func _refresh() -> void:
 			view_3d.set_site(ll.y, ll.x)
 	_neighbors = _find_neighbors()
 	_others = _assign_others(_neighbors)
-	var on_screen: Array = [volume.path] if volume != null else []
+	var on_screen: Array = [volume.name] if volume != null else []
 	for n in _neighbors:
-		on_screen.append((n["volume"] as RadarVolume).path)
+		on_screen.append((n["volume"] as RadarVolume).name)
 	cache.pin(on_screen)
 	_auto_storm = (
-		library.storm_motion_near(volume.path, AUTO_STORM_MAX_SEC) if volume != null else {}
+		library.storm_motion_near(volume.name, AUTO_STORM_MAX_SEC) if volume != null else {}
 	)
 	var storm := _storm_vector()
 	view_2d.storm_motion = storm
@@ -583,16 +589,16 @@ func _update_winds() -> void:
 	if volume == null:
 		hud.hodograph.show_winds(null, null, Vector2.INF, "VAD winds", "")
 		return
-	var own := library.winds(volume.path)
+	var own := library.winds(volume.name)
 	var motion = own.get("storm_motion")
 	if motion == null and not _auto_storm.is_empty():
 		motion = _auto_storm["storm_motion"]
-	var title := "VAD winds  %s %s  (m/s)" % [volume.icao(), _clock(volume.path)]
+	var title := "VAD winds  %s %s  (m/s)" % [volume.icao(), _clock(volume.name)]
 	var in_use := _storm_motion() if srm_on else Vector2.INF
 	hud.hodograph.show_winds(own.get("wind_profile"), motion, in_use, title, _storm_source())
 
 
-## "HH:MMZ" of a volume path.
+## "HH:MMZ" of a volume name.
 static func _clock(path: String) -> String:
 	var t := path.get_file().get_slice("_", 2)
 	return "%s:%sZ" % [t.substr(0, 2), t.substr(2, 2)]
@@ -604,8 +610,8 @@ func _storm_source() -> String:
 	var what := "storm from %03d° at %d m/s" % [roundi(m.x) % 360, roundi(m.y)]
 	if not (srm_auto and not _auto_storm.is_empty()):
 		return what + " (manual)"
-	var src: String = _auto_storm["path"]
-	if volume != null and src == volume.path:
+	var src: String = _auto_storm["name"]
+	if volume != null and src == volume.name:
 		return what + " (Bunkers RM)"
 	return what + " (Bunkers RM, %s %s)" % [RadarLibrary.site_of(src), _clock(src)]
 
@@ -717,9 +723,9 @@ func _preload_ahead() -> void:
 		need = VolumeCache.Need.TILT_ARRAY if view_3d.volume_render else VolumeCache.Need.ALL_TILTS
 	elif section_on and view_2d.has_section:
 		need = VolumeCache.Need.ALL_TILTS
-	budget -= cache.prefetch(volume.path, field_name, target_elev, need)
+	budget -= cache.prefetch(volume.name, field_name, target_elev, need)
 	for nb in _neighbors:
-		budget -= cache.prefetch(nb["volume"].path, field_name, target_elev, need)
+		budget -= cache.prefetch(nb["volume"].name, field_name, target_elev, need)
 	for k in range(1, n):
 		if budget <= 0:
 			break
@@ -747,7 +753,7 @@ func _find_neighbors() -> Array:
 	var out := []
 	if not mosaic or volume == null:
 		return out
-	var t := RadarLibrary.unix_of(volume.path)
+	var t := RadarLibrary.unix_of(volume.name)
 	var lat0 := float(volume.meta["latitude"])
 	var lon0 := float(volume.meta["longitude"])
 	for s in library.sites():
@@ -813,7 +819,7 @@ func _update_playback() -> void:
 func _update_info() -> void:
 	if volume == null:
 		var help := "Run:  nexrad update KTLX   (or: nexrad live KTLX)"
-		hud.set_info("No volumes in %s\n%s" % [library.root, help])
+		hud.set_info("No volumes in %s\n%s" % [library.source.describe(), help])
 		return
 	var lines := PackedStringArray()
 	var partial := "" if volume.is_complete() else "  (partial)"

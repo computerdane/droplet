@@ -7,6 +7,7 @@ extends SceneTree
 ## Exits 1 if any test failed or the volume root is empty.
 
 const RadarLibraryScript := preload("res://scripts/radar_library.gd")
+const DirSourceScript := preload("res://scripts/dir_source.gd")
 const FIXTURE_ROOT := "res://tests/fixtures/volumes"
 const UNIT_DIR := "res://tests/unit"
 
@@ -18,7 +19,7 @@ func _initialize() -> void:
 			opts[a.get_slice("=", 0)] = a.get_slice("=", 1)
 	var root: String = opts.get("volumes", FIXTURE_ROOT)
 	var only: String = opts.get("only", "")
-	var lib = RadarLibraryScript.new(root)
+	var lib = RadarLibraryScript.new(DirSourceScript.new(root))
 	print("volumes: %d under %s  sites: %s" % [lib.volumes.size(), root, lib.sites()])
 	if lib.volumes.is_empty():
 		push_error(

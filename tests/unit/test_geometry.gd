@@ -8,7 +8,7 @@ const SectionViewScript := preload("res://scripts/section_view.gd")
 
 ## 1 degree of latitude due north is about 111.19 km; unproject inverts project.
 func test_projection() -> void:
-	var vol = RadarVolumeScript.load_from_dir(lib.volumes[0])
+	var vol = lib.open(lib.volumes[0])
 	var lat: float = vol.meta["latitude"]
 	var lon: float = vol.meta["longitude"]
 	var p: Vector2 = BasemapScript.project(lat + 1.0, lon, lat, lon)
@@ -23,7 +23,7 @@ func test_projection() -> void:
 func test_basemap() -> void:
 	var bm = BasemapScript.get_shared()
 	if bm == null:
-		note("not built (python -m nexrad basemap)")
+		note("not built (nexrad basemap)")
 		return
 	check(not bm.meshes.is_empty(), "basemap has layers")
 	note("layers: %s" % [bm.meshes.keys()])

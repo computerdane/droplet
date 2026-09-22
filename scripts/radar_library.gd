@@ -1,31 +1,31 @@
 class_name RadarLibrary
 extends RefCounted
-## Index of decoded volumes on disk (data/volumes/<ICAO>_<YYYYMMDD_HHMMSS>/).
-## Directory names sort chronologically per site, which is what history browsing needs.
+## Index of the volumes a VolumeSource holds, by name (<ICAO>_<YYYYMMDD_HHMMSS>).
+## Names sort chronologically per site, which is what history browsing needs.
 
-const DEFAULT_ROOT := "res://data/volumes"
 ## Volumes further apart than this start a new sequence (playback loops within one sequence).
 const SEQUENCE_GAP_SEC := 30 * 60
 
-var root: String
-var volumes: Array[String] = []  # paths, sorted ascending by (site, time)
-var _winds: Dictionary = {}  # path -> {mtime, wind_profile, storm_motion}, see winds()
+var source: VolumeSource
+var volumes: Array[String] = []  # names, sorted ascending by (site, time)
+var _winds: Dictionary = {}  # name -> {version, wind_profile, storm_motion}, see winds()
 
 
-func _init(p_root: String = DEFAULT_ROOT) -> void:
-	root = p_root
+func _init(p_source: VolumeSource = null) -> void:
+	source = p_source if p_source != null else DirSource.new()
 	scan()
 
 
 func scan() -> void:
 	volumes.clear()
-	var dir := DirAccess.open(root)
-	if dir == null:
-		return
-	for name in dir.get_directories():
-		if FileAccess.file_exists(root.path_join(name).path_join("volume.json")):
-			volumes.append(root.path_join(name))
+	for name in source.names():
+		volumes.append(name)
 	volumes.sort()
+
+
+## Loads volume `name` from the source, uncached (the app goes through VolumeCache).
+func open(name: String) -> RadarVolume:
+	return RadarVolume.open(source, name)
 
 
 func sites() -> Array[String]:
@@ -52,30 +52,29 @@ func latest(site: String = "") -> String:
 
 ## The VAD wind profile and Bunkers storm motion the sidecar stored in volume.json
 ## (nexrad/src/vad.rs): {"wind_profile": Dictionary or null, "storm_motion": Dictionary or null}.
-## Memoised per path until volume.json changes.
-func winds(path: String) -> Dictionary:
-	var file := path.path_join("volume.json")
-	var mtime := FileAccess.get_modified_time(file)
-	var hit: Dictionary = _winds.get(path, {})
-	if hit.get("mtime", -1) == mtime:
+## Memoised per volume until volume.json changes.
+func winds(name: String) -> Dictionary:
+	var version := source.version(name)
+	var hit: Dictionary = _winds.get(name, {})
+	if hit.get("version", -1) == version:
 		return hit
-	var parsed = JSON.parse_string(FileAccess.get_file_as_string(file))
+	var parsed = JSON.parse_string(source.read_meta(name))
 	var meta: Dictionary = parsed if parsed is Dictionary else {}
 	hit = {
-		"mtime": mtime,
+		"version": version,
 		"wind_profile": meta.get("wind_profile"),
 		"storm_motion": meta.get("storm_motion"),
 	}
-	_winds[path] = hit
+	_winds[name] = hit
 	return hit
 
 
-## The storm motion estimate nearest to the volume at `path`: its own, else the same
+## The storm motion estimate nearest to the volume `name`: its own, else the same
 ## site's nearest in time, else any other site's, within `max_sec`. Returns
-## {"path": source volume, "storm_motion": Dictionary} or {} if there is none.
-func storm_motion_near(path: String, max_sec: int) -> Dictionary:
-	var t := unix_of(path)
-	var site := site_of(path)
+## {"name": source volume, "storm_motion": Dictionary} or {} if there is none.
+func storm_motion_near(name: String, max_sec: int) -> Dictionary:
+	var t := unix_of(name)
+	var site := site_of(name)
 	var candidates: Array = []
 	for v in volumes:
 		var d := absi(unix_of(v) - t)
@@ -87,7 +86,7 @@ func storm_motion_near(path: String, max_sec: int) -> Dictionary:
 	for c in candidates:
 		var sm = winds(c[2]).get("storm_motion")
 		if sm is Dictionary:
-			return {"path": c[2], "storm_motion": sm}
+			return {"name": c[2], "storm_motion": sm}
 	return {}
 
 
@@ -117,15 +116,15 @@ static func nearest_in_time(list: Array[String], unix: int) -> int:
 	return best
 
 
-static func site_of(path: String) -> String:
-	return path.get_file().get_slice("_", 0)
+static func site_of(name: String) -> String:
+	return name.get_file().get_slice("_", 0)
 
 
-## Scan start time encoded in the directory name, as unix seconds (UTC).
-static func unix_of(path: String) -> int:
-	var name := path.get_file()
-	var d := name.get_slice("_", 1)
-	var t := name.get_slice("_", 2)
+## Scan start time encoded in the volume name, as unix seconds (UTC).
+static func unix_of(name: String) -> int:
+	var n := name.get_file()
+	var d := n.get_slice("_", 1)
+	var t := n.get_slice("_", 2)
 	if d.length() != 8 or t.length() != 6:
 		return 0
 	var dt := {

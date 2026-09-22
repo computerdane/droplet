@@ -8,36 +8,39 @@ const RANGE_FOLDED := -2000.0
 const FIELDS := ["REF", "VEL", "SW", "ZDR", "PHI", "RHO", "CFP", "DVEL"]
 const ELEVATION_MERGE_DEG := 0.2
 
-var path: String
+var source: VolumeSource
+var name: String  # <ICAO>_<YYYYMMDD_HHMMSS>
 var meta: Dictionary
 var sweeps: Array = []
-var mtime := 0  # volume.json modification time when loaded
+var version := 0  # source.version() of volume.json when loaded
 var texture_bytes := 0  # GPU bytes of textures loaded so far (for VolumeCache budgeting)
 var tilt_arrays: Dictionary = {}  # field -> TiltArray (volume rendering), see TiltArray
 var _textures: Dictionary = {}
 var _tilts: Dictionary = {}  # field -> Array[int], memoised
 
 
-static func load_from_dir(dir: String) -> RadarVolume:
-	var text := FileAccess.get_file_as_string(dir.path_join("volume.json"))
+static func open(p_source: VolumeSource, p_name: String) -> RadarVolume:
+	var version := p_source.version(p_name)
+	var text := p_source.read_meta(p_name)
 	if text.is_empty():
-		push_error("RadarVolume: cannot read %s/volume.json" % dir)
+		push_error("RadarVolume: no volume.json for %s in %s" % [p_name, p_source.describe()])
 		return null
 	var parsed = JSON.parse_string(text)
 	if not parsed is Dictionary:
-		push_error("RadarVolume: bad JSON in %s" % dir)
+		push_error("RadarVolume: bad JSON in %s" % p_name)
 		return null
 	var vol := RadarVolume.new()
-	vol.path = dir
-	vol.mtime = FileAccess.get_modified_time(dir.path_join("volume.json"))
+	vol.source = p_source
+	vol.name = p_name
+	vol.version = version
 	vol.meta = parsed
 	vol.sweeps = parsed.get("sweeps", [])
 	return vol
 
 
-## True if the sidecar has rewritten volume.json since this was loaded.
+## True if volume.json has been rewritten (a live volume grew) since this was loaded.
 func is_stale() -> bool:
-	return FileAccess.get_modified_time(path.path_join("volume.json")) != mtime
+	return source.version(name) != version
 
 
 func icao() -> String:
@@ -148,8 +151,9 @@ func texture_size(i: int, field_name: String) -> int:
 	return _gates(i, field_name) * int(sweeps[i]["n_azimuth_bins"]) * 2
 
 
-## Reads one sweep/field file into an Image. Touches no state, so it is safe to call from a
-## worker thread (VolumeCache preloading); add_texture() must then run on the main thread.
+## Reads one sweep/field file from the source into an Image. Touches no state, so it is safe
+## to call from a worker thread (VolumeCache preloading); add_texture() must then run on the
+## main thread.
 func read_image(i: int, field_name: String) -> Image:
 	var sw: Dictionary = sweeps[i]
 	var f: Dictionary = sw["fields"].get(field_name, {})
@@ -157,19 +161,19 @@ func read_image(i: int, field_name: String) -> Image:
 		return null
 	var n_gates := int(f["n_gates"])
 	var n_bins := int(sw["n_azimuth_bins"])
-	var bytes := FileAccess.get_file_as_bytes(path.path_join(f["file"]))
+	var bytes := source.read_file(name, f["file"])
 	var expected := n_gates * n_bins * 2
 	if bytes.size() != expected:
-		push_error(
-			"RadarVolume: %s has %d bytes, expected %d" % [f["file"], bytes.size(), expected]
-		)
+		var what := "%s/%s" % [name, f["file"]]
+		push_error("RadarVolume: %s has %d bytes, expected %d" % [what, bytes.size(), expected])
 		return null
 	return Image.create_from_data(n_gates, n_bins, false, Image.FORMAT_RH, bytes)
 
 
 ## Value of sweep `i` / `field_name` at azimuth `az_deg` and slant range `r_km`, read straight
-## from the sweep file (two bytes, no texture needed). Picks the same gate and azimuth bin as
-## the shaders' nearest-texel lookup; MISSING outside the gates or if the field is absent.
+## from the source (two bytes of the sweep file, no texture needed). Picks the same gate and
+## azimuth bin as the shaders' nearest-texel lookup; MISSING outside the gates or if the
+## field is absent.
 func value_at(i: int, field_name: String, az_deg: float, r_km: float) -> float:
 	if i < 0 or i >= sweep_count():
 		return MISSING
@@ -182,11 +186,8 @@ func value_at(i: int, field_name: String, az_deg: float, r_km: float) -> float:
 	if gate < -0.5 or gate >= n_gates - 0.5:
 		return MISSING
 	var row := int(fposmod(az_deg, 360.0) / 360.0 * n_bins) % n_bins
-	var file := FileAccess.open(path.path_join(f["file"]), FileAccess.READ)
-	if file == null:
-		return MISSING
-	file.seek((row * n_gates + int(floorf(gate + 0.5))) * 2)
-	return file.get_buffer(2).decode_half(0)
+	var v := source.read_half(name, f["file"], row * n_gates + int(floorf(gate + 0.5)))
+	return MISSING if is_nan(v) else v
 
 
 ## CPU twin of storm.gdshaderinc: `v` minus the radial component of `storm` (m/s, +x east,

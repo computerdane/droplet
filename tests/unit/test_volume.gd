@@ -1,14 +1,13 @@
 extends "res://tests/test_case.gd"
 ## Sweep textures, colormaps, the hover readout's file reads and background loading.
 
-const RadarVolumeScript := preload("res://scripts/radar_volume.gd")
 const ColormapsScript := preload("res://scripts/colormaps.gd")
 const VolumeCacheScript := preload("res://scripts/volume_cache.gd")
 
 
 ## One texture per field of sweep 0, sized gates x azimuth bins, and a colormap for each.
 func test_textures() -> void:
-	var vol = RadarVolumeScript.load_from_dir(lib.latest())
+	var vol = lib.open(lib.latest())
 	for f in vol.fields_of(0):
 		var tex = vol.get_texture(0, f)
 		if not check(tex != null, "sweep 0 %s texture" % f):
@@ -22,7 +21,7 @@ func test_textures() -> void:
 ## The readout reads single gates from the sweep files; they must match the texels the shaders
 ## sample (same gate rounding and azimuth bin).
 func test_readout() -> void:
-	var vol = RadarVolumeScript.load_from_dir(lib.volumes[0])
+	var vol = lib.open(lib.volumes[0])
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 7
 	var bad := 0
@@ -51,10 +50,10 @@ func test_readout() -> void:
 ## with poll() and check every texture arrived; get_volume() must finish a pending job itself.
 ## Then one field as a Texture2DArray for volume rendering, also built on a worker.
 func test_preload() -> void:
-	var cache = VolumeCacheScript.new()
+	var cache = VolumeCacheScript.new(lib.source)
 	var paths: Array[String] = []
 	for p in lib.volumes:
-		if paths.size() < 3 and RadarVolumeScript.load_from_dir(p).is_complete():
+		if paths.size() < 3 and lib.open(p).is_complete():
 			paths.append(p)
 	if not check(not paths.is_empty(), "a complete volume"):
 		return

@@ -35,26 +35,28 @@ class Job:
 				images.append(volume.read_image(s[0], s[1]))
 
 
+var source: VolumeSource
 var budget_bytes: int
-var _volumes: Dictionary = {}  # path -> RadarVolume
+var _volumes: Dictionary = {}  # name -> RadarVolume
 var _order: Array[String] = []  # least recently used first
-var _pinned: Dictionary = {}  # path -> true
+var _pinned: Dictionary = {}  # name -> true
 var _jobs: Array[Job] = []  # queued or running, oldest first
-var _pending: Dictionary = {}  # "path|sweep:field" -> true while a job holds it
+var _pending: Dictionary = {}  # "name|sweep:field" -> true while a job holds it
 
 
-func _init(p_budget_bytes: int = DEFAULT_BUDGET_BYTES) -> void:
+func _init(p_source: VolumeSource, p_budget_bytes: int = DEFAULT_BUDGET_BYTES) -> void:
+	source = p_source
 	budget_bytes = p_budget_bytes
 
 
-## Returns the cached volume for `path`, loading it if needed. Incomplete (live) volumes are
+## Returns the cached volume `name`, loading it if needed. Incomplete (live) volumes are
 ## reloaded when `refresh` is set and the sidecar has rewritten them since.
-func get_volume(path: String, refresh := false) -> RadarVolume:
-	var vol := _lookup(path, refresh)
+func get_volume(name: String, refresh := false) -> RadarVolume:
+	var vol := _lookup(name, refresh)
 	if vol == null:
 		return null
 	_finish_jobs(vol)
-	_touch(path)
+	_touch(name)
 	return vol
 
 
@@ -65,15 +67,15 @@ func pin(paths: Array) -> void:
 		_pinned[p] = true
 
 
-## Queues a background read of what a view of `field_name` needs of `path` (see Need;
+## Queues a background read of what a view of `field_name` needs of volume `name` (see Need;
 ## `elev_deg` picks the tilt for NEAREST_TILT). Marks the volume recently used, so prefetch
 ## upcoming frames in playback order. Skips partial volumes, which are still being written.
 ## Returns the bytes this volume will hold once loaded (0 if it cannot be loaded).
-func prefetch(path: String, field_name: String, elev_deg: float, need: Need) -> int:
-	var vol := _lookup(path, false)
+func prefetch(name: String, field_name: String, elev_deg: float, need: Need) -> int:
+	var vol := _lookup(name, false)
 	if vol == null:
 		return 0
-	_touch(path)
+	_touch(name)
 	var job := Job.new()
 	job.volume = vol
 	var total := 0
@@ -83,7 +85,7 @@ func prefetch(path: String, field_name: String, elev_deg: float, need: Need) -> 
 		for i in tilts:
 			width = maxi(width, vol.texture_size(i, field_name) / vol.sweep(i)["n_azimuth_bins"])
 		total = width * TiltArray.ROWS * tilts.size()
-		var key := _key(path, ARRAY, field_name)
+		var key := _key(name, ARRAY, field_name)
 		var have := vol.tilt_arrays.has(field_name)
 		if vol.is_complete() and not have and not tilts.is_empty() and not _pending.has(key):
 			_pending[key] = true
@@ -91,13 +93,13 @@ func prefetch(path: String, field_name: String, elev_deg: float, need: Need) -> 
 	else:
 		for i in vol.sweeps_for(field_name, elev_deg, need == Need.ALL_TILTS):
 			total += vol.texture_size(i, field_name)
-			var key := _key(path, i, field_name)
+			var key := _key(name, i, field_name)
 			var have := vol.has_texture(i, field_name)
 			if vol.is_complete() and not have and not _pending.has(key):
 				_pending[key] = true
 				job.specs.append([i, field_name])
 	if not job.specs.is_empty():
-		job.task_id = WorkerThreadPool.add_task(job.run, false, "preload " + path.get_file())
+		job.task_id = WorkerThreadPool.add_task(job.run, false, "preload " + name)
 		_jobs.append(job)
 	return total
 
@@ -127,21 +129,21 @@ func used_bytes() -> int:
 	return total
 
 
-func _lookup(path: String, refresh: bool) -> RadarVolume:
-	var vol: RadarVolume = _volumes.get(path)
+func _lookup(name: String, refresh: bool) -> RadarVolume:
+	var vol: RadarVolume = _volumes.get(name)
 	if vol != null and refresh and not vol.is_complete() and vol.is_stale():
-		_drop(path)
+		_drop(name)
 		vol = null
 	if vol == null:
-		vol = RadarVolume.load_from_dir(path)
+		vol = RadarVolume.open(source, name)
 		if vol != null:
-			_volumes[path] = vol
+			_volumes[name] = vol
 	return vol
 
 
-func _touch(path: String) -> void:
-	_order.erase(path)
-	_order.append(path)
+func _touch(name: String) -> void:
+	_order.erase(name)
+	_order.append(name)
 	_evict()
 
 
@@ -152,7 +154,7 @@ func _upload(job: Job, budget: int) -> int:
 		var s: Array = job.specs[job.next]
 		var result = job.images[job.next]
 		job.next += 1
-		if result == null or _volumes.get(job.volume.path) != job.volume:
+		if result == null or _volumes.get(job.volume.name) != job.volume:
 			continue
 		if s[0] == ARRAY:
 			var layers: Array[Image] = result
@@ -169,7 +171,7 @@ func _upload(job: Job, budget: int) -> int:
 func _retire(job: Job) -> void:
 	WorkerThreadPool.wait_for_task_completion(job.task_id)
 	for s in job.specs:
-		_pending.erase(_key(job.volume.path, s[0], s[1]))
+		_pending.erase(_key(job.volume.name, s[0], s[1]))
 	_jobs.erase(job)
 
 
@@ -182,9 +184,9 @@ func _finish_jobs(vol: RadarVolume) -> void:
 
 
 ## Forgets a volume; its jobs still run to completion but their images are dropped.
-func _drop(path: String) -> void:
-	_volumes.erase(path)
-	_order.erase(path)
+func _drop(name: String) -> void:
+	_volumes.erase(name)
+	_order.erase(name)
 
 
 func _evict() -> void:
@@ -200,5 +202,5 @@ func _evict() -> void:
 		_drop(p)
 
 
-static func _key(path: String, i: int, field_name: String) -> String:
-	return "%s|%d:%s" % [path, i, field_name]
+static func _key(name: String, i: int, field_name: String) -> String:
+	return "%s|%d:%s" % [name, i, field_name]

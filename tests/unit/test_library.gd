@@ -2,7 +2,6 @@ extends "res://tests/test_case.gd"
 ## RadarLibrary indexing, sequences, tilt selection and storm motion lookup.
 
 const RadarLibraryScript := preload("res://scripts/radar_library.gd")
-const RadarVolumeScript := preload("res://scripts/radar_volume.gd")
 
 
 func test_fixture_set() -> void:
@@ -12,7 +11,7 @@ func test_fixture_set() -> void:
 	check_eq(lib.for_site("KTST").size(), 2, "KTST volumes")
 	check_eq(lib.latest("KTST").get_file(), "KTST_20240501_220500", "latest KTST")
 	for v in lib.volumes:
-		var vol = RadarVolumeScript.load_from_dir(v)
+		var vol = lib.open(v)
 		check(vol.is_complete(), "%s complete" % v.get_file())
 		for i in vol.sweep_count():
 			check(vol.has_field(i, "VEL") == vol.has_field(i, "DVEL"), "DVEL next to VEL")
@@ -21,7 +20,7 @@ func test_fixture_set() -> void:
 ## Tilts must be sorted by elevation, unique per angle, and each carry the field.
 func test_tilts() -> void:
 	for v in lib.volumes:
-		var vol = RadarVolumeScript.load_from_dir(v)
+		var vol = lib.open(v)
 		for f in ["REF", "VEL"]:
 			var tilts: Array[int] = vol.tilts(f)
 			for j in tilts.size():
@@ -33,7 +32,7 @@ func test_tilts() -> void:
 		return
 	# Split cut at 0.5 (surveillance sweep 0, Doppler sweep 1) and a SAILS repeat (sweep 7),
 	# all with the same gate count: the latest wins.
-	var vol = RadarVolumeScript.load_from_dir(lib.for_site("KTST")[0])
+	var vol = lib.open(lib.for_site("KTST")[0])
 	var elevs := []
 	for i in vol.tilts("REF"):
 		elevs.append(snappedf(vol.elevation(i), 0.5))
@@ -66,19 +65,19 @@ func test_storm_motion() -> void:
 		if lib.winds(v).get("storm_motion") is Dictionary:
 			with.append(v)
 	if with.is_empty():
-		note("none computed (python -m nexrad winds)")
+		note("none computed (nexrad winds)")
 		check(not fixtures, "fixtures carry storm motion")
 		return
 	for v in lib.volumes:
 		var near: Dictionary = lib.storm_motion_near(v, 3600)
 		if with.has(v):
-			check_eq(near.get("path", ""), v, "own storm motion")
+			check_eq(near.get("name", ""), v, "own storm motion")
 		if not near.is_empty():
-			var dt: int = absi(lib.unix_of(near["path"]) - lib.unix_of(v))
+			var dt: int = absi(lib.unix_of(near["name"]) - lib.unix_of(v))
 			check(dt <= 3600, "%s: storm motion from %d s away" % [v.get_file(), dt])
 	if fixtures:
 		# KTSU scans two tilts, too shallow for a profile; it borrows KTST's nearest volume.
 		var near: Dictionary = lib.storm_motion_near(lib.latest("KTSU"), 3600)
-		check_eq(near.get("path", "").get_file(), "KTST_20240501_220000", "KTSU borrows")
+		check_eq(near.get("name", "").get_file(), "KTST_20240501_220000", "KTSU borrows")
 		var sm: Dictionary = lib.winds(with[0])["storm_motion"]
 		check_eq(sm["method"], "bunkers", "storm motion method")

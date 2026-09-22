@@ -87,7 +87,12 @@ gdformat scripts tests && gdlint scripts tests
 - `nexrad/src/main.rs` – CLI (hand-rolled args, same subcommands and stdout/stderr protocol the fetch panel
   parses). `data/` and `tests/` resolve under `$DROPLET_ROOT`, else the current directory.
 - `data/raw/` – downloaded archive files (gitignored). `data/volumes/` – decoded, `data/basemap/` – basemap buffers (all gitignored).
-- `scripts/radar_library.gd` – indexes `data/volumes`, per-site lists, sequences (split at >30 min gaps).
+- `scripts/volume_source.gd` – where volumes come from: `names()`, `read_meta()`, `version()` (changes when volume.json
+  is rewritten), `read_file()` / `read_half()` (thread-safe; preload workers call them). `DirSource` = a directory
+  (`data/volumes`, or `volumes=`); `MemorySource` = volumes handed over whole (`add_volume(name, json, {file: bytes})`,
+  the shape nexrad-wasm's `decode()` returns; the web backing store). Nothing else touches volume files.
+  Volumes are identified by name (`ICAO_YYYYMMDD_HHMMSS`) everywhere, not by path.
+- `scripts/radar_library.gd` – indexes a `VolumeSource`, per-site lists, sequences (split at >30 min gaps); `open(name)`.
 - `scripts/radar_volume.gd` – one volume, lazy float16 textures; `tilts(field)` = one sweep per
   elevation (split cuts / SAILS repeats merged, most gates then latest wins). Use tilts, not raw sweep indices.
 - `scripts/volume_cache.gd` – LRU of volumes by texture bytes (1 GiB), reloads partial volumes when volume.json changes.
@@ -139,7 +144,7 @@ gdformat scripts tests && gdlint scripts tests
 - Hover readout: `main._update_readout()` (every frame, recomputed only when its inputs change) picks the
   section panel (`SectionView.sample_at`, CPU twin of section.gdshader), the VWP (`sample_at`) or the 2D map
   (`main._readout_2d`: nearest radar as in the mosaic shaders, value + range/bearing + beam height + lat/lon
-  via `Basemap.unproject`). Values come from `RadarVolume.value_at()`, which reads 2 bytes of the sweep file
+  via `Basemap.unproject`). Values come from `RadarVolume.value_at()`, which reads 2 bytes of the sweep file via `VolumeSource.read_half()`
   (no texture needed); `RadarVolume.storm_relative()` is the CPU twin of storm.gdshaderinc. Hovering the section
   marks the point on the A-B line in 2D. Not in 3D. `hover=x,y` pins it (canvas units) for screenshots.
 - `scripts/colormaps.gd` – per-field value ranges, units and gradient textures.
