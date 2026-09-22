@@ -31,8 +31,6 @@ tests, ~6 s). All green.
 
 **Gaps.**
 
-- Nothing runs in CI yet.
-- Screenshots are eyeballed; nothing catches a shader regression automatically.
 - The hover readout skips 3D, sections use one site, live follows one site per process.
 
 ## Roadmap
@@ -40,7 +38,8 @@ tests, ~6 s). All green.
 Ordered by what unblocks the most.
 
 1. **Test fixtures and CI.** Done: synthetic volume generator, `cargo test`, Godot test runner
-   on the fixtures. Left: golden screenshots under Xvfb, GitHub Actions.
+   on the fixtures, golden screenshots under Xvfb (`tests/golden.sh`), GitHub Actions
+   (`.github/workflows/ci.yml`). Left: the nightly performance gate.
    Prerequisite for everything below being safe to ship. See "Automated testing".
 2. **Web build and hosting.** See "Web build". Includes URL-state permalinks, which fall
    out of the existing `key=value` options.

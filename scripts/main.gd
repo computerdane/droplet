@@ -16,7 +16,8 @@ extends Node
 ## srm=240,10 (storm-relative velocity, storm moving from 240 degrees at 10 m/s) or srm=auto
 ## (storm motion from the VAD profile, see _auto_storm) winds=0|1 (hodograph panel)
 ## vwp=0|1 (VAD winds over the loop as barbs) hover=x,y (pin the hover readout to that
-## canvas point, for screenshots) volumes=res://tests/fixtures/volumes (DirSource root; default
+## canvas point, for screenshots; hover=0 turns the readout off) basemap=0 (no basemap; or
+## basemap=<dir>) volumes=res://tests/fixtures/volumes (DirSource root; default
 ## res://data/volumes) fetch=latest|live|2013-05-20T20:00Z|<from>/<to> (start a fetch job for
 ## site=, default KTLX; see AppOptions)
 ##
@@ -101,6 +102,7 @@ var _others := PackedVector2Array()  # neighbours in the selected site's frame
 var _site_lonlat := Vector2.INF  # site the views' basemaps are centred on
 var _mouse_in_window := true
 var _hover_pin := Vector2.INF  # hover= option: readout at this canvas point, not the mouse
+var _hover_off := false  # hover=0: no readout (Xvfb leaves the pointer mid-screen)
 var _readout_key: Array = []  # inputs of the readout on screen, see _update_readout
 
 @onready var view_2d: PpiView = $View2D
@@ -155,7 +157,9 @@ func _ready() -> void:
 			srm_auto = false
 	winds_shown = opts.get("winds", "0") == "1"
 	vwp_shown = opts.get("vwp", "0") == "1"
-	if opts.has("hover"):
+	if opts.get("hover", "") == "0":
+		_hover_off = true
+	elif opts.has("hover"):
 		var h: PackedFloat64Array = opts["hover"].split_floats(",")
 		_hover_pin = Vector2(h[0], h[1])
 	if opts.has("section"):
@@ -650,7 +654,7 @@ func _update_readout() -> void:
 	_readout_key = key
 	var text := ""
 	var marker := Vector2.INF
-	if not _mouse_in_window and _hover_pin == Vector2.INF:
+	if _hover_off or (not _mouse_in_window and _hover_pin == Vector2.INF):
 		pass
 	elif hovered == hud.section:
 		var s := hud.section.sample_at(hud.section.get_global_transform().affine_inverse() * mouse)

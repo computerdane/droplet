@@ -2,7 +2,8 @@ class_name Basemap
 extends RefCounted
 ## Loads data/basemap (built by `nexrad basemap`): line layers as lon/lat meshes
 ## that basemap_2d/3d.gdshader project around the site on the GPU, and a city list.
-## Loaded once and shared; `get_shared()` returns null when the basemap has not been built.
+## Loaded once and shared; `get_shared()` returns null when the basemap has not been built, or
+## when the `basemap=0` option turns it off (`basemap=<dir>` reads another directory).
 
 const DEFAULT_ROOT := "res://data/basemap"
 const EARTH_RADIUS_KM := 6371.0
@@ -22,7 +23,8 @@ var cities: Array = []  # [name, lat, lon, population], most populous first
 static func get_shared() -> Basemap:
 	if not _tried:
 		_tried = true
-		_shared = load_from_dir(DEFAULT_ROOT)
+		var root: String = AppOptions.parse().get("basemap", DEFAULT_ROOT)
+		_shared = null if root == "0" else load_from_dir(root)
 	return _shared
 
 

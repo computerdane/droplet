@@ -48,10 +48,14 @@
             lld
             wasm-bindgen-cli_0_2_127
             binaryen
+            # golden screenshots (tests/golden.sh): software GL under a virtual X server, with
+            # this flake's Mesa rather than the host driver, so every machine renders alike.
+            xvfb-run
           ];
 
           shellHook = ''
             export GODOT_EXPORT_TEMPLATES="${pkgs.godot-export-templates-bin}/share/godot/export_templates"
+            export DROPLET_GL_LIBS="${pkgs.libglvnd}/lib:${pkgs.mesa}/lib"
             # `cargo build --release` puts the nexrad CLI here; the fetch panel runs it from PATH.
             export PATH="$PWD/nexrad/target/release:$PATH"
             echo "droplet dev shell — godot $(godot --version 2>/dev/null | head -n1)"

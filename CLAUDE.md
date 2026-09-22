@@ -34,6 +34,7 @@ godot                                               # run main scene
 godot --headless --path . --import                  # (re)build .godot/ cache after adding scripts/scenes
 godot --headless --path . --script res://tests/run.gd   # Godot unit tests on the fixtures
 godot --headless --path . --script res://tests/run.gd -- volumes=res://data/volumes only=readout
+tests/golden.sh                                     # golden screenshots of the fixtures (flake Mesa + Xvfb); --update to re-render
 godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 view=3d mosaic=1
 godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 vwp=1 hover=560,380
 godot --path . --script res://tests/screenshot.gd -- out.png volumes=res://tests/fixtures/volumes site=KTST
@@ -99,6 +100,10 @@ gdformat scripts tests && gdlint scripts tests
 - `tests/run.gd` – Godot unit tests: every `test_*` method of `tests/unit/test_*.gd` (which extend
   `tests/test_case.gd`: `check()`, `check_eq()`, `note()`, `lib`, `fixtures`) against the fixture volumes by default
   (`volumes=` for real data; fixture-only assertions are gated on `fixtures`). Exits 1 on any failure or no volumes.
+- `tests/golden.sh` + `tests/golden/*.png` – golden screenshots: six views of the fixtures (`basemap=0 hover=0 prefetch=0`)
+  rendered by the flake's Mesa llvmpipe under Xvfb (`DROPLET_GL_LIBS`, not the host driver) and compared by
+  `tests/compare.gd` (≤ 0.2 % of pixels off by > 24/255). Re-render with `--update` after an intended visual change and
+  look at the PNGs before committing. `.github/workflows/ci.yml` runs lint, `cargo test`, the Godot tests and these.
 - `nexrad/src/basemap.rs` – Census 1:500k state/county shapefiles (own zip + shapefile reader) + Natural Earth cities.
 - `nexrad/src/volume.rs` – the on-disk format Godot reads: `rasterise()` bins radials, `write_volume()` (+
   `add_dealiased()` for DVEL, VAD winds), `read_meta`/`read_field`, `add_winds()`. `grid.rs` is the polar
