@@ -2,7 +2,8 @@ class_name Hud
 extends Control
 ## On-screen controls: info text, site picker, 2D/3D toggle, field buttons, colour legend and
 ## a playback bar. Built in code; emits intent signals and main.gd pushes state back via
-## the set_* methods. Nothing here takes keyboard focus, so shortcuts keep working.
+## the set_* methods. Nothing here takes keyboard focus, so shortcuts keep working, except
+## the text fields of the fetch panel while it is open.
 
 signal play_toggled
 signal step_requested(delta: int)
@@ -13,6 +14,7 @@ signal site_selected(site: String)
 signal view_toggled
 signal mosaic_toggled
 signal section_toggled
+signal fetch_toggled
 signal srm_toggled
 signal srm_changed(d_from_deg: float, d_speed: float)
 signal field_selected(field_name: String)
@@ -29,6 +31,7 @@ var view_button: Button
 var mosaic_button: Button
 var section_button: Button
 var section: SectionView
+var fetch_panel: FetchPanel
 var field_buttons: Dictionary = {}  # name -> Button
 var srm_row: HBoxContainer
 var srm_button: Button
@@ -54,6 +57,12 @@ func _ready() -> void:
 	_build_top_right()
 	_build_bottom_bar()
 	_build_section()
+	fetch_panel = FetchPanel.new()
+	fetch_panel.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	fetch_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	fetch_panel.offset_top = 60
+	fetch_panel.visible = false
+	add_child(fetch_panel)
 
 
 func _build_info() -> void:
@@ -89,6 +98,9 @@ func _build_top_right() -> void:
 	site_option.tooltip_text = "Radar site (sites with decoded volumes)"
 	site_option.item_selected.connect(func(i: int) -> void: site_selected.emit(_sites[i]))
 	row.add_child(site_option)
+	var fetch := _button("Fetch", "Download a site / time range, or follow a site live (F)")
+	fetch.pressed.connect(fetch_toggled.emit)
+	row.add_child(fetch)
 	mosaic_button = _button("Mosaic", "Also draw other sites at the same time (M)")
 	mosaic_button.toggle_mode = true
 	mosaic_button.pressed.connect(mosaic_toggled.emit)

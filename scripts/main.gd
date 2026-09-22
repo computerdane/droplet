@@ -40,7 +40,7 @@ const FIELD_KEYS := {
 }
 const HINT_COMMON := (
 	"Space play   Left/Right step   Home/End first/last   [ ] speed   L live   Up/Down tilt\n"
-	+ "1-8 field   S site   M mosaic   V 2D/3D   R reset view   X section   T storm-relative\n"
+	+ "1-8 field   S site   M mosaic   V 2D/3D   R reset view   X section   T storm-rel.   F fetch\n"
 )
 const HINT_2D := "wheel zoom   drag pan"
 const HINT_SECTION := "wheel zoom   left drag: section A to B   right drag pan"
@@ -50,6 +50,7 @@ const HINT_3D := (
 )
 
 var library := RadarLibrary.new()
+var fetcher := Fetcher.new()
 var cache := VolumeCache.new()
 var site := ""
 var frames: Array[String] = []  # volume dirs for `site`, ascending time
@@ -87,6 +88,9 @@ func _ready() -> void:
 	view_2d.view_changed.connect(_update_info)
 	view_2d.section_changed.connect(_update_section)
 	view_3d.camera.moved.connect(_update_info)
+	add_child(fetcher)
+	fetcher.job_updated.connect(_on_job_updated)
+	fetcher.job_finished.connect(_on_job_finished)
 	_connect_hud()
 
 	var opts := _parse_options()
@@ -143,6 +147,13 @@ func _connect_hud() -> void:
 	hud.mosaic_toggled.connect(_toggle_mosaic)
 	hud.section_toggled.connect(func() -> void: _set_section_on(not section_on))
 	hud.srm_toggled.connect(_toggle_srm)
+	hud.fetch_toggled.connect(_toggle_fetch_panel)
+	hud.fetch_panel.update_requested.connect(
+		func(s: String, at: String, from: String, to: String) -> void:
+			fetcher.start_update(s, at, from, to)
+	)
+	hud.fetch_panel.live_requested.connect(func(s: String) -> void: fetcher.start_live(s))
+	hud.fetch_panel.stop_requested.connect(fetcher.stop_all)
 	hud.srm_changed.connect(_adjust_storm)
 
 
@@ -294,6 +305,57 @@ func _cycle_speed(delta: int) -> void:
 
 func _sequence() -> Vector2i:
 	return RadarLibrary.sequence_bounds(frames, maxi(frame, 0))
+
+
+# --- fetching from the UI --------------------------------------------------------
+
+
+func _toggle_fetch_panel() -> void:
+	if hud.fetch_panel.visible:
+		hud.fetch_panel.close_panel()
+	else:
+		var t := RadarLibrary.unix_of(volume.path) if volume != null else 0
+		hud.fetch_panel.open_panel(site, t)
+
+
+## New volumes from a running job show up in the library straight away. A live job for
+## another site takes over the view once its first volume exists.
+func _on_job_updated(job: Fetcher.Job) -> void:
+	var lines := PackedStringArray()
+	for j in fetcher.jobs:
+		lines.append(j.describe())
+	hud.fetch_panel.set_jobs(lines)
+	if job.volumes.size() != job.get_meta("seen", 0):
+		job.set_meta("seen", job.volumes.size())
+		_rescan()
+		if job.kind == "live" and job.volumes.size() == 1:
+			_select_site(job.site)
+			_set_live(true)
+	_update_info()
+
+
+## A finished update jumps to the last volume it fetched.
+func _on_job_finished(job: Fetcher.Job) -> void:
+	if job.kind != "update" or job.stopped or job.volumes.is_empty():
+		return
+	_rescan()
+	_set_live(false)
+	_set_playing(false)
+	if job.site != site:
+		_select_site(job.site)
+	var i := frames.find(library.root.path_join(job.volumes[-1]))
+	if i >= 0:
+		_go_to(i)
+
+
+## Re-reads the volume directory, keeping the frame on screen.
+func _rescan() -> void:
+	library.scan()
+	hud.set_sites(library.sites(), site)
+	frames = library.for_site(site)
+	if volume != null:
+		frame = maxi(frames.find(volume.path), 0)
+	_update_playback()
 
 
 # --- timers --------------------------------------------------------------------------
@@ -528,6 +590,8 @@ func _update_info() -> void:
 		)
 	if mosaic:
 		lines.append("mosaic: " + _mosaic_summary())
+	for job in fetcher.running_jobs():
+		lines.append("fetch: " + job.describe())
 	hud.set_info("\n".join(lines))
 
 
@@ -586,6 +650,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_set_section_on(not section_on)
 		KEY_T:
 			_toggle_srm()
+		KEY_F:
+			_toggle_fetch_panel()
 		KEY_I:
 			view_3d.isolate = ((view_3d.isolate + 1) % ConeSet.Isolate.size()) as ConeSet.Isolate
 			_refresh()

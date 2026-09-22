@@ -64,6 +64,11 @@ gdformat scripts tests && gdlint scripts tests
   subtracts its radial component × cos(elev). Included by ppi, cone and section shaders. `main._storm_vector()`
   is non-zero only for VEL/DVEL with SRM on (T, HUD row, `srm=from_deg,speed_ms`, meteorological "from");
   mosaic neighbours get it rotated into their frame (`storm_motion.rotated(rotation)`).
+- `scripts/fetcher.gd` + `scripts/fetch_panel.gd` – fetch from the UI (F): runs `python -u -m nexrad update|live`
+  via `OS.execute_with_pipe` (non-blocking), sets PYTHONPATH to the project, parses `[i/n]` progress and
+  volume names (`ICAO_YYYYMMDD_HHMMSS`) from its output. New volumes are rescanned immediately; a finished
+  update jumps to its last volume, a live job takes over the view on its first volume. Processes are killed
+  on exit. The fetch panel's LineEdits are the only focusable controls (focus released on close).
 - `scripts/basemap.gd` + `shaders/basemap*.gdshader*` – lon/lat line meshes projected on the GPU
   (azimuthal equidistant around the site, haversine form for float32); `Basemap.project()` is the CPU twin.
 - `scripts/colormaps.gd` – per-field value ranges, units and gradient textures.
@@ -102,9 +107,9 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - `live` starts on the in-progress volume (skipping it if joined after its first chunk), then follows each new one. It bootstraps by probing ~20 S3 listings to find the newest volume number; could cache the last number in `data/`.
 - Done: time animation + live following, 3D cones, basemap, site picker, multi-site mosaic,
   background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
-  storm-relative velocity (storm motion is manual; no automatic estimate yet).
-- Next: translucent/volumetric 3D rendering
-  (cones are opaque with a threshold today), fetching new sites from the UI (currently CLI only).
-- Mosaic uses whatever is on disk; `live` follows one site per process (run several for a live mosaic).
+  storm-relative velocity (storm motion is manual; no automatic estimate yet), fetching from the UI.
+- Next: translucent/volumetric 3D rendering (cones are opaque with a threshold today).
+- Mosaic uses whatever is on disk; `live` follows one site per process (the fetch panel can start several
+  for a live mosaic). Fetching from the UI needs the dev shell's `python` and a source checkout (not an export).
 - The 3D ground disk/rings are centred on the selected site only.
 - Cross-sections use the selected site only (no mosaic), and the A-B line is not drawn in 3D.

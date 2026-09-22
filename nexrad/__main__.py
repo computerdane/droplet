@@ -282,8 +282,12 @@ def main(argv: list[str] | None = None) -> None:
         for k in resolve_keys(args):
             print(download(k))
     elif args.cmd == "update":
-        for k in resolve_keys(args):
-            print(decode(download(k)))
+        keys = resolve_keys(args)
+        for i, k in enumerate(keys):
+            # "[i/n]" progress on stderr and one decoded path per line on stdout; the Godot
+            # fetch dialog (scripts/fetcher.gd) reads both.
+            print(f"[{i + 1}/{len(keys)}] {k.rsplit('/', 1)[-1]}", file=sys.stderr, flush=True)
+            print(decode(download(k)), flush=True)
     elif args.cmd == "decode":
         for p in args.path:
             print(decode(Path(p)))
