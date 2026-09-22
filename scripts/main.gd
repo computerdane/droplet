@@ -9,16 +9,22 @@ extends Node
 ## do not make the tilt jump around.
 ##
 ## Command-line options (after `--`): site=KTLX time=20130520_200359 field=VEL elev=0.5
-## live=0|1 play=0|1 fps=8 zoom=2
+## live=0|1 play=0|1 fps=8 zoom=2 view=2d|3d yaw=30 pitch=25 dist=400 exag=4
+## isolate=0|1|2 threshold=20
 
 const LIVE_RESCAN_SEC := 3.0
 const LOOP_DWELL_SEC := 1.0  # extra pause on the last frame of the loop
 const FIELD_KEYS := {
 	KEY_1: "REF", KEY_2: "VEL", KEY_3: "SW", KEY_4: "ZDR", KEY_5: "PHI", KEY_6: "RHO", KEY_7: "CFP"
 }
-const HINT := (
+const HINT_COMMON := (
 	"Space play   Left/Right step   Home/End first/last   [ ] speed   L live   "
-	+ "Up/Down tilt   1-7 field   S site   R reset view   wheel zoom, drag pan"
+	+ "Up/Down tilt   1-7 field   S site   V 2D/3D   R reset view\n"
+)
+const HINT_2D := "wheel zoom   drag pan"
+const HINT_3D := (
+	"left drag orbit   right drag pan   wheel zoom   I isolate tilts   , . threshold   "
+	+ "PgUp/PgDn height exaggeration"
 )
 
 var library := RadarLibrary.new()
@@ -33,8 +39,10 @@ var target_elev := 0.5
 var live := true
 var playing := false
 var fps := 4.0
+var view_is_3d := false
 
 @onready var view_2d: PpiView = $View2D
+@onready var view_3d: VolumeView3D = $View3D
 @onready var hud: Hud = $UI/Hud
 @onready var live_timer: Timer = $LiveTimer
 @onready var play_timer: Timer = $PlayTimer
@@ -46,8 +54,8 @@ func _ready() -> void:
 	play_timer.one_shot = true
 	play_timer.timeout.connect(_on_play_tick)
 	view_2d.view_changed.connect(_update_info)
+	view_3d.camera.moved.connect(_update_info)
 	_connect_hud()
-	hud.set_hint(HINT)
 
 	var opts := _parse_options()
 	field_name = opts.get("field", field_name).to_upper()
@@ -55,6 +63,8 @@ func _ready() -> void:
 	fps = float(opts.get("fps", fps))
 	if opts.has("zoom"):
 		view_2d.set_zoom(float(opts["zoom"]))
+	_apply_3d_options(opts)
+	_set_view_3d(opts.get("view", "2d") == "3d")
 	var sites := library.sites()
 	var want_site: String = opts.get("site", "").to_upper()
 	_select_site(want_site if sites.has(want_site) else library.site_of(library.latest()))
@@ -77,7 +87,20 @@ func _connect_hud() -> void:
 	hud.live_toggled.connect(func() -> void: _set_live(not live))
 	hud.site_selected.connect(_select_site)
 	hud.field_selected.connect(_set_field)
-	hud.view_toggled.connect(func() -> void: pass)
+	hud.view_toggled.connect(func() -> void: _set_view_3d(not view_is_3d))
+
+
+func _apply_3d_options(opts: Dictionary) -> void:
+	var cam := view_3d.camera
+	cam.set_view(
+		float(opts.get("yaw", cam.yaw)),
+		float(opts.get("pitch", cam.pitch)),
+		float(opts.get("dist", cam.distance))
+	)
+	view_3d.set_exaggeration(float(opts.get("exag", view_3d.exaggeration)))
+	view_3d.isolate = int(opts.get("isolate", view_3d.isolate)) as VolumeView3D.Isolate
+	if opts.has("threshold"):
+		view_3d.thresholds[field_name] = float(opts["threshold"])
 
 
 func _parse_options() -> Dictionary:
@@ -116,6 +139,15 @@ func _step(delta: int) -> void:
 	if delta < 0:
 		_set_live(false)
 	_go_to(frame + delta)
+
+
+func _set_view_3d(on: bool) -> void:
+	view_is_3d = on
+	view_2d.set_active(not on)
+	view_3d.set_active(on)
+	hud.set_view_3d(on)
+	hud.set_hint(HINT_COMMON + (HINT_3D if on else HINT_2D))
+	_refresh()
 
 
 func _set_field(f: String) -> void:
@@ -208,7 +240,10 @@ func _on_play_tick() -> void:
 
 func _refresh() -> void:
 	sweep_index = volume.tilt_near(field_name, target_elev) if volume != null else -1
-	view_2d.show_sweep(volume, sweep_index, field_name)
+	if view_is_3d:
+		view_3d.show_volume(volume, field_name, sweep_index)
+	else:
+		view_2d.show_sweep(volume, sweep_index, field_name)
 	var available: Array = []
 	if volume != null:
 		for i in volume.sweep_count():
@@ -250,7 +285,28 @@ func _update_info() -> void:
 		)
 	else:
 		lines.append("%s not in this volume" % field_name)
-	lines.append("zoom %.2f px/km   cache %d MB" % [view_2d.zoom(), cache.used_bytes() >> 20])
+	var cache_mb := cache.used_bytes() >> 20
+	if view_is_3d:
+		var thr := view_3d.threshold_of(field_name)
+		var abs_mode: bool = VolumeView3D.DEFAULT_THRESHOLDS.get(field_name, [0, false])[1]
+		(
+			lines
+			. append(
+				(
+					"3D  %s   hide %s < %s %s   height x%.0f   cache %d MB"
+					% [
+						VolumeView3D.ISOLATE_NAMES[view_3d.isolate],
+						"|%s|" % field_name if abs_mode else field_name,
+						str(snappedf(thr, 0.01)),
+						Colormaps.unit_of(field_name).get_slice(" ", 0),
+						view_3d.exaggeration,
+						cache_mb,
+					]
+				)
+			)
+		)
+	else:
+		lines.append("zoom %.2f px/km   cache %d MB" % [view_2d.zoom(), cache_mb])
 	hud.set_info("\n".join(lines))
 
 
@@ -286,7 +342,29 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_S:
 			_cycle_site()
 		KEY_R:
-			view_2d.reset_camera()
+			if view_is_3d:
+				view_3d.camera.reset()
+			else:
+				view_2d.reset_camera()
+		KEY_V:
+			_set_view_3d(not view_is_3d)
+		KEY_I:
+			view_3d.isolate = (
+				((view_3d.isolate + 1) % VolumeView3D.Isolate.size()) as VolumeView3D.Isolate
+			)
+			_refresh()
+		KEY_COMMA:
+			view_3d.adjust_threshold(field_name, -1)
+			_refresh()
+		KEY_PERIOD:
+			view_3d.adjust_threshold(field_name, 1)
+			_refresh()
+		KEY_PAGEUP:
+			view_3d.set_exaggeration(view_3d.exaggeration + 1.0)
+			_update_info()
+		KEY_PAGEDOWN:
+			view_3d.set_exaggeration(view_3d.exaggeration - 1.0)
+			_update_info()
 		_:
 			if FIELD_KEYS.has(e.keycode):
 				_set_field(FIELD_KEYS[e.keycode])

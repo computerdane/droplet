@@ -1,9 +1,12 @@
-[gd_scene load_steps=6 format=3 uid="uid://droplet_main_scene"]
+[gd_scene load_steps=8 format=3 uid="uid://droplet_main_scene"]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
 [ext_resource type="Shader" path="res://shaders/ppi.gdshader" id="2_ppi"]
 [ext_resource type="Script" path="res://scripts/ppi_view.gd" id="3_ppi_view"]
 [ext_resource type="Script" path="res://scripts/hud.gd" id="4_hud"]
+
+[ext_resource type="Script" path="res://scripts/volume_view_3d.gd" id="5_view3d"]
+[ext_resource type="Script" path="res://scripts/orbit_camera.gd" id="6_orbit"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_ppi"]
 shader = ExtResource("2_ppi")
@@ -25,6 +28,15 @@ mouse_filter = 2
 [node name="Overlay" type="Node2D" parent="View2D"]
 
 [node name="Camera" type="Camera2D" parent="View2D"]
+
+[node name="View3D" type="Node3D" parent="."]
+visible = false
+script = ExtResource("5_view3d")
+
+[node name="Cones" type="Node3D" parent="View3D"]
+
+[node name="Camera" type="Camera3D" parent="View3D"]
+script = ExtResource("6_orbit")
 
 [node name="LiveTimer" type="Timer" parent="."]
 
