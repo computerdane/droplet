@@ -39,6 +39,7 @@ var _site_latlon := Vector2.INF  # last set_site(), re-applied when the basemap 
 var _neighbor_rects: Array[ColorRect] = []
 var _ppi_material: ShaderMaterial  # the sweep material; show_tracks() swaps in another
 var _tracks_material: ShaderMaterial
+var _warnings: Array = []  # Warnings.project() output, drawn by the overlay
 
 @onready var ppi: ColorRect = $PPI
 @onready var cam: Camera2D = $Camera
@@ -243,6 +244,7 @@ func _draw_overlay() -> void:
 	var s := 4.0 / cam.zoom.x  # ~4 px cross at the radar
 	overlay.draw_line(Vector2(-s, 0), Vector2(s, 0), Color.WHITE, -1.0)
 	overlay.draw_line(Vector2(0, -s), Vector2(0, s), Color.WHITE, -1.0)
+	_draw_warnings()
 	_draw_cities()
 	if section_mode and has_section:
 		_draw_section_line()
@@ -267,6 +269,20 @@ func _draw_section_line() -> void:
 		overlay.draw_arc(Vector2.ZERO, 6.0, 0.0, TAU, 24, Color.BLACK, 4.0, true)
 		overlay.draw_arc(Vector2.ZERO, 6.0, 0.0, TAU, 24, Color.YELLOW, 2.0, true)
 	overlay.draw_set_transform(Vector2.ZERO)
+
+
+## Warning polygons (Warnings.project()), outlined at a constant screen width.
+func set_warnings(polys: Array) -> void:
+	_warnings = polys
+	overlay.queue_redraw()
+
+
+func _draw_warnings() -> void:
+	var z := cam.zoom.x
+	for w in _warnings:
+		for ring: PackedVector2Array in w["rings"]:
+			overlay.draw_polyline(ring, Color(0, 0, 0, 0.7), 4.0 / z)
+			overlay.draw_polyline(ring, w["color"], 2.0 / z)
 
 
 ## City dots and names at constant screen size; greedy declutter, biggest cities first.

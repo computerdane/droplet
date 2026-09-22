@@ -15,7 +15,8 @@ extends Node
 ## section=ax,ay,bx,by (cross-section A -> B, km east,north of the radar)
 ## srm=240,10 (storm-relative velocity, storm moving from 240 degrees at 10 m/s) or srm=auto
 ## (storm motion from the VAD profile, see _auto_storm) winds=0|1 (hodograph panel)
-## vwp=0|1 (VAD winds over the loop as barbs) hover=x,y (pin the hover readout to that
+## warnings=0|1 (NWS warning polygons, from the IEM archive) vwp=0|1 (VAD winds over the loop
+## as barbs) hover=x,y (pin the hover readout to that
 ## canvas point, for screenshots; hover=0 turns the readout off) basemap=0 (no basemap; or
 ## basemap=<dir>) volumes=res://tests/fixtures/volumes (DirSource root; default
 ## res://data/volumes) fetch=latest|live|2013-05-20T20:00Z|<from>/<to> (start a fetch job for
@@ -62,7 +63,7 @@ const HINT_COMMON := (
 	"Space play   Left/Right step   Shift+Left/Right prev/next loop   Home/End first/last\n"
 	+ "[ ] speed   L live   Up/Down tilt   1-8 field   9 products   0 KDP/shear   S site\n"
 	+ "M mosaic   V 2D/3D   R reset view   X section   F fetch   T storm-relative   W hodograph\n"
-	+ "P VWP   "
+	+ "P VWP   A warnings   "
 )
 const HINT_2D := "wheel zoom   drag pan   hover: value"
 const HINT_SECTION := "wheel zoom   left drag: section A to B   right drag pan   hover: value"
@@ -73,6 +74,7 @@ const HINT_3D := (
 
 var library := RadarLibrary.new()
 var fetcher := Fetcher.new()
+var warnings := Warnings.new()
 var cache := VolumeCache.new(library.source)
 var site := ""
 var frames: Array[String] = []  # volume names for `site`, ascending time
@@ -104,6 +106,7 @@ var _hover_pin := Vector2.INF  # hover= option: readout at this canvas point, no
 var _hover_off := false  # hover=0: no readout (Xvfb leaves the pointer mid-screen)
 var _readout_key: Array = []  # inputs of the readout on screen, see _update_readout
 var _tracks: RotationTracks  # while the rotation tracks are on screen
+var _warnings: Array = []  # Warnings.active_at() the volume's time
 
 @onready var view_2d: PpiView = $View2D
 @onready var view_3d: VolumeView3D = $View3D
@@ -121,6 +124,8 @@ func _ready() -> void:
 	view_2d.section_changed.connect(_update_section)
 	view_3d.camera.moved.connect(_update_info)
 	add_child(fetcher)
+	add_child(warnings)
+	warnings.changed.connect(_refresh_warnings)
 	fetcher.job_updated.connect(_on_job_updated)
 	fetcher.job_finished.connect(_on_job_finished)
 	fetcher.volume_received.connect(_on_volume_received)
@@ -155,6 +160,7 @@ func _ready() -> void:
 			storm_speed = m[1]
 			srm_on = true
 			srm_auto = false
+	warnings.enabled = opts.get("warnings", "1") == "1"
 	winds_shown = opts.get("winds", "0") == "1"
 	vwp_shown = opts.get("vwp", "0") == "1"
 	if opts.get("hover", "") == "0":
@@ -199,6 +205,7 @@ func _connect_hud() -> void:
 	hud.field_selected.connect(_set_field)
 	hud.view_toggled.connect(func() -> void: _set_view_3d(not view_is_3d))
 	hud.mosaic_toggled.connect(_toggle_mosaic)
+	hud.warnings_toggled.connect(_toggle_warnings)
 	hud.section_toggled.connect(func() -> void: _set_section_on(not section_on))
 	hud.srm_toggled.connect(_toggle_srm)
 	hud.srm_auto_toggled.connect(_toggle_srm_auto)
@@ -316,6 +323,11 @@ func _set_section_on(on: bool) -> void:
 
 func _toggle_mosaic() -> void:
 	mosaic = not mosaic
+	_refresh()
+
+
+func _toggle_warnings() -> void:
+	warnings.enabled = not warnings.enabled
 	_refresh()
 
 
@@ -629,12 +641,25 @@ func _refresh() -> void:
 		motion.y
 	)
 	_update_winds()
+	_refresh_warnings()
 	_update_vwp()
 	_update_section()
 	_update_info()
 	_update_playback()
 	_preload_ahead()
 	_readout_key.clear()  # what is under the mouse may have changed
+
+
+## Warnings in effect at the volume's time, drawn in 2D and listed in the info text and readout.
+func _refresh_warnings() -> void:
+	hud.set_warnings_on(warnings.enabled)
+	_warnings = warnings.active_at(RadarLibrary.unix_of(volume.name) if volume != null else 0)
+	var polys := []
+	if _site_lonlat != Vector2.INF:
+		polys = Warnings.project(_warnings, _site_lonlat.y, _site_lonlat.x)
+	view_2d.set_warnings(polys)
+	_readout_key.clear()
+	_update_info()
 
 
 ## VAD profiles of every volume in the current loop.
@@ -726,52 +751,23 @@ func _update_readout() -> void:
 	hud.set_readout(text, hud.get_global_transform().affine_inverse() * mouse)
 
 
-## Readout at a 2D view point (km, +x east, +y south of the selected radar), from the
-## radar that draws that pixel: the nearest one, as in the mosaic shaders.
+## Readout at a 2D view point (km, +x east, +y south of the selected radar), see Readout.
 func _readout_2d(p: Vector2) -> String:
-	var vol := volume
-	var i := sweep_index
-	var local := p
-	var storm := _storm_vector()
-	var tracks := field_name == RotationTracks.VIEW_FIELD  # selected site only
-	for n in [] if tracks else _neighbors:
-		var off: Vector2 = n["offset_km"]
-		var q := (p - Vector2(off.x, -off.y)).rotated(-float(n["rotation"]))
-		if q.length() < local.length():
-			vol = n["volume"]
-			i = n["sweep"]
-			local = q
-			storm = _storm_vector().rotated(n["rotation"])
-	var r := local.length()
-	var az := fposmod(rad_to_deg(atan2(local.x, -local.y)), 360.0)
-	var lines := PackedStringArray()
-	if i >= 0:
-		var elev := vol.elevation(i)
-		var v := vol.value_at(i, field_name, az, r)
-		if tracks:
-			v = RotationTracks.value_at(_loop_volumes(), frame - _sequence().x + 1, az, r)
-		v = RadarVolume.storm_relative(v, storm, az, elev)
-		var srm := "  storm-rel." if storm != Vector2.ZERO and v > -900.0 else ""
-		lines.append("%s  %s%s" % [field_name, Colormaps.format_value(field_name, v), srm])
-		var th := deg_to_rad(elev)
-		var ka := SectionView.KE_A
-		var h := sqrt(r * r + ka * ka + 2.0 * r * ka * sin(th)) - ka
-		var where := "%s  %.1f km @ %03d°" % [vol.icao(), r, roundi(az) % 360]
-		if vol.is_product(i):
-			lines.append("%s   column of %d tilts" % [where, vol.tilts("REF").size()])
-		else:
-			lines.append("%s   %.2f° beam %.2f km ARL" % [where, elev, h])
-	else:
-		lines.append("%s: no %s" % [vol.icao(), field_name])
-		lines.append("%s  %.1f km @ %03d°" % [vol.icao(), r, roundi(az) % 360])
-	var ll := Basemap.unproject(Vector2(p.x, -p.y), _site_lonlat.y, _site_lonlat.x)
-	lines.append(
-		(
-			"%.3f°%s  %.3f°%s"
-			% [absf(ll.x), "N" if ll.x >= 0 else "S", absf(ll.y), "E" if ll.y >= 0 else "W"]
-		)
-	)
-	return "\n".join(lines)
+	var tracks: Array[RadarVolume] = []
+	if field_name == RotationTracks.VIEW_FIELD:
+		tracks = _loop_volumes()
+	var ctx := {
+		"volume": volume,
+		"sweep": sweep_index,
+		"field": field_name,
+		"neighbors": _neighbors,
+		"storm": _storm_vector(),
+		"site_lonlat": _site_lonlat,
+		"tracks": tracks,
+		"n_tracks": frame - _sequence().x + 1,
+		"warnings": _warnings,
+	}
+	return Readout.plan_view(p, ctx)
 
 
 func _update_section() -> void:
@@ -885,6 +881,8 @@ func _update_info() -> void:
 		lines.append("storm-relative: " + _storm_source())
 	if mosaic:
 		lines.append("mosaic: " + Mosaic.summary(_neighbors))
+	if not _warnings.is_empty():
+		lines.append("warnings: " + Warnings.summary(_warnings))
 	for job in fetcher.running_jobs():
 		lines.append("fetch: " + job.describe())
 	hud.set_info("\n".join(lines))

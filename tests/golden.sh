@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-COMMON="volumes=res://tests/fixtures/volumes basemap=0 prefetch=0 live=0 hover=0 site=KTST time=20240501_220500"
+COMMON="volumes=res://tests/fixtures/volumes basemap=0 warnings=0 prefetch=0 live=0 hover=0 site=KTST time=20240501_220500"
 declare -A CASES=(
 	[ppi_ref]="field=REF zoom=3"
 	[ppi_dvel_srm_mosaic]="field=DVEL srm=auto mosaic=1 zoom=2"

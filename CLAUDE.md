@@ -113,6 +113,13 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/rotation_tracks.gd` + `shaders/ppi_tracks.gdshader` – rotation tracks (the `TRACKS` button, 9 cycles to it): every
   loop volume's ROT grid as one Texture2DArray, the shader takes the max over the frames up to the playhead (≥ 5 × 10⁻³ s⁻¹);
   `value_at()` is its CPU twin for the readout. Selected site only (neighbours hidden). Rebuilt when the loop changes.
+- `scripts/warnings.gd` – NWS storm-based warnings (TO, SV, FF, MA) from the IEM archive
+  (`mesonet.agron.iastate.edu/geojson/sbw.geojson?sts=&ets=`, CORS open, any time since 2002 and live): fetched per hour with
+  HTTPRequest (works on web too), cached, the current hour refetched every 60 s; `active_at(t)` = polygons in effect at the
+  volume's time (each SVS update is its own polygon). Drawn in 2D (`PpiView.set_warnings`), listed in the info text, named in
+  the readout (`Readout`). A / the Warnings button toggles; `warnings=0` for offline runs (goldens use it).
+- `scripts/readout.gd` – `Readout.plan_view()`: the 2D hover text (nearest radar's value, range/bearing, beam height,
+  lat/lon, warnings containing the point).
 - `scripts/mosaic.gd` – `Mosaic.neighbors()` (other sites within 10 min / 900 km, projected + rotated),
   `assign_others()` for the nearest-radar discard, `summary()`.
 - `nexrad/src/basemap.rs` – Census 1:500k state/county shapefiles (own zip + shapefile reader) + Natural Earth cities.
@@ -237,7 +244,7 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Done: time animation + live following, column products (CREF, ET, VIL), azimuthal shear, KDP and rotation tracks, 3D cones, basemap, site picker, multi-site mosaic,
   background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
   storm-relative velocity, fetching from the UI, translucent volume rendering, VAD wind profile +
-  hodograph + automatic (Bunkers) storm motion, hover readout (2D, section, VWP), VWP time-height plot.
+  hodograph + automatic (Bunkers) storm motion, hover readout (2D, section, VWP), VWP time-height plot, NWS warning polygons.
 - Next ideas: dealiasing that uses the
   previous volume as a temporal reference, the A-B section line drawn in 3D, mosaic cross-sections,
   a hover readout in 3D (pick against the cones), a VAD-based temporal reference for dealiasing.

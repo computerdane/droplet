@@ -47,7 +47,8 @@ Ordered by what unblocks the most.
    plan view, 9 cycles them), azimuthal shear and KDP (nexrad/src/fields.rs, per-gate fields
    next to the moments like DVEL; 0 toggles them), low-level rotation (ROT) and rotation tracks
    (max ROT over the loop, on the GPU). Left: a hydrometeor classifier.
-4. **Context overlays.** NWS warning polygons and SPC outlooks from the public NWS API,
+4. **Context overlays.** Done: NWS warning polygons (IEM archive, history and live, 2D). Left:
+   SPC outlooks,
    storm cell identification and tracking with motion vectors, tornado debris signature
    flags (low RHO inside high REF and rotation).
 5. **Finishing 3D.** Hover pick against the cones, the A-B section line drawn in 3D,

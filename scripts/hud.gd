@@ -19,6 +19,7 @@ signal live_toggled
 signal site_selected(site: String)
 signal view_toggled
 signal mosaic_toggled
+signal warnings_toggled
 signal section_toggled
 signal fetch_toggled
 signal srm_toggled
@@ -63,6 +64,7 @@ var hint: Label
 var site_option: OptionButton
 var view_button: Button
 var mosaic_button: Button
+var warnings_button: Button
 var section_button: Button
 var section: SectionView
 var fetch_panel: FetchPanel
@@ -152,6 +154,12 @@ func _build_top_right() -> void:
 	mosaic_button.toggle_mode = true
 	mosaic_button.pressed.connect(mosaic_toggled.emit)
 	row.add_child(mosaic_button)
+	warnings_button = _button(
+		"Warnings", "NWS tornado, severe thunderstorm and flash flood warnings in effect (A)"
+	)
+	warnings_button.toggle_mode = true
+	warnings_button.pressed.connect(warnings_toggled.emit)
+	row.add_child(warnings_button)
 	section_button = _button("Section", "Vertical cross-section: drag A to B in the 2D view (X)")
 	section_button.toggle_mode = true
 	section_button.pressed.connect(section_toggled.emit)
@@ -473,6 +481,10 @@ func set_sites(sites: Array[String], current: String) -> void:
 		site_option.add_item(s)
 	site_option.select(_sites.find(current))
 	site_option.disabled = _sites.size() < 2
+
+
+func set_warnings_on(on: bool) -> void:
+	warnings_button.set_pressed_no_signal(on)
 
 
 func set_mosaic(on: bool, available: bool) -> void:
