@@ -17,4 +17,5 @@ result
 # Radar data (large; fetch with `python -m nexrad`)
 data/raw/
 data/volumes/
+data/basemap/
 __pycache__/
