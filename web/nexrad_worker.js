@@ -6,17 +6,26 @@
 // {type: "volume", name, volume_json, names, buffers} (sweep file names and their float16
 // ArrayBuffers, transferred), and finally {type: "done"} or {type: "error", message}.
 //
+// An update of several volumes fans the decoding out to a pool of nested workers running this
+// same script ({"cmd": "decode", key, index} -> {type: "decoded", index, ...volume}) and still
+// hands the volumes on in key order, so progress and "jump to the last one" read as they do
+// from the CLI. Terminating the job's worker terminates its pool with it.
+//
 // Both Unidata buckets allow anonymous CORS reads and listings. Listings go through synchronous
 // XHR, which workers may use, because the key selection and live loop in nexrad-wasm are blocking
-// Rust. Raw archive files are immutable and kept in the Cache API, so revisiting an event costs
-// only the decode.
+// Rust. Raw archive files are immutable and kept in the Cache API (the newest RAW_CACHE_FILES),
+// so revisiting an event costs only the decode.
 import init, { decode, live, resolve_keys } from "./nexrad_wasm.js";
 
 const ARCHIVE = "https://unidata-nexrad-level2.s3.amazonaws.com";
 const CHUNKS = "https://unidata-nexrad-level2-chunks.s3.amazonaws.com";
 const RAW_CACHE = "droplet-raw-v1";
+const RAW_CACHE_FILES = 300; // 7 to 11 MB each
+// Decoders per update job; Godot's renderer and its worker threads need cores too.
+const POOL_SIZE = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 2));
 
 const line = (text) => postMessage({ type: "line", line: text });
+const fileName = (key) => key.split("/").pop();
 
 function getSync(url, binary) {
   const x = new XMLHttpRequest();
@@ -32,11 +41,14 @@ const bucket = (base) => ({
   get: (key) => getSync(`${base}/${key}`, true),
 });
 
-function postVolume(vol) {
+// postMessage arguments for a decoded volume (decode()'s {name, volume_json, files: Map}).
+function volumeMessage(vol, extra = {}) {
   const names = [...vol.files.keys()];
   const buffers = names.map((n) => vol.files.get(n).buffer);
-  postMessage({ type: "volume", name: vol.name, volume_json: vol.volume_json, names, buffers }, buffers);
+  return [{ type: "volume", name: vol.name, volume_json: vol.volume_json, names, buffers, ...extra }, buffers];
 }
+
+const postVolume = (vol) => postMessage(...volumeMessage(vol));
 
 async function fetchRaw(key) {
   const url = `${ARCHIVE}/${key}`;
@@ -51,17 +63,68 @@ async function fetchRaw(key) {
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`GET ${url}: HTTP ${resp.status}`);
   const bytes = await resp.arrayBuffer();
-  if (cache) await cache.put(url, new Response(bytes.slice(0))).catch(() => {});
+  if (cache) {
+    try {
+      await cache.put(url, new Response(bytes.slice(0)));
+      const held = await cache.keys(); // insertion order: drop the oldest
+      for (const req of held.slice(0, Math.max(0, held.length - RAW_CACHE_FILES))) await cache.delete(req);
+    } catch {
+      // over quota, or another decoder trimmed first: the file is just not kept
+    }
+  }
   return new Uint8Array(bytes);
 }
 
-async function update({ site, at = "", from = "", to = "" }) {
+async function update({ site, at = "", from = "", to = "", workers = POOL_SIZE }) {
   const keys = resolve_keys(site, at, from, to, bucket(ARCHIVE));
-  for (const [i, key] of keys.entries()) {
-    line(`[${i + 1}/${keys.length}] ${key.split("/").pop()}`);
-    const vol = decode(await fetchRaw(key));
-    postVolume(vol);
-    line(vol.name); // as `nexrad update` prints each decoded volume
+  const n = Math.min(keys.length, workers);
+  if (n <= 1) {
+    for (const [i, key] of keys.entries()) {
+      line(`[${i + 1}/${keys.length}] ${fileName(key)}`);
+      const vol = decode(await fetchRaw(key));
+      postVolume(vol);
+      line(vol.name); // as `nexrad update` prints each decoded volume
+    }
+    return;
+  }
+  const pool = Array.from({ length: n }, () => new Worker(import.meta.url, { type: "module" }));
+  try {
+    await new Promise((resolve, reject) => {
+      const ready = new Map(); // index -> "decoded" message, held until its turn
+      let next = 0; // next key to hand out
+      let done = 0; // volumes passed on
+      const progress = () => done < keys.length && line(`[${done + 1}/${keys.length}] ${fileName(keys[done])}`);
+      // At most 2n keys past the one being waited for, so one slow file cannot let the rest
+      // pile up decoded in memory.
+      const dispatch = (w) => {
+        w.busy = next < keys.length && next < done + 2 * n;
+        if (w.busy) w.postMessage(JSON.stringify({ cmd: "decode", key: keys[next], index: next++ }));
+      };
+      for (const w of pool) {
+        w.onmessage = ({ data }) => {
+          if (data.type === "error") return reject(new Error(`${fileName(keys[data.index])}: ${data.message}`));
+          ready.set(data.index, data);
+          while (ready.has(done)) {
+            const msg = ready.get(done);
+            ready.delete(done++);
+            postMessage({ ...msg, type: "volume" }, msg.buffers);
+            line(msg.name);
+            progress();
+          }
+          if (done === keys.length) return resolve();
+          dispatch(w);
+          for (const idle of pool) if (!idle.busy) dispatch(idle);
+        };
+        w.onerror = (e) => {
+          e.preventDefault();
+          reject(new Error(`decoder worker failed: ${e.message}`));
+        };
+      }
+      progress();
+      pool.forEach(dispatch);
+    });
+  } finally {
+    pool.forEach((w) => w.terminate());
   }
 }
 
@@ -78,14 +141,18 @@ function follow({ site, interval = 5 }) {
 }
 
 onmessage = async ({ data }) => {
+  const req = JSON.parse(data);
   try {
     await init();
-    const req = JSON.parse(data);
+    if (req.cmd === "decode") {
+      // a pool member: one answer per key, and it stays up for the next
+      return postMessage(...volumeMessage(decode(await fetchRaw(req.key)), { type: "decoded", index: req.index }));
+    }
     if (req.cmd === "update") await update(req);
     else if (req.cmd === "live") follow(req);
     else throw new Error(`unknown command ${req.cmd}`);
     postMessage({ type: "done" });
   } catch (e) {
-    postMessage({ type: "error", message: String(e?.message ?? e) });
+    postMessage({ type: "error", index: req.index, message: String(e?.message ?? e) });
   }
 };

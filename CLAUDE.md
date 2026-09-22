@@ -54,8 +54,10 @@ gdformat scripts tests && gdlint scripts tests
   it to headless Chromium and writes the results to disk.
 - `web/` – the static web app. `nexrad_worker.js` = the browser's `nexrad` CLI: one module worker per job
   (`{"cmd": "update"|"live", ...}` in; `line`/`volume`/`done`/`error` messages out, sweep buffers transferred),
-  sync XHR for listings (workers allow it; the Rust is blocking), raw archive files kept in the Cache API, live
-  sleeps via `Atomics.wait` (needs cross-origin isolation). `build.sh` exports Godot (seeding the gitignored
+  sync XHR for listings (workers allow it; the Rust is blocking), raw archive files kept in the Cache API (newest
+  300), live sleeps via `Atomics.wait` (needs cross-origin isolation; `Fetcher.can_live` greys out Live without it).
+  An update of several volumes decodes on a pool of nested workers (`{"cmd": "decode"}`, min(4, cores − 2)) and
+  passes the volumes on in key order. `build.sh` exports Godot (seeding the gitignored
   `export_presets.cfg` from `web/export_presets.template.cfg`) and copies the wasm + worker next to index.html;
   `serve.mjs` serves with COOP/COEP; `smoke.mjs` drives headless Chromium over CDP.
 - `nexrad/src/level2.rs` – Archive2 / Message 31 decoder (bzip2 + flate2 only). LDM records are decompressed
@@ -210,8 +212,8 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Next ideas: dealiasing that uses the
   previous volume as a temporal reference, the A-B section line drawn in 3D, mosaic cross-sections,
   a hover readout in 3D (pick against the cones), a VAD-based temporal reference for dealiasing.
-- Web: no basemap yet (res://data is not exported), each job decodes serially in one worker, and
-  decoded volumes are not persisted (raw files are, in the Cache API).
+- Web: no basemap yet (res://data is not exported), and decoded volumes are not persisted (raw files are, in
+  the Cache API; re-decoding costs ~0.5 s/volume against 84 MB stored per decoded volume).
 - Mosaic uses whatever is on disk; `live` follows one site per process (the fetch panel can start several
   for a live mosaic). Fetching from the UI needs the `nexrad` binary (PATH or `DROPLET_NEXRAD`) and a source checkout (not an export).
 - The 3D ground disk/rings are centred on the selected site only.

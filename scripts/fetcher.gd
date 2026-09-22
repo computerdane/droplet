@@ -54,8 +54,15 @@ class Job:
 
 var jobs: Array[Job] = []
 var web := OS.has_feature("web")
+## Live following sleeps with Atomics.wait in the worker, which needs a cross-origin isolated page.
+var can_live := true  # set in _ready
 var _volume_re := RegEx.create_from_string(VOLUME_NAME)
 var _progress_re := RegEx.create_from_string("^\\[\\d+/\\d+\\]")
+
+
+func _ready() -> void:
+	if web:
+		can_live = JavaScriptBridge.eval("self.crossOriginIsolated === true", true) == true
 
 
 ## Fetch history for `site`: the newest volume, the one at/before `at`, or `from`..`to`

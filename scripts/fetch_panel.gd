@@ -115,6 +115,12 @@ func set_jobs(lines: PackedStringArray) -> void:
 	_jobs.text = "\n".join(lines)
 
 
+## Greys out the Live mode, with `why` as its tooltip (web pages without cross-origin isolation).
+func disable_live(why: String) -> void:
+	_mode.set_item_disabled(Mode.LIVE, true)
+	_mode.set_item_tooltip(Mode.LIVE, why)
+
+
 func _unhandled_key_input(event: InputEvent) -> void:
 	if visible and event.is_action_pressed("ui_cancel"):
 		close_panel()

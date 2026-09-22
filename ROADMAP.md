@@ -151,9 +151,15 @@ The decision is deferred until the wasm build is measured.
 4. Done: web budgets (384 MB textures, 900 MB of decoded volumes in memory; the heap caps
    at 2 GB). Web already renders with Compatibility.
 5. Basemap served from the same origin and cached in `user://`.
-6. Next: several workers per range and mosaic (decode is serial per worker), decoded
-   volumes cached in IndexedDB/OPFS, a web-aware fetch panel (hide "Live" when not
-   cross-origin isolated), then hosting.
+6. Done: an update of several volumes decodes on a pool of up to four nested workers,
+   in key order (mosaic neighbours are separate jobs, so already separate workers). With
+   the raw files cached, the 7-volume Moore range decodes in ~2 s instead of 3.4 s (16
+   cores; concurrent decoders slow each other, six at once are slower than four); cold,
+   it is download-bound. The raw cache keeps the newest 300 files. Live is greyed out and
+   a bare URL fetches the newest volume on a page without cross-origin isolation.
+   Decoded volumes are deliberately not cached: 84 MB each against a 7 to 11 MB raw file
+   that re-decodes in ~0.5 s.
+7. Next: hosting (a static host; see below), then the basemap (item 5).
 
 ### Hosting
 

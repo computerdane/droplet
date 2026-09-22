@@ -208,6 +208,8 @@ func _connect_hud() -> void:
 	)
 	hud.fetch_panel.live_requested.connect(func(s: String) -> void: fetcher.start_live(s))
 	hud.fetch_panel.stop_requested.connect(fetcher.stop_all)
+	if not fetcher.can_live:
+		hud.fetch_panel.disable_live("Live needs a cross-origin isolated page (COOP/COEP headers)")
 	hud.srm_changed.connect(_adjust_storm)
 
 
