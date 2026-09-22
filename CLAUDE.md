@@ -46,7 +46,8 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/volume_cache.gd` – LRU of volumes by texture bytes (1 GiB), reloads partial volumes when volume.json changes.
   `prefetch()` reads sweep files into Images on WorkerThreadPool; `poll()` (every frame) uploads ≤24 MB of
   textures; `get_volume()` waits for that volume's pending jobs. On-screen volumes are pinned.
-  `main._preload_ahead()` prefetches the loop frames after the playhead (+ mosaic neighbours) up to 80 % of
+  `main._preload_ahead()` prefetches what the active view needs (`Need`: nearest tilt / all tilts / tilt array)
+  for the loop frames after the playhead (+ mosaic neighbours) up to 80 % of
   the budget, so loops bigger than the cache still stream as a rolling window. `prefetch=0` disables it.
 - `scripts/main.gd` – controller: site, frame, field, *target elevation* (kept across frames), playback,
   live, mosaic neighbours. Parses `key=value` user args (see its header) – screenshot.gd passes them through.
@@ -55,6 +56,12 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/volume_view_3d.gd`, `scripts/cone_set.gd` + `shaders/cone.gdshader` – 3D: each tilt is a shared
   unit grid bent along the beam in the vertex shader (4/3 earth radius, vertical exaggeration); per-field
   display threshold; `scripts/orbit_camera.gd`.
+- `scripts/volume_render.gd` + `shaders/volume.gdshader` + `scripts/tilt_array.gd` – 3D volume rendering (B,
+  `render=volume`, opacity `-`/`=` or `density=`): a box ray-marched front to back (192 jittered steps, early
+  exit), each sample → elevation/slant range (same inversion as section.gdshader) → the two bracketing tilts
+  of a `TiltArray` (all tilts in one Texture2DArray, padded to the widest tilt × 720 rows; layer found via a
+  0.25° LUT), opacity from the value above the display threshold. One per mosaic site, same nearest-radar
+  discard. Prefetch builds the arrays on workers (`VolumeCache.Need.TILT_ARRAY`).
 - `scripts/section_view.gd` + `shaders/section.gdshader` – vertical cross-section panel (X, or `section=ax,ay,bx,by`;
   left drag A→B in 2D, right drag pans). One full-plot ColorRect per elevation band; the shader inverts the
   4/3-earth beam model (pixel height/distance → elevation angle + slant range) and samples the polar
@@ -107,8 +114,11 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - `live` starts on the in-progress volume (skipping it if joined after its first chunk), then follows each new one. It bootstraps by probing ~20 S3 listings to find the newest volume number; could cache the last number in `data/`.
 - Done: time animation + live following, 3D cones, basemap, site picker, multi-site mosaic,
   background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
-  storm-relative velocity (storm motion is manual; no automatic estimate yet), fetching from the UI.
-- Next: translucent/volumetric 3D rendering (cones are opaque with a threshold today).
+  storm-relative velocity (storm motion is manual; no automatic estimate yet), fetching from the UI,
+  translucent volume rendering.
+- Next ideas: automatic storm motion (e.g. Bunkers from a VAD wind profile), dealiasing that uses the
+  previous volume as a temporal reference, the A-B section line drawn in 3D, mosaic cross-sections,
+  a hover readout (value/height) in the section panel.
 - Mosaic uses whatever is on disk; `live` follows one site per process (the fetch panel can start several
   for a live mosaic). Fetching from the UI needs the dev shell's `python` and a source checkout (not an export).
 - The 3D ground disk/rings are centred on the selected site only.

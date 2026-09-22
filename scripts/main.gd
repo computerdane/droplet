@@ -10,7 +10,8 @@ extends Node
 ##
 ## Command-line options (after `--`): site=KTLX time=20130520_200359 field=VEL elev=0.5
 ## live=0|1 play=0|1 fps=8 zoom=2 pan=-15,5 (2D centre, km east,north) view=2d|3d yaw=30
-## pitch=25 dist=400 exag=4 isolate=0|1|2 threshold=20 mosaic=0|1 prefetch=0|1
+## pitch=25 dist=400 exag=4 isolate=0|1|2 threshold=20 render=cones|volume density=0.05
+## mosaic=0|1 prefetch=0|1
 ## section=ax,ay,bx,by (cross-section A -> B, km east,north of the radar)
 ## srm=240,10 (storm-relative velocity, storm moving from 240 degrees at 10 m/s)
 ##
@@ -45,8 +46,8 @@ const HINT_COMMON := (
 const HINT_2D := "wheel zoom   drag pan"
 const HINT_SECTION := "wheel zoom   left drag: section A to B   right drag pan"
 const HINT_3D := (
-	"left drag orbit   right drag pan   wheel zoom   I isolate tilts   , . threshold   "
-	+ "PgUp/PgDn height exaggeration"
+	"left drag orbit   right drag pan   wheel zoom   B cones/volume   I isolate tilts   "
+	+ ", . threshold   - = volume opacity   PgUp/PgDn height exaggeration"
 )
 
 var library := RadarLibrary.new()
@@ -166,6 +167,8 @@ func _apply_3d_options(opts: Dictionary) -> void:
 	)
 	view_3d.set_exaggeration(float(opts.get("exag", view_3d.exaggeration)))
 	view_3d.isolate = int(opts.get("isolate", view_3d.isolate)) as ConeSet.Isolate
+	view_3d.volume_render = opts.get("render", "cones") == "volume"
+	view_3d.density = float(opts.get("density", view_3d.density))
 	if opts.has("threshold"):
 		view_3d.thresholds[field_name] = float(opts["threshold"])
 
@@ -447,19 +450,24 @@ func _preload_ahead() -> void:
 	var seq := _sequence()
 	var n := seq.y - seq.x + 1
 	var budget := int(cache.budget_bytes * PRELOAD_BUDGET_FRACTION)
-	budget -= cache.prefetch(volume.path, field_name, target_elev, view_is_3d)
+	var need := VolumeCache.Need.NEAREST_TILT
+	if view_is_3d:
+		need = VolumeCache.Need.TILT_ARRAY if view_3d.volume_render else VolumeCache.Need.ALL_TILTS
+	elif section_on and view_2d.has_section:
+		need = VolumeCache.Need.ALL_TILTS
+	budget -= cache.prefetch(volume.path, field_name, target_elev, need)
 	for nb in _neighbors:
-		budget -= cache.prefetch(nb["volume"].path, field_name, target_elev, view_is_3d)
+		budget -= cache.prefetch(nb["volume"].path, field_name, target_elev, need)
 	for k in range(1, n):
 		if budget <= 0:
 			break
 		var path := frames[seq.x + (frame - seq.x + k) % n]
-		budget -= cache.prefetch(path, field_name, target_elev, view_is_3d)
+		budget -= cache.prefetch(path, field_name, target_elev, need)
 		var t := RadarLibrary.unix_of(path)
 		for nb in _neighbors:
 			var other := _mosaic_path(nb["site"], t)
 			if not other.is_empty():
-				budget -= cache.prefetch(other, field_name, target_elev, view_is_3d)
+				budget -= cache.prefetch(other, field_name, target_elev, need)
 
 
 ## Volume of `s` nearest in time to `t`, or "" if none is within MOSAIC_MAX_SKEW_SEC.
@@ -572,7 +580,11 @@ func _update_info() -> void:
 				(
 					"3D  %s   hide %s < %s %s   height x%.0f   cache %d MB"
 					% [
-						VolumeView3D.ISOLATE_NAMES[view_3d.isolate],
+						(
+							"volume render, opacity %.3f/km" % view_3d.density
+							if view_3d.volume_render
+							else VolumeView3D.ISOLATE_NAMES[view_3d.isolate]
+						),
 						"|%s|" % field_name if abs_mode else field_name,
 						str(snappedf(thr, 0.01)),
 						Colormaps.unit_of(field_name).get_slice(" ", 0),
@@ -652,6 +664,15 @@ func _unhandled_input(event: InputEvent) -> void:
 			_toggle_srm()
 		KEY_F:
 			_toggle_fetch_panel()
+		KEY_B:
+			view_3d.volume_render = not view_3d.volume_render
+			_refresh()
+		KEY_MINUS:
+			view_3d.adjust_density(-1)
+			_refresh()
+		KEY_EQUAL:
+			view_3d.adjust_density(1)
+			_refresh()
 		KEY_I:
 			view_3d.isolate = ((view_3d.isolate + 1) % ConeSet.Isolate.size()) as ConeSet.Isolate
 			_refresh()

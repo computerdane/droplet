@@ -1,6 +1,7 @@
 class_name VolumeView3D
 extends Node3D
-## 3D volume view: every tilt of one field as a cone (cone.gdshader), over a ground disk
+## 3D volume view: every tilt of one field as a cone (cone.gdshader), or with
+## `volume_render` as a translucent ray-marched volume (VolumeRender), over a ground disk
 ## with basemap lines, city labels, range rings and a height scale at the radar.
 ## Heights are exaggerated for legibility.
 
@@ -15,6 +16,8 @@ const EXAGGERATION_MAX := 20.0
 const CITY_RADIUS_KM := 350.0
 const CITY_MAX_LABELS := 24
 const ISOLATE_NAMES := ["all tilts", "selected and below", "selected only"]
+const DEFAULT_DENSITY := 0.05  # volume render opacity per km at full strength
+const DENSITY_STEP := 1.5
 const BASEMAP_SHADER := preload("res://shaders/basemap_3d.gdshader")
 
 ## Default display thresholds for 3D (drawing everything hides the storm inside clear air).
@@ -33,8 +36,11 @@ const DEFAULT_THRESHOLDS := {
 var storm_motion := Vector2.ZERO  # m/s east, north in the selected site's frame; zero = off
 var exaggeration := DEFAULT_EXAGGERATION
 var isolate := ConeSet.Isolate.ALL
+var volume_render := false
+var density := DEFAULT_DENSITY
 var thresholds: Dictionary = {}  # field -> float; overrides DEFAULT_THRESHOLDS
 var _neighbors: Array[ConeSet] = []
+var _renders: Array[VolumeRender] = []  # selected site first, then mosaic neighbours
 var _height_lines: MeshInstance3D  # built in true km, scaled on y by exaggeration
 var _height_labels: Array[Label3D] = []
 var _basemap_mats: Array[ShaderMaterial] = []
@@ -77,6 +83,12 @@ func set_exaggeration(v: float) -> void:
 	cones.set_exaggeration(exaggeration)
 	for n in _neighbors:
 		n.set_exaggeration(exaggeration)
+	for vr in _renders:
+		vr.set_exaggeration(exaggeration)
+
+
+func adjust_density(steps: int) -> void:
+	density = clampf(density * pow(DENSITY_STEP, steps), 0.002, 2.0)
 
 
 ## Draw all tilts of `field_name`, honouring the isolate mode relative to `sel_elev`.
@@ -91,6 +103,17 @@ func show_volume(
 ) -> void:
 	var thr := threshold_of(field_name)
 	var abs_mode := threshold_is_abs(field_name)
+	if volume_render:
+		cones.visible = false
+		for cs in _neighbors:
+			cs.visible = false
+		_show_renders(vol, field_name, thr, abs_mode, neighbors, others)
+		for mat in _basemap_mats:
+			mat.set_shader_parameter("fade_km", MOSAIC_FADE_KM if neighbors else GROUND_RADIUS_KM)
+		return
+	for vr in _renders:
+		vr.visible = false
+	cones.visible = true
 	cones.storm_motion = storm_motion
 	cones.show_volume(vol, field_name, sel_elev, isolate, thr, abs_mode, exaggeration, others)
 	while _neighbors.size() < neighbors.size():
@@ -112,6 +135,40 @@ func show_volume(
 		)
 	for mat in _basemap_mats:
 		mat.set_shader_parameter("fade_km", MOSAIC_FADE_KM if neighbors else GROUND_RADIUS_KM)
+
+
+func _show_renders(
+	vol: RadarVolume,
+	field_name: String,
+	thr: float,
+	abs_mode: bool,
+	neighbors: Array,
+	others: PackedVector2Array
+) -> void:
+	while _renders.size() < neighbors.size() + 1:
+		var vr := VolumeRender.new()
+		add_child(vr)
+		_renders.append(vr)
+	for k in _renders.size():
+		var vr := _renders[k]
+		if k > neighbors.size():
+			vr.visible = false
+			continue
+		if k == 0:
+			vr.position = Vector3.ZERO
+			vr.rotation = Vector3.ZERO
+			vr.show_volume(
+				vol, field_name, thr, abs_mode, exaggeration, density, others, storm_motion
+			)
+			continue
+		var n: Dictionary = neighbors[k - 1]
+		var off: Vector2 = n["offset_km"]
+		vr.position = Vector3(off.x, 0, -off.y)
+		vr.rotation = Vector3(0, -float(n["rotation"]), 0)
+		var storm := storm_motion.rotated(n["rotation"])
+		vr.show_volume(
+			n["volume"], field_name, thr, abs_mode, exaggeration, density, n["others"], storm
+		)
 
 
 func _build_ground() -> void:

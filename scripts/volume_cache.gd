@@ -9,7 +9,12 @@ extends RefCounted
 ## textures, a few MB per frame. get_volume() waits for a volume's pending tasks and
 ## uploads them at once, so a frame the preloader has not finished shows complete.
 
+## What a view needs of a volume: the tilt nearest an elevation (2D), every tilt (3D cones,
+## cross-section), or the TiltArray (3D volume rendering).
+enum Need { NEAREST_TILT, ALL_TILTS, TILT_ARRAY }
+
 const DEFAULT_BUDGET_BYTES := 1024 * 1024 * 1024
+const ARRAY := -1  # sweep index in a Job spec that stands for the field's TiltArray
 const UPLOAD_BYTES_PER_FRAME := 24 * 1024 * 1024
 
 
@@ -17,14 +22,17 @@ const UPLOAD_BYTES_PER_FRAME := 24 * 1024 * 1024
 class Job:
 	extends RefCounted
 	var volume: RadarVolume
-	var specs: Array = []  # [sweep index, field]
-	var images: Array = []  # Image or null per spec, written by the worker
+	var specs: Array = []  # [sweep index or ARRAY, field]
+	var images: Array = []  # per spec: Image, Array[Image] (ARRAY) or null; worker-written
 	var task_id := -1
 	var next := 0  # specs uploaded so far
 
 	func run() -> void:
 		for s in specs:
-			images.append(volume.read_image(s[0], s[1]))
+			if s[0] == ARRAY:
+				images.append(TiltArray.build_images(volume, s[1]))
+			else:
+				images.append(volume.read_image(s[0], s[1]))
 
 
 var budget_bytes: int
@@ -57,11 +65,11 @@ func pin(paths: Array) -> void:
 		_pinned[p] = true
 
 
-## Queues a background read of the textures of `path` that a view of `field_name` needs
-## (every tilt, or the one nearest `elev_deg`). Marks the volume recently used, so preload
+## Queues a background read of what a view of `field_name` needs of `path` (see Need;
+## `elev_deg` picks the tilt for NEAREST_TILT). Marks the volume recently used, so prefetch
 ## upcoming frames in playback order. Skips partial volumes, which are still being written.
 ## Returns the bytes this volume will hold once loaded (0 if it cannot be loaded).
-func prefetch(path: String, field_name: String, elev_deg: float, all_tilts: bool) -> int:
+func prefetch(path: String, field_name: String, elev_deg: float, need: Need) -> int:
 	var vol := _lookup(path, false)
 	if vol == null:
 		return 0
@@ -69,12 +77,25 @@ func prefetch(path: String, field_name: String, elev_deg: float, all_tilts: bool
 	var job := Job.new()
 	job.volume = vol
 	var total := 0
-	for i in vol.sweeps_for(field_name, elev_deg, all_tilts):
-		total += vol.texture_size(i, field_name)
-		var key := _key(path, i, field_name)
-		if vol.is_complete() and not vol.has_texture(i, field_name) and not _pending.has(key):
+	var tilts := vol.tilts(field_name)  # memoised here, so workers only read it
+	if need == Need.TILT_ARRAY:
+		var width := 0
+		for i in tilts:
+			width = maxi(width, vol.texture_size(i, field_name) / vol.sweep(i)["n_azimuth_bins"])
+		total = width * TiltArray.ROWS * tilts.size()
+		var key := _key(path, ARRAY, field_name)
+		var have := vol.tilt_arrays.has(field_name)
+		if vol.is_complete() and not have and not tilts.is_empty() and not _pending.has(key):
 			_pending[key] = true
-			job.specs.append([i, field_name])
+			job.specs.append([ARRAY, field_name])
+	else:
+		for i in vol.sweeps_for(field_name, elev_deg, need == Need.ALL_TILTS):
+			total += vol.texture_size(i, field_name)
+			var key := _key(path, i, field_name)
+			var have := vol.has_texture(i, field_name)
+			if vol.is_complete() and not have and not _pending.has(key):
+				_pending[key] = true
+				job.specs.append([i, field_name])
 	if not job.specs.is_empty():
 		job.task_id = WorkerThreadPool.add_task(job.run, false, "preload " + path.get_file())
 		_jobs.append(job)
@@ -129,11 +150,18 @@ func _upload(job: Job, budget: int) -> int:
 	var used := 0
 	while job.next < job.specs.size() and (used < budget or budget < 0):
 		var s: Array = job.specs[job.next]
-		var img: Image = job.images[job.next]
+		var result = job.images[job.next]
 		job.next += 1
-		if img != null and _volumes.get(job.volume.path) == job.volume:
-			job.volume.add_texture(s[0], s[1], img)
-			used += img.get_data_size()
+		if result == null or _volumes.get(job.volume.path) != job.volume:
+			continue
+		if s[0] == ARRAY:
+			var layers: Array[Image] = result
+			TiltArray.add(job.volume, s[1], layers)
+			for img in layers:
+				used += img.get_data_size()
+		else:
+			job.volume.add_texture(s[0], s[1], result)
+			used += (result as Image).get_data_size()
 	return used
 
 

@@ -13,6 +13,7 @@ var meta: Dictionary
 var sweeps: Array = []
 var mtime := 0  # volume.json modification time when loaded
 var texture_bytes := 0  # GPU bytes of textures loaded so far (for VolumeCache budgeting)
+var tilt_arrays: Dictionary = {}  # field -> TiltArray (volume rendering), see TiltArray
 var _textures: Dictionary = {}
 var _tilts: Dictionary = {}  # field -> Array[int], memoised
 

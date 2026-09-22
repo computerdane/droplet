@@ -126,7 +126,7 @@ func _check_preload(lib) -> bool:
 	var t0 := Time.get_ticks_msec()
 	var expected := 0
 	for p in paths:
-		expected += cache.prefetch(p, "REF", 0.5, true)
+		expected += cache.prefetch(p, "REF", 0.5, VolumeCacheScript.Need.ALL_TILTS)
 	var waited = cache.get_volume(paths[0])
 	var deadline := t0 + 20000
 	while cache.pending_jobs() > 0 and Time.get_ticks_msec() < deadline:
@@ -138,6 +138,16 @@ func _check_preload(lib) -> bool:
 		for i in v.tilts("REF"):
 			ok = ok and v.has_texture(i, "REF")
 	ok = ok and waited.texture_bytes > 0
+	# Volume rendering: the whole field as one Texture2DArray, built on a worker too.
+	cache.prefetch(paths[1], "VEL", 0.5, VolumeCacheScript.Need.TILT_ARRAY)
+	while cache.pending_jobs() > 0 and Time.get_ticks_msec() < deadline:
+		cache.poll()
+		OS.delay_msec(2)
+	var va = cache.get_volume(paths[1])
+	var ta = va.tilt_arrays.get("VEL")
+	ok = ok and ta != null and ta.texture.get_layers() == va.tilts("VEL").size()
+	if ta != null:
+		print("  tilt array: VEL %d layers of %d gates" % [ta.texture.get_layers(), ta.width])
 	print(
 		(
 			"  preload: %d volumes, %d MB in %d ms"
