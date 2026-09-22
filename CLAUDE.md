@@ -21,6 +21,7 @@ godot                                               # run main scene
 godot --headless --path . --import                  # (re)build .godot/ cache after adding scripts/scenes
 godot --headless --path . --script res://tests/smoke.gd
 godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 view=3d mosaic=1
+godot --path . --script res://tests/frametimes.gd -- frames=1500 view=3d mosaic=1 play=1 fps=15 time=20130520_193407
 gdformat scripts tests && gdlint scripts tests
 ```
 
@@ -36,6 +37,10 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/radar_volume.gd` – one volume, lazy float16 textures; `tilts(field)` = one sweep per
   elevation (split cuts / SAILS repeats merged, most gates then latest wins). Use tilts, not raw sweep indices.
 - `scripts/volume_cache.gd` – LRU of volumes by texture bytes (1 GiB), reloads partial volumes when volume.json changes.
+  `prefetch()` reads sweep files into Images on WorkerThreadPool; `poll()` (every frame) uploads ≤24 MB of
+  textures; `get_volume()` waits for that volume's pending jobs. On-screen volumes are pinned.
+  `main._preload_ahead()` prefetches the loop frames after the playhead (+ mosaic neighbours) up to 80 % of
+  the budget, so loops bigger than the cache still stream as a rolling window. `prefetch=0` disables it.
 - `scripts/main.gd` – controller: site, frame, field, *target elevation* (kept across frames), playback,
   live, mosaic neighbours. Parses `key=value` user args (see its header) – screenshot.gd passes them through.
 - `scripts/hud.gd` – code-built UI (no keyboard focus anywhere, so shortcuts always work).
@@ -77,10 +82,10 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Decoder reads both archive layouts: bzip2 LDM records (current) and the older gzip-wrapped uncompressed stream (~pre-2016, `.gz` keys). Only Message 31 radials are parsed (Build 10+, ~mid-2008 onward); pre-2008 files use Message 1 and would need a separate parser.
 - Verified against KTLX 2026-09-22 (VCP 212, bz2) and KTLX 2013-05-20 20:03Z (VCP 12, gz, the Moore tornado).
 - `live` starts on the in-progress volume (skipping it if joined after its first chunk), then follows each new one. It bootstraps by probing ~20 S3 listings to find the newest volume number; could cache the last number in `data/`.
-- Done: time animation + live following, 3D cones, basemap, site picker, multi-site mosaic.
+- Done: time animation + live following, 3D cones, basemap, site picker, multi-site mosaic,
+  background prefetch of loop frames.
 - Next: velocity dealiasing (aliasing is obvious in VEL at low Nyquist), storm-relative motion,
   vertical cross-sections (RHI-style slice through the cones), translucent/volumetric 3D rendering
-  (cones are opaque with a threshold today), background preloading of loop frames (first pass through a
-  loop loads synchronously, noticeable in 3D), fetching new sites from the UI (currently CLI only).
+  (cones are opaque with a threshold today), fetching new sites from the UI (currently CLI only).
 - Mosaic uses whatever is on disk; `live` follows one site per process (run several for a live mosaic).
 - The 3D ground disk/rings are centred on the selected site only.

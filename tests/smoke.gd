@@ -6,6 +6,7 @@ const RadarLibraryScript := preload("res://scripts/radar_library.gd")
 const RadarVolumeScript := preload("res://scripts/radar_volume.gd")
 const ColormapsScript := preload("res://scripts/colormaps.gd")
 const BasemapScript := preload("res://scripts/basemap.gd")
+const VolumeCacheScript := preload("res://scripts/volume_cache.gd")
 
 
 func _initialize() -> void:
@@ -53,6 +54,7 @@ func _initialize() -> void:
 	failed = not _check_tilts(vol) or failed
 	failed = not _check_sequences(lib) or failed
 	failed = not _check_basemap(vol) or failed
+	failed = not _check_preload(lib) or failed
 	quit(1 if failed else 0)
 
 
@@ -109,3 +111,37 @@ func _check_basemap(vol) -> bool:
 		names.append("%s %.0f km" % [c[0], (c[1] as Vector2).length()])
 	print("  basemap layers: %s  cities <100 km: %s" % [bm.meshes.keys(), ", ".join(names)])
 	return not bm.meshes.is_empty()
+
+
+## Background loading: preload the REF tilts of a few complete volumes, drain the jobs with
+## poll() and check every texture arrived; get_volume() must finish a pending job itself.
+func _check_preload(lib) -> bool:
+	var cache = VolumeCacheScript.new()
+	var paths: Array[String] = []
+	for p in lib.volumes:
+		if paths.size() < 3 and RadarVolumeScript.load_from_dir(p).is_complete():
+			paths.append(p)
+	var t0 := Time.get_ticks_msec()
+	var expected := 0
+	for p in paths:
+		expected += cache.prefetch(p, "REF", 0.5, true)
+	var waited = cache.get_volume(paths[0])
+	var deadline := t0 + 20000
+	while cache.pending_jobs() > 0 and Time.get_ticks_msec() < deadline:
+		cache.poll()
+		OS.delay_msec(2)
+	var ok: bool = cache.pending_jobs() == 0 and cache.used_bytes() == expected
+	for p in paths:
+		var v = cache.get_volume(p)
+		for i in v.tilts("REF"):
+			ok = ok and v.has_texture(i, "REF")
+	ok = ok and waited.texture_bytes > 0
+	print(
+		(
+			"  preload: %d volumes, %d MB in %d ms"
+			% [paths.size(), cache.used_bytes() >> 20, Time.get_ticks_msec() - t0]
+		)
+	)
+	if not ok:
+		push_error("preload: %d of %d bytes loaded" % [cache.used_bytes(), expected])
+	return ok

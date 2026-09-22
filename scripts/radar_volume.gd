@@ -117,10 +117,39 @@ func _gates(i: int, field_name: String) -> int:
 	return int(sweeps[i]["fields"][field_name]["n_gates"])
 
 
+func has_texture(i: int, field_name: String) -> bool:
+	return _textures.has("%d:%s" % [i, field_name])
+
+
 func get_texture(i: int, field_name: String) -> ImageTexture:
 	var key := "%d:%s" % [i, field_name]
-	if _textures.has(key):
-		return _textures[key]
+	if not _textures.has(key):
+		var img := read_image(i, field_name)
+		if img == null:
+			return null
+		add_texture(i, field_name, img)
+	return _textures[key]
+
+
+## Sweep indices a view needs for `field_name`: every tilt, or just the one nearest `elev_deg`.
+func sweeps_for(field_name: String, elev_deg: float, all_tilts: bool) -> Array[int]:
+	if all_tilts:
+		return tilts(field_name)
+	var i := tilt_near(field_name, elev_deg)
+	var out: Array[int] = []
+	if i >= 0:
+		out.append(i)
+	return out
+
+
+## GPU bytes of one sweep/field texture, from the metadata alone.
+func texture_size(i: int, field_name: String) -> int:
+	return _gates(i, field_name) * int(sweeps[i]["n_azimuth_bins"]) * 2
+
+
+## Reads one sweep/field file into an Image. Touches no state, so it is safe to call from a
+## worker thread (VolumeCache preloading); add_texture() must then run on the main thread.
+func read_image(i: int, field_name: String) -> Image:
 	var sw: Dictionary = sweeps[i]
 	var f: Dictionary = sw["fields"].get(field_name, {})
 	if f.is_empty():
@@ -128,14 +157,19 @@ func get_texture(i: int, field_name: String) -> ImageTexture:
 	var n_gates := int(f["n_gates"])
 	var n_bins := int(sw["n_azimuth_bins"])
 	var bytes := FileAccess.get_file_as_bytes(path.path_join(f["file"]))
-	if bytes.size() != n_gates * n_bins * 2:
-		var expected := n_gates * n_bins * 2
+	var expected := n_gates * n_bins * 2
+	if bytes.size() != expected:
 		push_error(
 			"RadarVolume: %s has %d bytes, expected %d" % [f["file"], bytes.size(), expected]
 		)
 		return null
-	var img := Image.create_from_data(n_gates, n_bins, false, Image.FORMAT_RH, bytes)
-	var tex := ImageTexture.create_from_image(img)
-	_textures[key] = tex
-	texture_bytes += bytes.size()
-	return tex
+	return Image.create_from_data(n_gates, n_bins, false, Image.FORMAT_RH, bytes)
+
+
+## Uploads an Image from read_image() as the texture for sweep `i` / `field_name`.
+func add_texture(i: int, field_name: String, img: Image) -> void:
+	var key := "%d:%s" % [i, field_name]
+	if _textures.has(key):
+		return
+	_textures[key] = ImageTexture.create_from_image(img)
+	texture_bytes += img.get_data_size()

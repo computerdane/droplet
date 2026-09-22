@@ -10,7 +10,10 @@ extends Node
 ##
 ## Command-line options (after `--`): site=KTLX time=20130520_200359 field=VEL elev=0.5
 ## live=0|1 play=0|1 fps=8 zoom=2 view=2d|3d yaw=30 pitch=25 dist=400 exag=4
-## isolate=0|1|2 threshold=20 mosaic=0|1
+## isolate=0|1|2 threshold=20 mosaic=0|1 prefetch=0|1
+##
+## Upcoming loop frames (and their mosaic neighbours) are read in the background, see
+## _preload_ahead() and VolumeCache.
 ##
 ## Mosaic mode also draws every other site's volume nearest in time (within
 ## MOSAIC_MAX_SKEW_SEC), placed at its projected offset from the selected site and rotated
@@ -20,6 +23,8 @@ const LIVE_RESCAN_SEC := 3.0
 const LOOP_DWELL_SEC := 1.0  # extra pause on the last frame of the loop
 const MOSAIC_MAX_SKEW_SEC := 10 * 60
 const MOSAIC_MAX_KM := 900.0
+## Share of the cache budget that loop frames ahead of the playhead may fill.
+const PRELOAD_BUDGET_FRACTION := 0.8
 const FIELD_KEYS := {
 	KEY_1: "REF", KEY_2: "VEL", KEY_3: "SW", KEY_4: "ZDR", KEY_5: "PHI", KEY_6: "RHO", KEY_7: "CFP"
 }
@@ -47,6 +52,7 @@ var playing := false
 var fps := 4.0
 var view_is_3d := false
 var mosaic := false
+var prefetch := true  # read upcoming loop frames in the background
 var _neighbors: Array = []  # mosaic entries, see _find_neighbors()
 var _others := PackedVector2Array()  # neighbours in the selected site's frame
 var _site_lonlat := Vector2.INF  # site the views' basemaps are centred on
@@ -75,6 +81,7 @@ func _ready() -> void:
 		view_2d.set_zoom(float(opts["zoom"]))
 	_apply_3d_options(opts)
 	mosaic = opts.get("mosaic", "0") == "1"
+	prefetch = opts.get("prefetch", "1") == "1"
 	_set_view_3d(opts.get("view", "2d") == "3d")
 	var sites := library.sites()
 	var want_site: String = opts.get("site", "").to_upper()
@@ -84,6 +91,10 @@ func _ready() -> void:
 		live = false
 	_set_live(opts.get("live", "1" if live else "0") == "1")
 	_set_playing(opts.get("play", "0") == "1")
+
+
+func _process(_delta: float) -> void:
+	cache.poll()
 
 
 func _connect_hud() -> void:
@@ -265,6 +276,10 @@ func _refresh() -> void:
 			view_3d.set_site(ll.y, ll.x)
 	_neighbors = _find_neighbors()
 	_others = _assign_others(_neighbors)
+	var on_screen: Array = [volume.path] if volume != null else []
+	for n in _neighbors:
+		on_screen.append((n["volume"] as RadarVolume).path)
+	cache.pin(on_screen)
 	if view_is_3d:
 		view_3d.show_volume(volume, field_name, target_elev, _neighbors, _others)
 	else:
@@ -279,6 +294,40 @@ func _refresh() -> void:
 	hud.set_field(field_name, available)
 	_update_info()
 	_update_playback()
+	_preload_ahead()
+
+
+## Queues background reads of the frames after the current one, wrapping around the loop,
+## with the textures the active view needs, until PRELOAD_BUDGET_FRACTION of the cache
+## would be used. Mosaic neighbours of each frame are included.
+func _preload_ahead() -> void:
+	if volume == null or not prefetch:
+		return
+	var seq := _sequence()
+	var n := seq.y - seq.x + 1
+	var budget := int(cache.budget_bytes * PRELOAD_BUDGET_FRACTION)
+	budget -= cache.prefetch(volume.path, field_name, target_elev, view_is_3d)
+	for nb in _neighbors:
+		budget -= cache.prefetch(nb["volume"].path, field_name, target_elev, view_is_3d)
+	for k in range(1, n):
+		if budget <= 0:
+			break
+		var path := frames[seq.x + (frame - seq.x + k) % n]
+		budget -= cache.prefetch(path, field_name, target_elev, view_is_3d)
+		var t := RadarLibrary.unix_of(path)
+		for nb in _neighbors:
+			var other := _mosaic_path(nb["site"], t)
+			if not other.is_empty():
+				budget -= cache.prefetch(other, field_name, target_elev, view_is_3d)
+
+
+## Volume of `s` nearest in time to `t`, or "" if none is within MOSAIC_MAX_SKEW_SEC.
+func _mosaic_path(s: String, t: int) -> String:
+	var list := library.for_site(s)
+	var i := RadarLibrary.nearest_in_time(list, t)
+	if i < 0 or absi(RadarLibrary.unix_of(list[i]) - t) > MOSAIC_MAX_SKEW_SEC:
+		return ""
+	return list[i]
 
 
 ## Other sites' volumes nearest in time to the current one, for mosaic mode:
@@ -293,12 +342,11 @@ func _find_neighbors() -> Array:
 	for s in library.sites():
 		if s == site:
 			continue
-		var list := library.for_site(s)
-		var i := RadarLibrary.nearest_in_time(list, t)
-		var skew := RadarLibrary.unix_of(list[i]) - t
-		if absi(skew) > MOSAIC_MAX_SKEW_SEC:
+		var path := _mosaic_path(s, t)
+		if path.is_empty():
 			continue
-		var v := cache.get_volume(list[i], true)
+		var skew := RadarLibrary.unix_of(path) - t
+		var v := cache.get_volume(path, true)
 		if v == null:
 			continue
 		var lat := float(v.meta["latitude"])
