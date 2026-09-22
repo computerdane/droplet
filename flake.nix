@@ -10,6 +10,10 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        python = pkgs.python3.withPackages (ps: with ps; [
+          numpy
+          requests
+        ]);
       in
       {
         devShells.default = pkgs.mkShell {
@@ -17,6 +21,7 @@
             godot
             godot-export-templates-bin
             gdtoolkit_4
+            python
           ];
 
           shellHook = ''

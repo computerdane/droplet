@@ -13,3 +13,8 @@ result
 .idea/
 *.swp
 .DS_Store
+
+# Radar data (large; fetch with `python -m nexrad`)
+data/raw/
+data/volumes/
+__pycache__/
