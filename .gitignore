@@ -19,3 +19,7 @@ data/raw/
 data/volumes/
 data/basemap/
 __pycache__/
+
+# Synthetic test volumes (python -m nexrad.synth)
+tests/fixtures/volumes/
+.pytest_cache/

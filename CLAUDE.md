@@ -20,12 +20,15 @@ python -m nexrad decode data/raw/*_V06*             # re-decode everything (e.g.
 python -m nexrad.dealias                            # dealiaser self-test on a synthetic aliased sweep
 python -m nexrad winds [data/volumes/...]           # (re)compute VAD winds + storm motion without re-decoding
 python -m nexrad.vad                                # VAD self-test on synthetic sweeps
+python -m nexrad.synth                              # synthetic fixture volumes -> tests/fixtures/volumes/
+pytest                                              # Python tests (tests/python), no network or real data
 godot --editor                                      # open project
 godot                                               # run main scene
 godot --headless --path . --import                  # (re)build .godot/ cache after adding scripts/scenes
 godot --headless --path . --script res://tests/smoke.gd
 godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 view=3d mosaic=1
 godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 vwp=1 hover=560,380
+godot --path . --script res://tests/screenshot.gd -- out.png volumes=res://tests/fixtures/volumes site=KTST
 godot --path . --script res://tests/frametimes.gd -- frames=1500 view=3d mosaic=1 play=1 fps=15 time=20130520_193407
 gdformat scripts tests && gdlint scripts tests
 ```
@@ -45,6 +48,16 @@ gdformat scripts tests && gdlint scripts tests
   need 25 % coverage, samples in all 8 sectors, rms ≤ 4.5 m/s; median per 250 m height bin. `bunkers()`
   = Bunkers right/left mover + 0–1/0–3 km SRH, only when the profile spans ≤ 1 km to ≥ 5 km AGL
   (clear-air-only volumes often top out ~3 km and get none).
+- `nexrad/synth.py` – test data: `encode_archive()` (inverse of the decoder, both layouts, with a metadata
+  record and signed LDM lengths like real files; `ldm_records()` splits it into chunk-sized pieces) and `Scene`,
+  a storm (REF core, rotation couplet, debris RHO dip, range-folded sector) drifting in a veering wind, rendered
+  for any site/time/scan and aliased at the scene's Nyquist. `build_fixtures()` writes KTST ×2 (5 min apart,
+  split cut + SAILS repeat, 0.5°/1° bins, Bunkers storm motion) and a KTSU mosaic neighbour through the real
+  encode → decode → `write_volume` path. Deterministic; generated (gitignored), not committed.
+- `tests/python/` – pytest: decoder round trips (both layouts, partial/overflow/garbage input), dealias and VAD
+  (the self-tests, plus DVEL and the VAD profile scored against the scene's unaliased truth), chunk ring and
+  `live()` against fake S3 listings, archive key selection, `write_volume` layout/values, the fixture set.
+  `fakes.py` stands in for S3. No network, ~10 s.
 - `nexrad/basemap.py` – Census 1:500k state/county shapefiles (stdlib reader) + Natural Earth cities.
 - `nexrad/__main__.py` – CLI; `write_volume()` defines the on-disk format Godot reads; `add_dealiased()` adds DVEL.
 - `data/raw/` – downloaded archive files (gitignored). `data/volumes/` – decoded, `data/basemap/` – basemap buffers (all gitignored).
@@ -103,7 +116,7 @@ gdformat scripts tests && gdlint scripts tests
   (no texture needed); `RadarVolume.storm_relative()` is the CPU twin of storm.gdshaderinc. Hovering the section
   marks the point on the A-B line in 2D. Not in 3D. `hover=x,y` pins it (canvas units) for screenshots.
 - `scripts/colormaps.gd` – per-field value ranges, units and gradient textures.
-- `nexrad/` and `data/` carry a `.gdignore` so the editor does not try to import them; `res://data/...` is still readable via FileAccess in dev builds. Exported builds will need `user://`.
+- `nexrad/`, `data/`, `tests/python/` and `tests/fixtures/` carry a `.gdignore` so the editor does not try to import them; `res://data/...` is still readable via FileAccess in dev builds. Exported builds will need `user://`.
 
 ## Data format (format_version 1)
 
@@ -130,7 +143,7 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 
 - World units in Godot are **kilometres**, +x east, -y north (screen down). Camera2D zoom = px/km.
 - GDScript formatted with `gdformat`, lint-clean with `gdlint` (tabs, typed vars, `class_name` on shared scripts).
-- Python: stdlib + numpy + requests only; keep the decoder dependency-free so the flake stays simple.
+- Python: stdlib + numpy + requests only (pytest for tests); keep the decoder dependency-free so the flake stays simple.
 - Commit signing is disabled for this repo (local git config). Do not re-enable.
 - Don't commit anything under `data/`.
 

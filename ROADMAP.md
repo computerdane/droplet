@@ -21,12 +21,15 @@ background prefetch; responsive HUD; `key=value` options for scripted runs.
 
 **Tests and tooling.** `tests/smoke.gd` (tilt selection, sequences, projection, preload,
 beam model, storm motion lookup, readout), `tests/screenshot.gd`, `tests/frametimes.gd`,
-self-tests in `nexrad/dealias.py` and `nexrad/vad.py`, gdformat and gdlint. All green.
+gdformat and gdlint. `nexrad/synth.py` generates synthetic Archive2 files and fixture
+volumes; `pytest` covers the decoder, dealiasing, VAD, chunk ring, `live()`, key selection
+and the volume writer without network or real data (57 tests, ~10 s). All green.
 
 **Gaps.**
 
-- Every Godot test needs real volumes on disk, so nothing runs on a fresh checkout or in CI.
-- The decoder, CLI, chunk ring and volume writer have no Python tests.
+- The Godot tests still read `data/volumes` by default. smoke.gd passes unchanged against the
+  fixtures (verified by hand), but there is no runner that points it there yet.
+- Nothing runs in CI yet.
 - Screenshots are eyeballed; nothing catches a shader regression automatically.
 - The hover readout skips 3D, sections use one site, live follows one site per process.
 
@@ -34,9 +37,9 @@ self-tests in `nexrad/dealias.py` and `nexrad/vad.py`, gdformat and gdlint. All 
 
 Ordered by what unblocks the most.
 
-1. **Test fixtures and CI.** Synthetic volume generator, pytest, a Godot test runner that
-   works without real data, golden screenshots under Xvfb, GitHub Actions. Prerequisite for
-   everything below being safe to ship. See "Automated testing".
+1. **Test fixtures and CI.** Done: synthetic volume generator, pytest. Left: a Godot test
+   runner that works without real data, golden screenshots under Xvfb, GitHub Actions.
+   Prerequisite for everything below being safe to ship. See "Automated testing".
 2. **Web build and hosting.** See "Web build". Includes URL-state permalinks, which fall
    out of the existing `key=value` options.
 3. **Derived products.** Composite reflectivity, echo tops, VIL, azimuthal shear and
@@ -57,16 +60,18 @@ Ordered by what unblocks the most.
 
 Five layers, cheapest first. Each maps onto a tool already in the dev shell.
 
-- **Python unit tests (pytest, added to the flake).** A small encoder helper writes a
-  synthetic Archive2 file in both layouts so no multi-megabyte raw file lands in git. Cover
-  header parsing, LDM record iteration, moment scaling, sentinel mapping and sweep grouping.
-  Turn the dealias and VAD self-tests into pytest cases. Test the chunk ring and key listing
-  against canned S3 XML with the HTTP layer monkeypatched. Round-trip `write_volume()` and
-  validate the JSON layout Godot expects.
-- **Godot unit tests without real data.** The same generator emits a fixture volume under
-  `tests/fixtures/volumes/` (two sweeps, ~36 x 64 gates, known values). A test runner
-  script discovers `test_*.gd` files, points `RadarLibrary` at the fixture root, and ports
-  the smoke checks onto it. Keep one optional pass over real data when present.
+- **Python unit tests (done, `tests/python/`).** `nexrad/synth.py` encodes synthetic
+  Archive2 files in both layouts, so no raw file lands in git. Covers header parsing, LDM
+  record iteration, moment scaling, sentinels, sweep grouping, partial volumes and the
+  Message 31 size overflow; the dealias and VAD self-tests plus scoring against the synthetic
+  scene's truth; the chunk ring and `live()` against canned S3 listings; key selection;
+  `write_volume()` layout and values.
+- **Godot unit tests without real data.** `python -m nexrad.synth` writes three fixture
+  volumes (KTST ×2 and a KTSU neighbour, ~3.8 MB) to `tests/fixtures/volumes/`. They are
+  generated deterministically rather than committed (~0.9 MB compressed per regeneration
+  would pile up in history); CI runs the generator first. `volumes=` points the app at
+  them. Next: a runner script discovers `test_*.gd` files, points `RadarLibrary` at the
+  fixture root, and ports the smoke checks onto it. Keep one optional pass over real data.
 - **Golden screenshots.** Xvfb plus the Compatibility driver render deterministically in
   software. Capture a fixed set of views of the fixture volume, compare against committed
   PNGs with a pixel-difference tolerance, regenerate goldens only with an explicit flag.

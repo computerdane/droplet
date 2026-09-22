@@ -16,7 +16,8 @@ extends Node
 ## srm=240,10 (storm-relative velocity, storm moving from 240 degrees at 10 m/s) or srm=auto
 ## (storm motion from the VAD profile, see _auto_storm) winds=0|1 (hodograph panel)
 ## vwp=0|1 (VAD winds over the loop as barbs) hover=x,y (pin the hover readout to that
-## canvas point, for screenshots)
+## canvas point, for screenshots) volumes=res://tests/fixtures/volumes (library root; default
+## res://data/volumes)
 ##
 ## Hovering the 2D view, the cross-section or the VWP shows a readout of the value under
 ## the mouse next to it (see _update_readout); 2D values are read straight from the sweep
@@ -115,6 +116,9 @@ func _ready() -> void:
 	get_window().mouse_exited.connect(func() -> void: _mouse_in_window = false)
 
 	var opts := _parse_options()
+	if opts.has("volumes"):
+		library.root = opts["volumes"]
+		library.scan()
 	ui_scale = clampf(float(opts.get("ui_scale", ui_scale)), 0.5, 4.0)
 	get_window().size_changed.connect(_fit_ui_scale)
 	_fit_ui_scale()

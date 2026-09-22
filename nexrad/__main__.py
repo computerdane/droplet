@@ -116,9 +116,9 @@ def resolve_keys(args) -> list[str]:
     return [latest_key(args.site)]
 
 
-def write_volume(vol: level2.Volume) -> Path:
-    """Write a decoded Volume to data/volumes/<ICAO>_<time>/ in the Godot-facing layout."""
-    out = VOLUMES_DIR / f"{vol.icao}_{vol.time:%Y%m%d_%H%M%S}"
+def write_volume(vol: level2.Volume, root: Path | None = None) -> Path:
+    """Write a decoded Volume to <root>/<ICAO>_<time>/ (default data/volumes) in the Godot-facing layout."""
+    out = (root or VOLUMES_DIR) / f"{vol.icao}_{vol.time:%Y%m%d_%H%M%S}"
     out.mkdir(parents=True, exist_ok=True)
 
     sweeps_meta = []
