@@ -20,6 +20,7 @@ declare -A CASES=(
 	[cref_mosaic]="field=CREF mosaic=1 zoom=2 hover=760,330"
 	[echo_tops]="field=ET zoom=3"
 	[azshr]="field=AZSHR zoom=4 pan=15,15"
+	[rotation_tracks]="field=TRACKS zoom=4 pan=15,15"
 )
 
 : "${DROPLET_GL_LIBS:?run inside nix develop}"

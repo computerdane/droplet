@@ -388,7 +388,7 @@ mod tests {
             }
         }
         let prods = meta.products.as_ref().expect("column products");
-        assert_eq!(prods.fields.keys().collect::<Vec<_>>(), ["CREF", "ET", "VIL"]);
+        assert_eq!(prods.fields.keys().collect::<Vec<_>>(), ["CREF", "ET", "ROT", "VIL"]);
         let low = &meta.sweeps[0].fields["REF"];
         for (name, f) in &prods.fields {
             assert_eq!(f.file, format!("p_{name}.bin"));
@@ -466,6 +466,10 @@ mod tests {
         };
         let get = |n: &str| read_field(&out, &as_sweep, n).unwrap().unwrap();
         let (cref, et, vil) = (get("CREF"), get("ET"), get("VIL"));
+        // Low-level rotation peaks at the couplet (12.5e-3 /s near the ground, less once smoothed).
+        let rot = get("ROT");
+        let peak = rot.data.iter().copied().fold(f32::MIN, f32::max);
+        assert!((8.0..14.0).contains(&peak), "ROT peak {peak}");
         let low = read_field(&out, &meta.sweeps[products::tilts(&meta.sweeps, "REF")[0]], "REF").unwrap().unwrap();
         // At short range the lowest beam is nearly at the ground point: CREF is at least it.
         let mut stormy = 0;

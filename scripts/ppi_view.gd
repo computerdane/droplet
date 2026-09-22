@@ -10,6 +10,7 @@ signal section_changed
 
 const BASEMAP_SHADER := preload("res://shaders/basemap_2d.gdshader")
 const PPI_SHADER := preload("res://shaders/ppi.gdshader")
+const TRACKS_SHADER := preload("res://shaders/ppi_tracks.gdshader")
 const ZOOM_STEP := 1.15
 const ZOOM_MIN := 0.25
 const ZOOM_MAX := 400.0
@@ -36,6 +37,8 @@ var _cities: Array = []  # from Basemap.cities_near, most populous first
 var _basemap_mats: Array[ShaderMaterial] = []
 var _site_latlon := Vector2.INF  # last set_site(), re-applied when the basemap arrives
 var _neighbor_rects: Array[ColorRect] = []
+var _ppi_material: ShaderMaterial  # the sweep material; show_tracks() swaps in another
+var _tracks_material: ShaderMaterial
 
 @onready var ppi: ColorRect = $PPI
 @onready var cam: Camera2D = $Camera
@@ -45,6 +48,7 @@ var _neighbor_rects: Array[ColorRect] = []
 
 
 func _ready() -> void:
+	_ppi_material = ppi.material
 	overlay.draw.connect(_draw_overlay)
 	Basemap.when_loaded(_on_basemap_loaded)
 	reset_camera()
@@ -136,6 +140,33 @@ func set_zoom(z: float) -> void:
 	overlay.queue_redraw()
 
 
+## Rotation tracks instead of a sweep: the maximum of the first `n_layers` layers of `tracks`
+## (selected site only; mosaic neighbours are hidden). null blanks the display.
+func show_tracks(tracks: RotationTracks, n_layers: int) -> void:
+	for rect in _neighbor_rects:
+		rect.get_parent().visible = false
+	if tracks == null:
+		ppi.visible = false
+		return
+	if _tracks_material == null:
+		_tracks_material = ShaderMaterial.new()
+		_tracks_material.shader = TRACKS_SHADER
+	var mat := _tracks_material
+	ppi.material = mat
+	ppi.visible = true
+	mat.set_shader_parameter("layers", tracks.texture)
+	mat.set_shader_parameter("n_layers", clampi(n_layers, 0, tracks.names.size()))
+	mat.set_shader_parameter("half_size", ppi.size.x / 2.0)
+	mat.set_shader_parameter("first_gate_km", tracks.first_gate_km)
+	mat.set_shader_parameter("gate_spacing_km", tracks.gate_spacing_km)
+	mat.set_shader_parameter("n_gates", tracks.width)
+	mat.set_shader_parameter("colormap", Colormaps.texture_for(RotationTracks.FIELD))
+	var rng := Colormaps.range_of(RotationTracks.FIELD)
+	mat.set_shader_parameter("cmap_min", rng[0])
+	mat.set_shader_parameter("cmap_max", rng[1])
+	mat.set_shader_parameter("min_value", RotationTracks.MIN_VALUE)
+
+
 ## Show sweep `i` of `vol` for `field_name`; pass i < 0 to blank the display.
 ## `neighbors` are mosaic entries from main.gd: {volume, sweep, offset_km (+y north),
 ## rotation, others}; `others` holds the other radars in each site's local frame so the
@@ -147,6 +178,7 @@ func show_sweep(
 	neighbors: Array = [],
 	others := PackedVector2Array()
 ) -> void:
+	ppi.material = _ppi_material
 	_apply_sweep(ppi, vol, i, field_name, others, storm_motion)
 	while _neighbor_rects.size() < neighbors.size():
 		var holder := Node2D.new()

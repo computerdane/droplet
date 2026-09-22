@@ -8,7 +8,7 @@ const RANGE_FOLDED := -2000.0
 const FIELDS := ["REF", "VEL", "SW", "ZDR", "PHI", "RHO", "CFP", "DVEL", "KDP", "AZSHR"]
 ## Column products (nexrad/src/products.rs): one grid each over ground distance, kept as an
 ## extra sweep at 0° after the real ones (is_product()); plan view only.
-const PRODUCTS := ["CREF", "ET", "VIL"]
+const PRODUCTS := ["CREF", "ET", "VIL", "ROT"]
 const ELEVATION_MERGE_DEG := 0.2
 
 var source: VolumeSource

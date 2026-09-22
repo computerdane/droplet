@@ -38,6 +38,8 @@ const PRODUCT_NAMES := {
 	"CREF": "composite reflectivity",
 	"ET": "18 dBZ echo top",
 	"VIL": "vertically integrated liquid",
+	"ROT": "low-level rotation, max AZSHR below 2 km",
+	"TRACKS": "rotation tracks, max ROT over the loop so far",
 }
 const LEGEND_WIDTH := 280
 const HODOGRAPH_SIZE := Vector2(280, 300)  # largest; shrinks to fit
@@ -168,7 +170,7 @@ func _build_top_right() -> void:
 
 	var fields := _flow(box)
 	var group := ButtonGroup.new()
-	var names: Array = RadarVolume.FIELDS + RadarVolume.PRODUCTS
+	var names: Array = RadarVolume.FIELDS + RadarVolume.PRODUCTS + [RotationTracks.VIEW_FIELD]
 	for i in names.size():
 		var fname: String = names[i]
 		var tip := "%s (%d)" % [fname, i + 1] if i < 8 else "%s (0)" % fname

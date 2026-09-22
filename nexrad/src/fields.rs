@@ -3,7 +3,8 @@
 //! - `AZSHR` azimuthal shear of the dealiased radial velocity, in 10⁻³ s⁻¹ (positive =
 //!   cyclonic in the northern hemisphere: velocity increasing clockwise). Linear least squares
 //!   derivative (LLSD) of DVEL against arc length over `AZSHR_HALF_WIDTH_M` either side of
-//!   the gate and one gate either side in range, as MRMS computes it.
+//!   the gate and one gate either side in range, as MRMS computes it; left out where DVEL
+//!   scatters by more than `AZSHR_MAX_RESIDUAL_MS` about the fit (fold errors, clutter).
 //! - `KDP` specific differential phase (°/km): half the range derivative of PHI, a least
 //!   squares slope over `KDP_HALF_WINDOW_M` either side of the gate (shorter in heavy rain) on
 //!   PHI that is first unwrapped and median filtered along the radial, using only gates with
@@ -17,6 +18,8 @@ pub const AZSHR_HALF_WIDTH_M: f64 = 750.0;
 pub const AZSHR_MAX_RADIALS: usize = 10;
 /// Ranges closer than this get no shear (a radial is only metres wide there).
 pub const AZSHR_MIN_RANGE_M: f64 = 2000.0;
+/// No shear where DVEL scatters more than this about the fitted line (m/s).
+pub const AZSHR_MAX_RESIDUAL_MS: f64 = 6.0;
 /// Half the fitting window: (REF >= KDP_HEAVY_DBZ, lighter echo), as the NEXRAD KDP uses
 /// 9 and 25 gates.
 pub const KDP_HALF_WINDOW_M: (f64, f64) = (1000.0, 3000.0);
@@ -46,7 +49,7 @@ pub fn azimuthal_shear(vel: &Grid, first_gate_m: f64, gate_spacing_m: f64) -> Gr
             if vel.at(a, g) <= VALID_ABOVE {
                 continue;
             }
-            let (mut sx, mut sv, mut sxx, mut sxv, mut count) = (0.0, 0.0, 0.0, 0.0, 0usize);
+            let (mut sx, mut sv, mut sxx, mut sxv, mut svv, mut count) = (0.0, 0.0, 0.0, 0.0, 0.0, 0usize);
             let (mut left, mut right) = (false, false);
             for k in -(n as i64)..=n as i64 {
                 let row = (a as i64 + k).rem_euclid(n_az as i64) as usize;
@@ -55,7 +58,7 @@ pub fn azimuthal_shear(vel: &Grid, first_gate_m: f64, gate_spacing_m: f64) -> Gr
                     let v = vel.at(row, gg);
                     if v > VALID_ABOVE {
                         let v = v as f64;
-                        (sx, sv, sxx, sxv) = (sx + x, sv + v, sxx + x * x, sxv + x * v);
+                        (sx, sv, sxx, sxv, svv) = (sx + x, sv + v, sxx + x * x, sxv + x * v, svv + v * v);
                         count += 1;
                         left |= k < 0;
                         right |= k > 0;
@@ -67,9 +70,15 @@ pub fn azimuthal_shear(vel: &Grid, first_gate_m: f64, gate_spacing_m: f64) -> Gr
                 continue;
             }
             let c = count as f64;
-            let var = sxx - sx * sx / c;
-            if var > 0.0 {
-                out.set(a, g, ((sxv - sx * sv / c) / var * 1000.0) as f32);
+            let (var_x, cov) = (sxx - sx * sx / c, sxv - sx * sv / c);
+            if var_x <= 0.0 {
+                continue;
+            }
+            let slope = cov / var_x;
+            // A fold error or clutter inside the window leaves a large misfit: no shear there.
+            let residual = ((svv - sv * sv / c - slope * cov).max(0.0) / c).sqrt();
+            if residual <= AZSHR_MAX_RESIDUAL_MS {
+                out.set(a, g, (slope * 1000.0) as f32);
             }
         }
     }

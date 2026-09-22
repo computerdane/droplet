@@ -45,8 +45,8 @@ Ordered by what unblocks the most.
    out of the existing `key=value` options.
 3. **Derived products.** Done: composite reflectivity, echo tops and VIL (nexrad/src/products.rs,
    plan view, 9 cycles them), azimuthal shear and KDP (nexrad/src/fields.rs, per-gate fields
-   next to the moments like DVEL; 0 toggles them). Left: rotation tracks, a hydrometeor
-   classifier.
+   next to the moments like DVEL; 0 toggles them), low-level rotation (ROT) and rotation tracks
+   (max ROT over the loop, on the GPU). Left: a hydrometeor classifier.
 4. **Context overlays.** NWS warning polygons and SPC outlooks from the public NWS API,
    storm cell identification and tracking with motion vectors, tornado debris signature
    flags (low RHO inside high REF and rotation).

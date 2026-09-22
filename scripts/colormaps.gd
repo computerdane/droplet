@@ -17,6 +17,8 @@ const RANGES := {
 	"CREF": [-30.0, 80.0],  # dBZ, composite (column maximum)
 	"ET": [0.0, 20.0],  # km above the radar, 18 dBZ echo top
 	"VIL": [0.0, 80.0],  # kg/m², vertically integrated liquid
+	"ROT": [-10.0, 20.0],  # 1e-3 /s, low-level rotation (as AZSHR)
+	"TRACKS": [-10.0, 20.0],  # 1e-3 /s, rotation tracks (ROT over time)
 }
 
 const UNITS := {
@@ -33,6 +35,8 @@ const UNITS := {
 	"CREF": "dBZ",
 	"ET": "km ARL",
 	"VIL": "kg/m²",
+	"ROT": "10⁻³/s",
+	"TRACKS": "10⁻³/s",
 }
 
 ## Stops as [value, colour] pairs.
@@ -140,7 +144,7 @@ const STOPS := {
 }
 
 ## Fields drawn with another field's colours.
-const SAME_AS := {"DVEL": "VEL", "CREF": "REF"}
+const SAME_AS := {"DVEL": "VEL", "CREF": "REF", "ROT": "AZSHR", "TRACKS": "AZSHR"}
 
 const KT_PER_MS := 1.94384
 
@@ -173,7 +177,7 @@ static func format_value(field_name: String, v: float) -> String:
 			return "%.1f km ARL (%.0f kft)" % [v, v * 3.28084]
 		"KDP":
 			return "%.2f °/km" % v
-		"AZSHR":
+		"AZSHR", "ROT", "TRACKS":
 			return "%.1f × 10⁻³/s" % v
 	return "%.1f %s" % [v, unit]
 

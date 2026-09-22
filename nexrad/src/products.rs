@@ -1,4 +1,4 @@
-//! Column products from the reflectivity tilts of one volume, on a polar grid whose "range"
+//! Column products from the reflectivity (and shear) tilts of one volume, on a polar grid whose "range"
 //! is ground distance from the radar (so a plan view draws them like a 0° sweep):
 //!
 //! - `CREF` composite reflectivity: the largest REF of any tilt above each ground point (dBZ).
@@ -7,6 +7,8 @@
 //!   enhanced-echo-tops style); the top tilt's beam height when even that one is above.
 //! - `VIL` vertically integrated liquid (kg/m²): `3.44e-6 · Z^(4/7)` integrated over height
 //!   between consecutive tilts, Z in mm⁶/m³ with reflectivity capped at `VIL_CAP_DBZ`.
+//! - `ROT` low-level rotation: the largest azimuthal shear (AZSHR, 10⁻³ s⁻¹) of any beam within
+//!   `ROT_TOP_KM` of the radar's height over echo of at least `ROT_MIN_DBZ` (CREF); the viewer's rotation tracks are its maximum over time.
 //!
 //! Beam heights and slant ranges use the 4/3 effective earth radius model, as the shaders do.
 
@@ -28,7 +30,11 @@ pub const KE_A_KM: f64 = 8494.67;
 /// `RadarVolume.tilts()` on the Godot side.
 pub const ELEVATION_MERGE_DEG: f64 = 0.2;
 pub const N_AZIMUTH_BINS: usize = 720;
-pub const NAMES: [&str; 3] = ["CREF", "ET", "VIL"];
+pub const NAMES: [&str; 4] = ["CREF", "ET", "VIL", "ROT"];
+/// Low-level rotation (`ROT`) looks at beams up to this height above the radar, km.
+pub const ROT_TOP_KM: f64 = 2.0;
+/// ROT only over echo at least this strong (CREF, dBZ).
+pub const ROT_MIN_DBZ: f32 = 20.0;
 
 /// One reflectivity tilt as input.
 pub struct TiltIn<'a> {
@@ -106,6 +112,30 @@ pub fn column_products(tilts: &[TiltIn], first_gate_m: f64, gate_spacing_m: f64,
     [cref, top, vil]
 }
 
+/// Low-level rotation: over each ground point, the largest AZSHR of the tilts whose beam there
+/// is at most `ROT_TOP_KM` above the radar (MRMS's 0-2 km azimuthal shear, radar-relative).
+/// Same grid as `column_products`; missing beyond the reach of the lowest beam under that height.
+pub fn low_level_rotation(tilts: &[TiltIn], first_gate_m: f64, gate_spacing_m: f64, n_gates: usize) -> Grid {
+    let mut out = Grid::filled(N_AZIMUTH_BINS, n_gates, MISSING);
+    for g in 0..n_gates {
+        let ground_km = ((first_gate_m + g as f64 * gate_spacing_m) / 1000.0).max(0.0);
+        for t in tilts {
+            let (r_km, h) = beam_at_ground(ground_km, t.elevation_deg);
+            let gate = ((r_km * 1000.0 - t.first_gate_m) / t.gate_spacing_m).round();
+            if h > ROT_TOP_KM || gate < 0.0 || gate as usize >= t.grid.n_gates {
+                continue;
+            }
+            for row in 0..N_AZIMUTH_BINS {
+                let v = t.grid.at(row * t.grid.n_az / N_AZIMUTH_BINS, gate as usize);
+                if v > VALID_ABOVE && v > out.at(row, g) {
+                    out.set(row, g, v);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// CREF, ET and VIL of one column: `dbz[k]` and `h_km[k]` per tilt, lowest tilt first.
 pub fn column_values(dbz: &[f32], h_km: &[f64]) -> (f32, f32, f32) {
     let valid = |v: f32| v > VALID_ABOVE;
@@ -150,7 +180,28 @@ pub fn volume_products(sweeps: &[SweepMeta], grids: &[Fields]) -> Option<(Produc
             }
         })
         .collect();
-    let out = column_products(&inputs, low.first_gate_m as f64, low.gate_spacing_m as f64, low.n_gates);
+    let (first, spacing) = (low.first_gate_m as f64, low.gate_spacing_m as f64);
+    let mut out: Vec<Grid> = column_products(&inputs, first, spacing, low.n_gates).into();
+    let shear: Vec<TiltIn> = tilts(sweeps, "AZSHR")
+        .iter()
+        .map(|&i| {
+            let f = &sweeps[i].fields["AZSHR"];
+            TiltIn {
+                grid: &grids[i]["AZSHR"],
+                elevation_deg: sweeps[i].elevation_deg,
+                first_gate_m: f.first_gate_m as f64,
+                gate_spacing_m: f.gate_spacing_m as f64,
+            }
+        })
+        .collect();
+    let mut rot = low_level_rotation(&shear, first, spacing, low.n_gates);
+    // Shear in clear air and weak echo is mostly noise.
+    for (r, &c) in rot.data.iter_mut().zip(&out[0].data) {
+        if c < ROT_MIN_DBZ {
+            *r = MISSING;
+        }
+    }
+    out.push(rot);
     let fields = NAMES
         .iter()
         .map(|&n| {
@@ -164,7 +215,7 @@ pub fn volume_products(sweeps: &[SweepMeta], grids: &[Fields]) -> Option<(Produc
         })
         .collect();
     let meta = ProductsMeta { azimuth_step_deg: 360.0 / N_AZIMUTH_BINS as f64, n_azimuth_bins: N_AZIMUTH_BINS, fields };
-    Some((meta, out.into()))
+    Some((meta, out))
 }
 
 /// `products` in volume.json: laid out like a sweep (Godot treats it as one at 0°, with ground

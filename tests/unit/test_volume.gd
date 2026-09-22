@@ -121,3 +121,28 @@ func test_products() -> void:
 	check(bad == 0, "CREF below the lowest tilt's REF at %d of 400 points" % bad)
 	if fixtures:
 		check(stormy > 0, "some points in the fixture storm")
+
+
+## Rotation tracks: one layer per loop volume; the track over two frames is at least the
+## rotation of either frame alone, and covers more ground than one frame.
+func test_rotation_tracks() -> void:
+	var vols: Array[RadarVolume] = []
+	for name in lib.for_site(lib.site_of(lib.volumes[0])):
+		vols.append(lib.open(name))
+	var t := RotationTracks.build(vols)
+	if not check(t != null, "tracks built"):
+		return
+	check_eq(t.names.size(), vols.size(), "one layer per volume")
+	check_eq(t.texture.get_layers(), vols.size(), "texture layers")
+	if not fixtures or vols.size() < 2:
+		return
+	var one := 0
+	var both := 0
+	for az in range(0, 360, 2):
+		for r in range(4, 60):
+			var a := RotationTracks.value_at(vols, 1, az, r)
+			var b := RotationTracks.value_at(vols, 2, az, r)
+			check(b >= a, "track grows with frames at %d° %d km" % [az, r])
+			one += int(a > -900.0)
+			both += int(b > -900.0)
+	check(one > 0 and both > one, "the fixture storm moves: %d then %d points" % [one, both])
