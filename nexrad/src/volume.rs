@@ -166,18 +166,23 @@ pub fn volume_dir_name(icao: &str, time: Utc) -> String {
     format!("{icao}_{}", time.compact())
 }
 
-/// Writes a decoded volume to `<root>/<ICAO>_<time>/` in the Godot-facing layout,
-/// returning that directory.
-pub fn write_volume(vol: &Volume, root: &Path) -> Result<PathBuf> {
-    let out = root.join(volume_dir_name(&vol.icao, vol.time));
-    std::fs::create_dir_all(&out).map_err(|e| Error::from(format!("{}: {e}", out.display())))?;
+/// A volume in the Godot-facing format, in memory: its metadata and each sweep file's
+/// float16 bytes keyed by file name (`sNN_<FIELD>.bin`).
+pub struct Encoded {
+    pub meta: VolumeMeta,
+    pub files: Vec<(String, Vec<u8>)>,
+}
 
+/// Rasterises, dealiases and computes VAD winds: everything `write_volume` does short of
+/// touching the disk (the wasm build returns this to the browser).
+pub fn encode_volume(vol: &Volume) -> Encoded {
     let mut d = rasterise(vol);
     add_dealiased(&mut d);
     let profile = wind_profile(&d.sweeps, &d.grids);
+    let mut files = Vec::new();
     for (sw, fields) in d.sweeps.iter().zip(&d.grids) {
         for (name, grid) in fields {
-            write_atomic(&out.join(&sw.fields[name].file), &grid.to_f16_le())?;
+            files.push((sw.fields[name].file.clone(), grid.to_f16_le()));
         }
     }
     let storm_motion = vad::bunkers(profile.as_ref());
@@ -198,7 +203,19 @@ pub fn write_volume(vol: &Volume, root: &Path) -> Result<PathBuf> {
         storm_motion,
         sweeps: d.sweeps,
     };
-    write_meta(&out, &meta)?;
+    Encoded { meta, files }
+}
+
+/// Writes a decoded volume to `<root>/<ICAO>_<time>/` in the Godot-facing layout,
+/// returning that directory.
+pub fn write_volume(vol: &Volume, root: &Path) -> Result<PathBuf> {
+    let out = root.join(volume_dir_name(&vol.icao, vol.time));
+    std::fs::create_dir_all(&out).map_err(|e| Error::from(format!("{}: {e}", out.display())))?;
+    let enc = encode_volume(vol);
+    for (name, bytes) in &enc.files {
+        write_atomic(&out.join(name), bytes)?;
+    }
+    write_meta(&out, &enc.meta)?;
     Ok(out)
 }
 
@@ -208,9 +225,13 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, path)).map_err(|e| Error::from(format!("{}: {e}", path.display())))
 }
 
+/// `volume.json` text, exactly as written to disk.
+pub fn meta_json(meta: &VolumeMeta) -> Result<String> {
+    Ok(serde_json::to_string_pretty(meta)?)
+}
+
 pub fn write_meta(out: &Path, meta: &VolumeMeta) -> Result<()> {
-    let text = serde_json::to_string_pretty(meta)?;
-    write_atomic(&out.join("volume.json"), text.as_bytes())
+    write_atomic(&out.join("volume.json"), meta_json(meta)?.as_bytes())
 }
 
 pub fn read_meta(out: &Path) -> Result<VolumeMeta> {

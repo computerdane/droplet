@@ -23,6 +23,8 @@ nexrad winds [data/volumes/...]                    # (re)compute VAD winds + sto
 nexrad synth                                       # synthetic fixture volumes -> tests/fixtures/volumes/
 cargo test                                         # Rust tests (decoder, dealias, VAD, chunks, live, fixtures); no network, ~6 s
 cargo clippy --all-targets && cargo fmt --check    # lint (rustfmt.toml: 140 columns)
+nexrad-wasm/build.sh                               # browser decoder -> nexrad-wasm/pkg/ (wasm-bindgen + wasm-opt)
+nix shell nixpkgs#nodejs nixpkgs#chromium -c node nexrad-wasm/bench/bench.mjs OUT 5 data/raw/<file> ...  # time it headless, save output
 godot --editor                                     # open project
 godot                                               # run main scene
 godot --headless --path . --import                  # (re)build .godot/ cache after adding scripts/scenes
@@ -40,6 +42,10 @@ gdformat scripts tests && gdlint scripts tests
 - `nexrad/` – Cargo workspace member (`Cargo.toml` at the repo root, build output in `nexrad/target/` via
   `.cargo/config.toml`). Library + `nexrad` binary; the `native` feature (default) holds networking and the CLI
   so the library also builds for wasm. Unit tests sit next to the code (`#[cfg(test)]`, 43 of them).
+- `nexrad-wasm/` – wasm-bindgen wrapper (workspace member, `nexrad` without `native`): `decode(bytes)` →
+  `{name, volume_json, files: Map<sNN_FIELD.bin, Uint8Array>}` via `volume::encode_volume()`, byte-identical to
+  `nexrad decode`. On wasm32 the record loop is serial (rayon is a non-wasm dependency). `bench/` = Web Worker page +
+  a Node driver that serves it to headless Chromium and writes the results to disk.
 - `nexrad/src/level2.rs` – Archive2 / Message 31 decoder (bzip2 + flate2 only). LDM records are decompressed
   and parsed in parallel (rayon); torn or truncated records yield what decoded cleanly (`live` feeds it
   partial files). Output is float32 computed as `(raw - offset) / scale`, so float16 files match the old

@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 
 use crate::time::Utc;
@@ -275,8 +276,11 @@ pub fn read_volume(raw: &[u8]) -> Result<Volume> {
     let mut volume = Volume { icao, time: Utc::from_nexrad(vol_date, vol_ms), complete: true, ..Default::default() };
 
     let compressed = raw.get(28..31) == Some(b"BZh");
-    let parsed: Vec<(Vec<Radial>, Option<VolInfo>)> =
-        records(raw).par_iter().map(|rec| if compressed { parse_record(&decompress(rec)) } else { parse_record(rec) }).collect();
+    let parse = |rec: &&[u8]| if compressed { parse_record(&decompress(rec)) } else { parse_record(rec) };
+    #[cfg(not(target_arch = "wasm32"))]
+    let parsed: Vec<(Vec<Radial>, Option<VolInfo>)> = records(raw).par_iter().map(parse).collect();
+    #[cfg(target_arch = "wasm32")]
+    let parsed: Vec<(Vec<Radial>, Option<VolInfo>)> = records(raw).iter().map(parse).collect();
     for (radials, info) in parsed {
         if let Some(i) = info {
             volume.latitude = Some(i.latitude as f64);

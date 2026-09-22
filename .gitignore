@@ -24,3 +24,6 @@ tests/fixtures/volumes/
 
 # Rust build output (kept under nexrad/ so the Godot editor ignores it)
 nexrad/target/
+
+# wasm-bindgen output (nexrad-wasm/build.sh)
+nexrad-wasm/pkg/

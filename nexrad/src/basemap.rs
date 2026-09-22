@@ -11,13 +11,18 @@
 //! Projection to local km happens in Godot (shaders/basemap.gdshaderinc) around each site.
 
 use std::io::Read;
+#[cfg(feature = "native")]
 use std::path::{Path, PathBuf};
 
-use serde_json::{Map, Value, json};
+#[cfg(feature = "native")]
+use serde_json::Map;
+use serde_json::{Value, json};
 
+#[cfg(feature = "native")]
 use crate::volume::write_atomic;
 use crate::{Error, Result};
 
+#[cfg(feature = "native")]
 const CENSUS: &str = "https://www2.census.gov/geo/tiger/GENZ2023/shp";
 pub const LAYERS: &[(&str, &str)] = &[("states", "cb_2023_us_state_500k.zip"), ("counties", "cb_2023_us_county_500k.zip")];
 pub const CITIES_URL: &str =

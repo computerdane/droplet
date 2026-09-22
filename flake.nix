@@ -16,9 +16,18 @@
           version = "0.1.0";
           src = pkgs.lib.fileset.toSource {
             root = ./.;
-            fileset = pkgs.lib.fileset.unions [ ./Cargo.toml ./Cargo.lock ./nexrad/Cargo.toml ./nexrad/src ];
+            fileset = pkgs.lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock
+              ./nexrad/Cargo.toml
+              ./nexrad/src
+              ./nexrad-wasm/Cargo.toml
+              ./nexrad-wasm/src
+            ];
           };
           cargoLock.lockFile = ./Cargo.lock;
+          cargoBuildFlags = [ "-p" "nexrad" ];
+          cargoTestFlags = [ "-p" "nexrad" ];
         };
       in
       {
@@ -33,6 +42,12 @@
             rustc
             rustfmt
             clippy
+            # wasm build of the decoder (nexrad-wasm/, web/build.sh): nixpkgs' rustc already
+            # ships the wasm32-unknown-unknown std; lld links it, wasm-bindgen-cli must match
+            # the crate's pinned wasm-bindgen exactly.
+            lld
+            wasm-bindgen-cli_0_2_127
+            binaryen
           ];
 
           shellHook = ''

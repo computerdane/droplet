@@ -1,0 +1,25 @@
+<!doctype html>
+<title>nexrad wasm bench</title>
+<pre id="log"></pre>
+<script type="module">
+  // ?files=a,b&runs=N: decodes each file N times in a Web Worker; with ?post=1 the results
+  // (timings, volume.json, every sweep file) go back to bench.mjs, which serves this page.
+  const q = new URLSearchParams(location.search);
+  const files = (q.get("files") || "").split(",").filter(Boolean);
+  const runs = +(q.get("runs") || 3);
+  const log = (s) => (document.getElementById("log").textContent += s + "\n");
+  const worker = new Worker("worker.js", { type: "module" });
+  worker.onerror = (e) => post("/done", JSON.stringify({ error: e.message }));
+  const post = (path, body) => fetch(path, { method: "POST", body });
+  const report = [];
+  for (const url of files) {
+    const r = await new Promise((res) => { worker.onmessage = (e) => res(e.data); worker.postMessage({ url, runs }); });
+    log(`${r.name}: ${r.times.map((t) => t.total_ms.toFixed(0)).join(", ")} ms`);
+    if (q.get("post")) {
+      await post(`/result/${r.name}/volume.json`, r.volume_json);
+      for (const [name, bytes] of r.files) await post(`/result/${r.name}/${name}`, bytes);
+    }
+    report.push({ url, name: r.name, bytes: r.bytes, init_ms: r.init_ms, times: r.times, n_files: r.files.length });
+  }
+  if (q.get("post")) post("/done", JSON.stringify({ userAgent: navigator.userAgent, report }));
+</script>

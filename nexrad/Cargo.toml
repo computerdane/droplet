@@ -22,7 +22,10 @@ native = ["dep:ureq"]
 bzip2 = "0.6"
 flate2 = "1"
 half = "2"
-rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 ureq = { version = "3", optional = true }
+
+# Record decompression runs in parallel natively; wasm32-unknown-unknown has no threads.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = "1"

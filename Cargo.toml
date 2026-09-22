@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["nexrad"]
+members = ["nexrad", "nexrad-wasm"]
 
 [profile.release]
 debug = 1
