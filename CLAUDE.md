@@ -25,6 +25,7 @@ godot                                               # run main scene
 godot --headless --path . --import                  # (re)build .godot/ cache after adding scripts/scenes
 godot --headless --path . --script res://tests/smoke.gd
 godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 view=3d mosaic=1
+godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 vwp=1 hover=560,380
 godot --path . --script res://tests/frametimes.gd -- frames=1500 view=3d mosaic=1 play=1 fps=15 time=20130520_193407
 gdformat scripts tests && gdlint scripts tests
 ```
@@ -92,6 +93,15 @@ gdformat scripts tests && gdlint scripts tests
   (azimuthal equidistant around the site, haversine form for float32); `Basemap.project()` is the CPU twin.
 - `scripts/hodograph.gd` – HUD hodograph (W): VAD profile coloured 0–1/1–3/3–6/6+ km, RM/LM, mean wind,
   the storm motion in use (×), SRH.
+- `scripts/wind_profile_view.gd` – VWP (P): each loop volume's `wind_profile` as a column of wind barbs (kt,
+  coloured by speed) over time, bottom left; rows/columns thin out to fit, the current column is highlighted,
+  clicking one jumps there (`frame_picked`).
+- Hover readout: `main._update_readout()` (every frame, recomputed only when its inputs change) picks the
+  section panel (`SectionView.sample_at`, CPU twin of section.gdshader), the VWP (`sample_at`) or the 2D map
+  (`main._readout_2d`: nearest radar as in the mosaic shaders, value + range/bearing + beam height + lat/lon
+  via `Basemap.unproject`). Values come from `RadarVolume.value_at()`, which reads 2 bytes of the sweep file
+  (no texture needed); `RadarVolume.storm_relative()` is the CPU twin of storm.gdshaderinc. Hovering the section
+  marks the point on the A-B line in 2D. Not in 3D. `hover=x,y` pins it (canvas units) for screenshots.
 - `scripts/colormaps.gd` – per-field value ranges, units and gradient textures.
 - `nexrad/` and `data/` carry a `.gdignore` so the editor does not try to import them; `res://data/...` is still readable via FileAccess in dev builds. Exported builds will need `user://`.
 
@@ -132,11 +142,10 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Done: time animation + live following, 3D cones, basemap, site picker, multi-site mosaic,
   background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
   storm-relative velocity, fetching from the UI, translucent volume rendering, VAD wind profile +
-  hodograph + automatic (Bunkers) storm motion.
+  hodograph + automatic (Bunkers) storm motion, hover readout (2D, section, VWP), VWP time-height plot.
 - Next ideas: dealiasing that uses the
   previous volume as a temporal reference, the A-B section line drawn in 3D, mosaic cross-sections,
-  a hover readout (value/height) in the section panel, the VAD profile as a
-  time-height plot (VWP), a VAD-based temporal reference for dealiasing.
+  a hover readout in 3D (pick against the cones), a VAD-based temporal reference for dealiasing.
 - Mosaic uses whatever is on disk; `live` follows one site per process (the fetch panel can start several
   for a live mosaic). Fetching from the UI needs the dev shell's `python` and a source checkout (not an export).
 - The 3D ground disk/rings are centred on the selected site only.

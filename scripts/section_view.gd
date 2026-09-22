@@ -30,6 +30,8 @@ var _rects: Array[ColorRect] = []
 var _a := Vector2.ZERO
 var _b := Vector2.ZERO
 var _elevs: Array[float] = []  # tilts shown, ascending
+var _tilts: Array[int] = []  # their sweep indices
+var _bands: Array = []  # [tilt below, tilt above, lo_deg, hi_deg], see _bands_*()
 var _title := ""
 var _interpolate := true
 var _mode_button: Button
@@ -88,7 +90,9 @@ func show_section(vol: RadarVolume, field_name: String, a: Vector2, b: Vector2) 
 	_elevs.clear()
 	for i in tilts:
 		_elevs.append(vol.elevation(i))
+	_tilts = tilts
 	var bands := _bands_interpolated() if _interpolate else _bands_beams()
+	_bands = bands
 	while _rects.size() < bands.size():
 		_rects.append(_new_rect())
 	var rng := Colormaps.range_of(field_name)
@@ -121,6 +125,64 @@ func show_section(vol: RadarVolume, field_name: String, a: Vector2, b: Vector2) 
 	if vol == null or tilts.is_empty():
 		_title += "   (no %s in this volume)" % field_name
 	_overlay.queue_redraw()
+
+
+## Readout for a point of the panel (local coordinates): {t (0..1 along A -> B), text},
+## or {} outside the plot. Mirrors section.gdshader: same beam model, bands and blending.
+func sample_at(local: Vector2) -> Dictionary:
+	var r := Rect2(_plot.position, _plot.size)
+	if _last.is_empty() or not r.has_point(local) or _a == _b:
+		return {}
+	var vol: RadarVolume = _last[0]
+	var field_name: String = _last[1]
+	var t := (local.x - r.position.x) / r.size.x
+	var h := (r.end.y - local.y) / r.size.y * H_MAX_KM
+	var p := _a.lerp(_b, t)
+	var s := p.length()
+	var phi := s / KE_A
+	var x := (KE_A + h) * sin(phi)
+	var half_phi := sin(0.5 * phi)
+	var z := h * cos(phi) - 2.0 * KE_A * half_phi * half_phi
+	var elev := rad_to_deg(atan2(z, x))
+	var slant := sqrt(x * x + z * z)
+	var az := fposmod(rad_to_deg(atan2(p.x, -p.y)), 360.0)
+	var where := (
+		"%.1f km ARL   %.0f km along A-B   %.0f km @ %03d° from %s   elev %.2f°"
+		% [h, t * _a.distance_to(_b), s, roundi(az) % 360, vol.icao(), elev]
+	)
+	var v := RadarVolume.MISSING
+	var sampled := false
+	for band: Array in _bands:
+		if elev < band[2] or elev >= band[3]:
+			continue
+		sampled = true
+		var ia := _tilts[band[0]]
+		var ib := _tilts[band[1]]
+		var va := _value(vol, ia, field_name, az, slant)
+		v = va
+		if ia != ib:
+			var vb := _value(vol, ib, field_name, az, slant)
+			var ea := vol.elevation(ia)
+			var eb := vol.elevation(ib)
+			var w := (elev - ea) / (eb - ea)
+			var half := BEAMWIDTH_DEG / 2.0
+			if va > -900.0 and vb > -900.0:
+				v = lerpf(va, vb, w)
+			elif va > -900.0 and elev - ea < half:
+				v = va
+			elif vb > -900.0 and eb - elev < half:
+				v = vb
+			else:
+				v = va if w < 0.5 else vb
+				v = v if v < -1500.0 else RadarVolume.MISSING
+		break
+	var value := Colormaps.format_value(field_name, v) if sampled else "not sampled"
+	return {"t": t, "text": "%s  %s\n%s" % [field_name, value, where]}
+
+
+func _value(vol: RadarVolume, i: int, field_name: String, az: float, slant: float) -> float:
+	var v := vol.value_at(i, field_name, az, slant)
+	return RadarVolume.storm_relative(v, storm_motion, az, vol.elevation(i))
 
 
 ## Beams only: tilt k alone, half a beamwidth either side, split at the midpoint where

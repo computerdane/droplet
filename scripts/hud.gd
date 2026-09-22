@@ -24,6 +24,7 @@ signal fetch_toggled
 signal srm_toggled
 signal srm_auto_toggled
 signal winds_toggled
+signal vwp_toggled
 signal srm_changed(d_from_deg: float, d_speed: float)
 signal field_selected(field_name: String)
 
@@ -38,6 +39,11 @@ const SECTION_WIDTH_SHARE := 0.42  # of the canvas width
 const SECTION_ASPECT := 0.48  # height / width
 const MARGIN := 12.0
 const GAP := 8.0
+const VWP_MIN := Vector2(240, 150)
+const VWP_MAX := Vector2(640, 300)
+const VWP_WIDTH_SHARE := 0.4
+const VWP_ASPECT := 0.45
+const READOUT_OFFSET := Vector2(18, 18)
 const COLUMN_MIN_WIDTH := 300.0
 const HINT_MIN_WIDTH := 240.0
 
@@ -55,6 +61,10 @@ var srm_button: Button
 var srm_auto_button: Button
 var winds_button: Button
 var hodograph: Hodograph
+var vwp_button: Button
+var vwp: WindProfileView
+var readout: PanelContainer
+var readout_label: Label
 var srm_dir_label: Label
 var srm_speed_label: Label
 var legend_tex: TextureRect
@@ -81,6 +91,7 @@ func _ready() -> void:
 	_build_top_right()
 	_build_bottom_bar()
 	_build_section()
+	_build_readout()
 	fetch_panel = FetchPanel.new()
 	fetch_panel.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	fetch_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
@@ -138,6 +149,10 @@ func _build_top_right() -> void:
 	winds_button.toggle_mode = true
 	winds_button.pressed.connect(winds_toggled.emit)
 	row.add_child(winds_button)
+	vwp_button = _button("VWP", "VAD wind profile over the loop, as wind barbs (P)")
+	vwp_button.toggle_mode = true
+	vwp_button.pressed.connect(vwp_toggled.emit)
+	row.add_child(vwp_button)
 	view_button = _button("3D", "Toggle 2D plan view / 3D volume (V)")
 	view_button.pressed.connect(view_toggled.emit)
 	row.add_child(view_button)
@@ -274,11 +289,30 @@ func _build_bottom_bar() -> void:
 	row.add_child(live_button)
 
 
-## Cross-section panel, bottom right above the playback bar; placed by _layout().
+## Cross-section panel (bottom right) and VWP (bottom left) above the playback bar;
+## placed by _layout().
 func _build_section() -> void:
 	section = SectionView.new()
 	section.visible = false
 	add_child(section)
+	vwp = WindProfileView.new()
+	vwp.visible = false
+	add_child(vwp)
+
+
+## Hover readout next to the mouse; drawn last so it sits over the panels.
+func _build_readout() -> void:
+	readout = PanelContainer.new()
+	readout.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	readout.visible = false
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.02, 0.02, 0.04, 0.85)
+	style.set_content_margin_all(6)
+	style.set_corner_radius_all(3)
+	readout.add_theme_stylebox_override("panel", style)
+	readout_label = _label(12)
+	readout.add_child(readout_label)
+	add_child(readout)
 
 
 func _queue_layout() -> void:
@@ -337,18 +371,37 @@ func _layout() -> void:
 		section.position = Vector2(sec_right - sec.x, bottom - sec.y)
 		section.size = sec
 
-	# Key hint: bottom left, wrapped to the room left of whatever reaches down to it.
+	# VWP at the bottom left, as wide as the room left of the cross-section allows.
+	var hint_bottom := bottom
+	if vwp.visible:
+		var vw := clampf(view.x * VWP_WIDTH_SHARE, VWP_MIN.x, VWP_MAX.x)
+		var vwp_right := right
+		if section.visible:
+			vwp_right = section.position.x - GAP
+		elif hodograph.visible and hodograph.get_rect().end.y > bottom - VWP_MIN.y:
+			vwp_right = hodograph.position.x - GAP
+		vw = minf(vw, vwp_right - MARGIN)
+		var vh := clampf(vw * VWP_ASPECT, VWP_MIN.y, VWP_MAX.y)
+		vh = minf(vh, bottom - info_bottom - GAP)
+		vwp.position = Vector2(MARGIN, bottom - vh)
+		vwp.size = Vector2(maxf(vw, 0.0), maxf(vh, 0.0))
+		hint_bottom = vwp.position.y - GAP
+
+	# Key hint: bottom left (above the VWP), wrapped to the room left of whatever reaches
+	# down to it.
 	var hint_right := right
-	var hint_top := bottom - _hint_height(right - MARGIN)
+	var hint_top := hint_bottom - _hint_height(right - MARGIN)
 	for c: Control in [_top_box, hodograph, section]:
 		if c.visible and c.get_rect().end.y > hint_top:
 			hint_right = minf(hint_right, c.position.x - GAP)
 	var hint_w := maxf(hint_right - MARGIN, 0.0)
 	hint.offset_left = MARGIN
 	hint.offset_right = MARGIN + hint_w
-	hint.offset_bottom = -(view.y - bottom)
+	hint.offset_bottom = -(view.y - hint_bottom)
 	hint.offset_top = hint.offset_bottom
-	hint.visible = hint_w >= HINT_MIN_WIDTH and bottom - _hint_height(hint_w) > info_bottom + GAP
+	hint.visible = (
+		hint_w >= HINT_MIN_WIDTH and hint_bottom - _hint_height(hint_w) > info_bottom + GAP
+	)
 
 	fetch_panel.custom_minimum_size.x = minf(480.0, view.x - 2 * MARGIN)
 
@@ -426,6 +479,31 @@ func set_winds_shown(on: bool) -> void:
 	if hodograph.visible != on:
 		hodograph.visible = on
 		_queue_layout()
+
+
+func set_vwp_shown(on: bool) -> void:
+	vwp_button.set_pressed_no_signal(on)
+	if vwp.visible != on:
+		vwp.visible = on
+		_queue_layout()
+
+
+## Shows `text` next to the mouse at `at` (HUD coordinates), kept inside the canvas;
+## empty text hides it.
+func set_readout(text: String, at: Vector2) -> void:
+	readout.visible = not text.is_empty()
+	if not readout.visible:
+		return
+	if readout_label.text != text:
+		readout_label.text = text
+		readout.reset_size()
+	var sz := readout.get_combined_minimum_size()
+	var p := at + READOUT_OFFSET
+	if p.x + sz.x > size.x - 4:
+		p.x = at.x - READOUT_OFFSET.x - sz.x
+	if p.y + sz.y > size.y - 4:
+		p.y = at.y - READOUT_OFFSET.y - sz.y
+	readout.position = p.max(Vector2(4, 4))
 
 
 func set_view_3d(on: bool) -> void:

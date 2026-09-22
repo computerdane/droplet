@@ -58,6 +58,7 @@ func _initialize() -> void:
 	failed = not _check_preload(lib) or failed
 	failed = not _check_beam_model() or failed
 	failed = not _check_storm_motion(lib) or failed
+	failed = not _check_readout(lib) or failed
 	quit(1 if failed else 0)
 
 
@@ -205,3 +206,45 @@ func _check_beam_model() -> bool:
 	if worst > 0.01:
 		push_error("section beam height disagrees with cone.gdshader")
 	return worst <= 0.01
+
+
+## The hover readout reads single gates from the sweep files; they must match the texels the
+## shaders sample (same gate rounding and azimuth bin). Also: unproject inverts project.
+func _check_readout(lib) -> bool:
+	var vol = RadarVolumeScript.load_from_dir(lib.volumes[0])
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7
+	var bad := 0
+	var checked := 0
+	for f in ["REF", "VEL"]:
+		for i in vol.tilts(f):
+			var img: Image = vol.read_image(i, f)
+			var fd: Dictionary = vol.sweep(i)["fields"][f]
+			var first := float(fd["first_gate_m"]) / 1000.0
+			var step := float(fd["gate_spacing_m"]) / 1000.0
+			for k in 20:
+				var gate := rng.randi_range(0, img.get_width() - 1)
+				var row := rng.randi_range(0, img.get_height() - 1)
+				# A point inside the texel, off its centre.
+				var r := first + (gate + rng.randf_range(-0.45, 0.45)) * step
+				var az := (row + rng.randf_range(0.05, 0.95)) * 360.0 / img.get_height()
+				var want := img.get_pixel(gate, row).r
+				var got: float = vol.value_at(i, f, az, r)
+				checked += 1
+				if absf(got - want) > 1e-3:
+					bad += 1
+	var lat: float = vol.meta["latitude"]
+	var lon: float = vol.meta["longitude"]
+	var worst := 0.0
+	for p in [Vector2(120, -45), Vector2(-300, 210), Vector2(0.5, 0.2), Vector2(-450, -450)]:
+		var ll: Vector2 = BasemapScript.unproject(p, lat, lon)
+		worst = maxf(worst, BasemapScript.project(ll.x, ll.y, lat, lon).distance_to(p))
+	print(
+		(
+			"  readout: %d/%d gates match the images, unproject round trip %.5f km"
+			% [checked - bad, checked, worst]
+		)
+	)
+	if bad > 0 or worst > 0.01:
+		push_error("value_at or unproject broken")
+	return bad == 0 and worst <= 0.01

@@ -15,6 +15,12 @@ extends Node
 ## section=ax,ay,bx,by (cross-section A -> B, km east,north of the radar)
 ## srm=240,10 (storm-relative velocity, storm moving from 240 degrees at 10 m/s) or srm=auto
 ## (storm motion from the VAD profile, see _auto_storm) winds=0|1 (hodograph panel)
+## vwp=0|1 (VAD winds over the loop as barbs) hover=x,y (pin the hover readout to that
+## canvas point, for screenshots)
+##
+## Hovering the 2D view, the cross-section or the VWP shows a readout of the value under
+## the mouse next to it (see _update_readout); 2D values are read straight from the sweep
+## files, so the readout needs no textures.
 ##
 ## Upcoming loop frames (and their mosaic neighbours) are read in the background, see
 ## _preload_ahead() and VolumeCache.
@@ -45,10 +51,10 @@ const FIELD_KEYS := {
 const HINT_COMMON := (
 	"Space play   Left/Right step   Shift+Left/Right prev/next loop   Home/End first/last\n"
 	+ "[ ] speed   L live   Up/Down tilt   1-8 field   S site   M mosaic   V 2D/3D\n"
-	+ "R reset view   X section   F fetch   T storm-relative   W winds (hodograph)\n"
+	+ "R reset view   X section   F fetch   T storm-relative   W hodograph   P VWP\n"
 )
-const HINT_2D := "wheel zoom   drag pan"
-const HINT_SECTION := "wheel zoom   left drag: section A to B   right drag pan"
+const HINT_2D := "wheel zoom   drag pan   hover: value"
+const HINT_SECTION := "wheel zoom   left drag: section A to B   right drag pan   hover: value"
 const HINT_3D := (
 	"left drag orbit   right drag pan   wheel zoom   B cones/volume   I isolate tilts   "
 	+ ", . threshold   - = volume opacity   PgUp/PgDn height exaggeration"
@@ -76,11 +82,15 @@ var storm_from_deg := 240.0  # meteorological: direction the storm moves from
 var storm_speed := 10.0  # m/s
 var srm_auto := true  # storm motion from the VAD profile when there is one, else manual
 var winds_shown := false  # hodograph panel
+var vwp_shown := false  # wind profile over the loop
 var ui_scale := 1.0  # user factor on top of the automatic UI scale
 var _auto_storm: Dictionary = {}  # RadarLibrary.storm_motion_near() for the current volume
 var _neighbors: Array = []  # mosaic entries, see _find_neighbors()
 var _others := PackedVector2Array()  # neighbours in the selected site's frame
 var _site_lonlat := Vector2.INF  # site the views' basemaps are centred on
+var _mouse_in_window := true
+var _hover_pin := Vector2.INF  # hover= option: readout at this canvas point, not the mouse
+var _readout_key: Array = []  # inputs of the readout on screen, see _update_readout
 
 @onready var view_2d: PpiView = $View2D
 @onready var view_3d: VolumeView3D = $View3D
@@ -101,6 +111,8 @@ func _ready() -> void:
 	fetcher.job_updated.connect(_on_job_updated)
 	fetcher.job_finished.connect(_on_job_finished)
 	_connect_hud()
+	get_window().mouse_entered.connect(func() -> void: _mouse_in_window = true)
+	get_window().mouse_exited.connect(func() -> void: _mouse_in_window = false)
 
 	var opts := _parse_options()
 	ui_scale = clampf(float(opts.get("ui_scale", ui_scale)), 0.5, 4.0)
@@ -126,6 +138,10 @@ func _ready() -> void:
 			srm_on = true
 			srm_auto = false
 	winds_shown = opts.get("winds", "0") == "1"
+	vwp_shown = opts.get("vwp", "0") == "1"
+	if opts.has("hover"):
+		var h: PackedFloat64Array = opts["hover"].split_floats(",")
+		_hover_pin = Vector2(h[0], h[1])
 	if opts.has("section"):
 		var s: PackedFloat64Array = opts["section"].split_floats(",")
 		if s.size() == 4:
@@ -145,6 +161,7 @@ func _ready() -> void:
 
 func _process(_delta: float) -> void:
 	cache.poll()
+	_update_readout()
 
 
 func _connect_hud() -> void:
@@ -165,6 +182,8 @@ func _connect_hud() -> void:
 	hud.srm_toggled.connect(_toggle_srm)
 	hud.srm_auto_toggled.connect(_toggle_srm_auto)
 	hud.winds_toggled.connect(_toggle_winds)
+	hud.vwp_toggled.connect(_toggle_vwp)
+	hud.vwp.frame_picked.connect(_pick_frame)
 	hud.fetch_toggled.connect(_toggle_fetch_panel)
 	hud.fetch_panel.update_requested.connect(
 		func(s: String, at: String, from: String, to: String) -> void:
@@ -299,6 +318,21 @@ func _toggle_srm_auto() -> void:
 func _toggle_winds() -> void:
 	winds_shown = not winds_shown
 	_refresh()
+
+
+func _toggle_vwp() -> void:
+	vwp_shown = not vwp_shown
+	_refresh()
+
+
+## A volume picked in the VWP: stop playback and live following and show it.
+func _pick_frame(path: String) -> void:
+	var i := frames.find(path)
+	if i < 0:
+		return
+	_set_playing(false)
+	_set_live(false)
+	_go_to(i)
 
 
 ## Nudging the storm motion switches to manual, starting from the automatic estimate.
@@ -514,10 +548,28 @@ func _refresh() -> void:
 		motion.y
 	)
 	_update_winds()
+	_update_vwp()
 	_update_section()
 	_update_info()
 	_update_playback()
 	_preload_ahead()
+	_readout_key.clear()  # what is under the mouse may have changed
+
+
+## VAD profiles of every volume in the current loop.
+func _update_vwp() -> void:
+	hud.set_vwp_shown(vwp_shown)
+	if not vwp_shown:
+		return
+	var columns := []
+	var seq := _sequence()
+	if frame >= 0:
+		for k in range(seq.x, seq.y + 1):
+			var path := frames[k]
+			var profile = library.winds(path).get("wind_profile")
+			columns.append({"path": path, "t": RadarLibrary.unix_of(path), "profile": profile})
+	var title := "VWP  %s  (km ARL, barbs kt)" % site
+	hud.vwp.show_profiles(columns, frame - seq.x, title)
 
 
 func _update_winds() -> void:
@@ -554,7 +606,93 @@ func _storm_source() -> String:
 	return what + " (Bunkers RM, %s %s)" % [RadarLibrary.site_of(src), _clock(src)]
 
 
+## Readout of whatever is under the mouse: the section panel, the VWP, or the 2D view
+## (value, range/bearing and beam height from the radar whose pixel it is, lat/lon).
+## Recomputed only when its inputs change; _refresh() invalidates it.
+func _update_readout() -> void:
+	var mouse := get_viewport().get_mouse_position()
+	var hovered := get_viewport().gui_get_hovered_control()
+	if _hover_pin != Vector2.INF:
+		mouse = _hover_pin
+		hovered = null
+		for c: Control in [hud.section, hud.vwp]:
+			if c.is_visible_in_tree() and c.get_global_rect().has_point(mouse):
+				hovered = c
+	var world := view_2d.get_canvas_transform().affine_inverse() * mouse
+	var key: Array = [_mouse_in_window, hovered, mouse if hovered != null else world]
+	if key == _readout_key:
+		return
+	_readout_key = key
+	var text := ""
+	var marker := Vector2.INF
+	if not _mouse_in_window and _hover_pin == Vector2.INF:
+		pass
+	elif hovered == hud.section:
+		var s := hud.section.sample_at(hud.section.get_global_transform().affine_inverse() * mouse)
+		if not s.is_empty():
+			text = s["text"]
+			marker = view_2d.section_a.lerp(view_2d.section_b, s["t"])
+	elif hovered == hud.vwp:
+		text = hud.vwp.sample_at(hud.vwp.get_global_transform().affine_inverse() * mouse).get(
+			"text", ""
+		)
+	elif hovered == null and not view_is_3d and volume != null:
+		# The hodograph ignores the mouse, but the map under it is hidden.
+		var hodo := hud.hodograph
+		if not (hodo.visible and hodo.get_global_rect().has_point(mouse)):
+			text = _readout_2d(world)
+	view_2d.set_hover_marker(marker)
+	hud.set_readout(text, hud.get_global_transform().affine_inverse() * mouse)
+
+
+## Readout at a 2D view point (km, +x east, +y south of the selected radar), from the
+## radar that draws that pixel: the nearest one, as in the mosaic shaders.
+func _readout_2d(p: Vector2) -> String:
+	var vol := volume
+	var i := sweep_index
+	var local := p
+	var storm := _storm_vector()
+	for n in _neighbors:
+		var off: Vector2 = n["offset_km"]
+		var q := (p - Vector2(off.x, -off.y)).rotated(-float(n["rotation"]))
+		if q.length() < local.length():
+			vol = n["volume"]
+			i = n["sweep"]
+			local = q
+			storm = _storm_vector().rotated(n["rotation"])
+	var r := local.length()
+	var az := fposmod(rad_to_deg(atan2(local.x, -local.y)), 360.0)
+	var lines := PackedStringArray()
+	if i >= 0:
+		var elev := vol.elevation(i)
+		var v := vol.value_at(i, field_name, az, r)
+		v = RadarVolume.storm_relative(v, storm, az, elev)
+		var srm := "  storm-rel." if storm != Vector2.ZERO and v > -900.0 else ""
+		lines.append("%s  %s%s" % [field_name, Colormaps.format_value(field_name, v), srm])
+		var th := deg_to_rad(elev)
+		var ka := SectionView.KE_A
+		var h := sqrt(r * r + ka * ka + 2.0 * r * ka * sin(th)) - ka
+		lines.append(
+			(
+				"%s  %.1f km @ %03d°   %.2f° beam %.2f km ARL"
+				% [vol.icao(), r, roundi(az) % 360, elev, h]
+			)
+		)
+	else:
+		lines.append("%s: no %s" % [vol.icao(), field_name])
+		lines.append("%s  %.1f km @ %03d°" % [vol.icao(), r, roundi(az) % 360])
+	var ll := Basemap.unproject(Vector2(p.x, -p.y), _site_lonlat.y, _site_lonlat.x)
+	lines.append(
+		(
+			"%.3f°%s  %.3f°%s"
+			% [absf(ll.x), "N" if ll.x >= 0 else "S", absf(ll.y), "E" if ll.y >= 0 else "W"]
+		)
+	)
+	return "\n".join(lines)
+
+
 func _update_section() -> void:
+	_readout_key.clear()
 	var shown := section_on and view_2d.has_section
 	hud.set_section(section_on, shown)
 	if shown:
@@ -791,6 +929,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_toggle_srm()
 		KEY_W:
 			_toggle_winds()
+		KEY_P:
+			_toggle_vwp()
 		KEY_F:
 			_toggle_fetch_panel()
 		KEY_B:

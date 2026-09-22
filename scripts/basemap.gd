@@ -82,6 +82,17 @@ static func project(lat: float, lon: float, site_lat: float, site_lon: float) ->
 	return Vector2(x, y) * EARTH_RADIUS_KM
 
 
+## Inverse of project(): [lat, lon] in degrees of the point `p` km from the site
+## (+x east, +y north).
+static func unproject(p: Vector2, site_lat: float, site_lon: float) -> Vector2:
+	var lat0 := deg_to_rad(site_lat)
+	var c := p.length() / EARTH_RADIUS_KM
+	var bearing := atan2(p.x, p.y)
+	var lat := asin(clampf(sin(lat0) * cos(c) + cos(lat0) * sin(c) * cos(bearing), -1.0, 1.0))
+	var dlon := atan2(sin(bearing) * sin(c) * cos(lat0), cos(c) - sin(lat0) * sin(lat))
+	return Vector2(rad_to_deg(lat), site_lon + rad_to_deg(dlon))
+
+
 ## Cities within `radius_km` of the site as [name, Vector2 km (+y north), population].
 func cities_near(site_lat: float, site_lon: float, radius_km: float) -> Array:
 	var out := []

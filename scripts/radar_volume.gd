@@ -167,6 +167,37 @@ func read_image(i: int, field_name: String) -> Image:
 	return Image.create_from_data(n_gates, n_bins, false, Image.FORMAT_RH, bytes)
 
 
+## Value of sweep `i` / `field_name` at azimuth `az_deg` and slant range `r_km`, read straight
+## from the sweep file (two bytes, no texture needed). Picks the same gate and azimuth bin as
+## the shaders' nearest-texel lookup; MISSING outside the gates or if the field is absent.
+func value_at(i: int, field_name: String, az_deg: float, r_km: float) -> float:
+	if i < 0 or i >= sweep_count():
+		return MISSING
+	var f: Dictionary = sweeps[i]["fields"].get(field_name, {})
+	if f.is_empty():
+		return MISSING
+	var n_gates := int(f["n_gates"])
+	var n_bins := int(sweeps[i]["n_azimuth_bins"])
+	var gate := (r_km * 1000.0 - float(f["first_gate_m"])) / float(f["gate_spacing_m"])
+	if gate < -0.5 or gate >= n_gates - 0.5:
+		return MISSING
+	var row := int(fposmod(az_deg, 360.0) / 360.0 * n_bins) % n_bins
+	var file := FileAccess.open(path.path_join(f["file"]), FileAccess.READ)
+	if file == null:
+		return MISSING
+	file.seek((row * n_gates + int(floorf(gate + 0.5))) * 2)
+	return file.get_buffer(2).decode_half(0)
+
+
+## CPU twin of storm.gdshaderinc: `v` minus the radial component of `storm` (m/s, +x east,
+## +y north) at azimuth `az_deg`, elevation `elev_deg`. Sentinels pass through.
+static func storm_relative(v: float, storm: Vector2, az_deg: float, elev_deg: float) -> float:
+	if v < -900.0:
+		return v
+	var az := deg_to_rad(az_deg)
+	return v - storm.dot(Vector2(sin(az), cos(az))) * cos(deg_to_rad(elev_deg))
+
+
 ## Uploads an Image from read_image() as the texture for sweep `i` / `field_name`.
 func add_texture(i: int, field_name: String, img: Image) -> void:
 	var key := "%d:%s" % [i, field_name]

@@ -29,6 +29,7 @@ var section_mode := false
 var has_section := false
 var section_a := Vector2.ZERO  # km, +x east, +y south (world = radar-local frame)
 var section_b := Vector2.ZERO
+var hover_marker := Vector2.INF  # point on the section line under the mouse in the panel
 var _dragging := false
 var _drawing_section := false
 var _cities: Array = []  # from Basemap.cities_near, most populous first
@@ -93,6 +94,14 @@ func set_section(a: Vector2, b: Vector2) -> void:
 	has_section = a != b
 	overlay.queue_redraw()
 	section_changed.emit()
+
+
+## Marks the point of the section line that the mouse is over in the section panel;
+## Vector2.INF clears it.
+func set_hover_marker(p: Vector2) -> void:
+	if p != hover_marker:
+		hover_marker = p
+		overlay.queue_redraw()
 
 
 func set_section_mode(on: bool) -> void:
@@ -212,6 +221,10 @@ func _draw_section_line() -> void:
 		overlay.draw_string(
 			font, Vector2(7, -6), end[1], HORIZONTAL_ALIGNMENT_LEFT, -1, 16, SECTION_COLOR
 		)
+	if hover_marker != Vector2.INF:
+		overlay.draw_set_transform(hover_marker, 0.0, Vector2.ONE / z)
+		overlay.draw_arc(Vector2.ZERO, 6.0, 0.0, TAU, 24, Color.BLACK, 4.0, true)
+		overlay.draw_arc(Vector2.ZERO, 6.0, 0.0, TAU, 24, Color.YELLOW, 2.0, true)
 	overlay.draw_set_transform(Vector2.ZERO)
 
 

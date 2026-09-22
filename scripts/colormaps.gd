@@ -86,6 +86,8 @@ const STOPS := {
 ## Fields drawn with another field's colours.
 const SAME_AS := {"DVEL": "VEL"}
 
+const KT_PER_MS := 1.94384
+
 static var _cache: Dictionary = {}
 
 
@@ -95,6 +97,23 @@ static func range_of(field_name: String) -> Array:
 
 static func unit_of(field_name: String) -> String:
 	return UNITS.get(field_name, "")
+
+
+## A value for display with its unit ("-23.5 m/s (-46 kt)"), or what a sentinel means.
+static func format_value(field_name: String, v: float) -> String:
+	if v < -1500.0:
+		return "range folded"
+	if v < -900.0:
+		return "no data"
+	var unit := unit_of(field_name).get_slice(" ", 0)
+	match field_name:
+		"RHO":
+			return "%.3f" % v
+		"PHI":
+			return "%.0f°" % v
+		"VEL", "DVEL", "SW":
+			return "%.1f %s (%.0f kt)" % [v, unit, v * KT_PER_MS]
+	return "%.1f %s" % [v, unit]
 
 
 static func texture_for(field_name: String) -> GradientTexture1D:
