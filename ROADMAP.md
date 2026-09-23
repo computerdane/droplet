@@ -31,7 +31,7 @@ HUD; `key=value` options for scripted runs. The same app runs in the browser
 VAD, derived fields, products, cells, the chunk ring and `live()`, key selection, the
 basemap, the quota and the volume writer, mostly against the synthetic scene's truth.
 `tests/run.gd` runs the Godot unit tests against the synthetic fixtures (or real data with
-`volumes=`); `tests/golden.sh` renders 14 views under Xvfb with the flake's Mesa and compares
+`volumes=`); `tests/golden.sh` renders 12 views under Xvfb with the flake's Mesa and compares
 them with committed PNGs, and checks the 3D pick against the rendered pixels; GitHub Actions
 runs all of it plus lint on every push. `web/smoke.mjs` drives the web build headless.
 
