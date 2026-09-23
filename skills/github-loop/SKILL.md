@@ -46,8 +46,11 @@ or quota errors, back off and report a persistent blocker. Goal mode can continu
 across turns when the user starts a goal, but limits and interruptions can stop it.
 
 Answer the maintainer's questions and requested refinements on unapproved issues
-as well as approved ones. Use `reply NUMBER --comment ID --body-file FILE`; markers
-prevent duplicate replies after restart. A question is not implementation approval.
+as well as approved ones. Use `reply NUMBER --issue-body --body-file FILE` for an
+initial answer to a question in the issue body, or `reply NUMBER --comment ID
+--body-file FILE` to follow up on an existing comment. Reply markers make retries
+safe after restart. Questions and answers need no `/approve`; implementation
+requests remain approval gated.
 Revise proposed scope when asked; editing an approved issue needs a new `/approve`.
 Watch general PR comments, inline comments, and reviews. Checkpoint addressed review
 IDs and commit SHAs so a restart does not repeat responses.
