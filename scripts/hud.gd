@@ -139,7 +139,7 @@ func _ready() -> void:
 
 
 func _build_info() -> void:
-	info = _label(14)
+	info = _label(13)
 	info.position = Vector2(12, INFO_TOP)
 	add_child(info)
 	hint = _label(12)
@@ -424,7 +424,12 @@ func _layout() -> void:
 	for r in _top_rows:
 		if r.visible:
 			natural = maxf(natural, _natural_width(r))
-	var room := view.x - info.position.x - info.get_combined_minimum_size().x - 3 * MARGIN
+	# Keep the column's width budget at the original info size so the buttons wrap as before.
+	var info_font := info.get_theme_font("font")
+	var info_layout_width := (
+		info_font.get_multiline_string_size(info.text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
+	)
+	var room := view.x - info.position.x - info_layout_width - 3 * MARGIN
 	var stacked := room < COLUMN_MIN_WIDTH
 	var col_w := minf(natural, view.x - 2 * MARGIN if stacked else room)
 	info.position.y = _top_box.get_rect().end.y + GAP if stacked else INFO_TOP
