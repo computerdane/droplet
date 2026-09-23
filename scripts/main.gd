@@ -39,6 +39,7 @@ extends Node
 ## for meridian convergence; the selected site draws on top.
 
 const LIVE_RESCAN_SEC := 3.0
+const OVERVIEW_OVERLAY_REFRESH_SEC := 60.0
 const LOOP_DWELL_SEC := 1.0  # extra pause on the last frame of the loop
 ## Automatic storm motion may come from a volume (any site) up to this far away in time.
 const AUTO_STORM_MAX_SEC := 60 * 60
@@ -78,6 +79,7 @@ var overlays := Overlays.new()  # warnings and storm cells over the 2D view
 var loop_export := LoopExport.new()
 var cache := VolumeCache.new(library.source)
 var national: NationalComposite
+var overview_overlay_timer := Timer.new()
 var overview := false  # national MRMS image until the user picks a radar
 var site := ""
 var frames: Array[String] = []  # volume names for `site`, ascending time
@@ -128,6 +130,9 @@ func _ready() -> void:
 	view_3d.camera.moved.connect(_update_info)
 	add_child(fetcher)
 	add_child(overlays)
+	overview_overlay_timer.wait_time = OVERVIEW_OVERLAY_REFRESH_SEC
+	overview_overlay_timer.timeout.connect(_refresh_overlays)
+	add_child(overview_overlay_timer)
 	add_child(loop_export)
 	overlays.changed.connect(_refresh_overlays)
 	fetcher.job_updated.connect(_on_job_updated)
@@ -289,6 +294,7 @@ func _select_site(s: String) -> void:
 		return
 	var was_overview := overview
 	overview = false
+	overview_overlay_timer.stop()
 	national.set_overview(false)
 	var t := RadarLibrary.unix_of(frames[frame]) if frame >= 0 else 0
 	site = s
@@ -331,6 +337,7 @@ func _show_overview() -> void:
 	var size := get_viewport().get_visible_rect().size
 	view_2d.set_zoom(minf(size.x / 5600.0, size.y / 3400.0))
 	national.set_overview(true)
+	overview_overlay_timer.start()
 	_set_live(false)
 	_set_playing(false)
 	_set_view_3d(false)
@@ -721,7 +728,8 @@ func _refresh() -> void:
 ## Warnings and tracked cells for the frame on screen (Overlays).
 func _refresh_overlays() -> void:
 	overlays.library = library
-	overlays.update(view_2d, view_3d, volume, _loop_volumes(), frame - _sequence().x, _neighbors)
+	var index := frame - _sequence().x
+	overlays.update(view_2d, view_3d, volume, _loop_volumes(), index, _neighbors, overview)
 	_readout_key.clear()
 	_update_info()
 
@@ -801,8 +809,7 @@ func _update_readout() -> void:
 		pass
 	elif overview and hovered == null:
 		var station := view_2d.station_at(mouse)
-		if not station.is_empty():
-			text = "%s\nClick for recent scans" % station
+		text = overlays.overview_readout(world, station)
 	elif hovered == hud.section:
 		var s := hud.section.sample_at(hud.section.get_global_transform().affine_inverse() * mouse)
 		if not s.is_empty():
@@ -896,12 +903,10 @@ func _update_playback() -> void:
 
 func _update_info() -> void:
 	if overview:
-		hud.set_info(
-			(
-				"United States  ·  NOAA MRMS composite reflectivity\n"
-				+ "Select a radar marker to view its recent scans and follow live updates"
-			)
-		)
+		var lines := PackedStringArray(["United States  ·  NOAA MRMS composite reflectivity"])
+		lines.append("Select a radar marker to view its recent scans and follow live updates")
+		lines.append_array(overlays.info_lines())
+		hud.set_info("\n".join(lines))
 		return
 	if volume == null:
 		var running := fetcher.running_jobs()

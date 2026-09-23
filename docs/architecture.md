@@ -152,6 +152,10 @@ gdformat scripts tests && gdlint scripts tests
   (`api/1/nws/spc_outlook.geojson?day=1&valid=&cycle=`, back to 2002): `issued_by(t)` = the convective day (12Z-12Z)
   and its cycles (06, 13, 1630, 20, 01Z) out by then, latest first; `active_at(t)` = the latest with categorical areas.
   Dashed outlines under the warnings in 2D, the top category in the info text, the category at the mouse in the readout.
+  In the live US overview, the same SPC toggle uses wall-clock UTC and projects the areas around the
+  national composite center; it refreshes every minute and on return to the overview. Site views keep
+  using the selected volume time and radar center. The overview retains station hover hints alongside
+  the SPC category.
 - `scripts/warnings.gd` – NWS storm-based warnings (TO, SV, FF, MA) from the IEM archive
   (`mesonet.agron.iastate.edu/geojson/sbw.geojson?sts=&ets=`, CORS open, any time since 2002 and live): fetched per hour with
   HTTPRequest (works on web too), cached, the current hour refetched every 60 s; `active_at(t)` = polygons in effect at the
