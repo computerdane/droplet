@@ -18,6 +18,7 @@ signal scrubbed(frame_in_sequence: int)
 signal speed_selected(fps: float)
 signal live_toggled
 signal site_selected(site: String)
+signal overview_requested
 signal view_toggled
 signal mosaic_toggled
 signal warnings_toggled
@@ -80,6 +81,7 @@ var section_button: Button
 var section: SectionView
 var fetch_panel: FetchPanel
 var field_option: OptionButton
+var _field_row: HFlowContainer
 var _field_names: Array = []
 var srm_row: HFlowContainer
 var srm_button: Button
@@ -164,6 +166,9 @@ func _build_top_right() -> void:
 	site_option.tooltip_text = "Radar site (sites with decoded volumes)"
 	site_option.item_selected.connect(func(i: int) -> void: site_selected.emit(_sites[i]))
 	row.add_child(site_option)
+	var national := _button("US Map", "Live national composite and radar stations")
+	national.pressed.connect(overview_requested.emit)
+	row.add_child(national)
 	var fetch := _button("Fetch", "Download a site / time range, or follow a site live (F)")
 	fetch.pressed.connect(fetch_toggled.emit)
 	row.add_child(fetch)
@@ -208,6 +213,7 @@ func _build_top_right() -> void:
 
 	var fields := _flow(box)
 	field_option = OptionButton.new()
+	_field_row = fields
 	field_option.focus_mode = Control.FOCUS_NONE
 	field_option.fit_to_longest_item = false
 	field_option.tooltip_text = "Radar product / field to display (number keys cycle it)"
@@ -540,6 +546,8 @@ func set_hint(text: String) -> void:
 
 func set_sites(sites: Array[String], current: String) -> void:
 	_sites = sites.duplicate()
+	if not current.is_empty() and not _sites.has(current):
+		_sites.append(current)
 	site_option.clear()
 	for s in _sites:
 		site_option.add_item(s)
@@ -624,6 +632,18 @@ func set_field(field_name: String, available: Array, storm_relative := false) ->
 		legend_unit.text = "storm-rel. " + legend_unit.text
 
 
+## The MRMS national image has no per-site sweep or field legend.
+func set_overview(on: bool) -> void:
+	_field_row.visible = not on
+	legend_tex.visible = not on
+	var categorical := Colormaps.is_categorical(
+		_field_names[field_option.selected] if field_option.selected >= 0 else "REF"
+	)
+	legend_lo.get_parent().visible = not on and not categorical
+	legend_classes.visible = not on and categorical
+	view_button.disabled = on
+
+
 ## `frame` and `count` describe the position within the current sequence.
 func set_playback(
 	playing: bool, live: bool, frame: int, count: int, time_text: String, fps: float
@@ -635,7 +655,7 @@ func set_playback(
 	slider.value = frame
 	slider.editable = count > 1
 	_setting_slider = false
-	time_label.text = "%s   %d/%d" % [time_text, frame + 1, count]
+	time_label.text = "%s   %d/%d" % [time_text, frame + 1, count] if count > 0 else "US composite"
 	var si := SPEEDS.find(fps)
 	if si >= 0 and speed_option.selected != si:
 		speed_option.select(si)

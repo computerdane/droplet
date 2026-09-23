@@ -23,9 +23,9 @@ extends Node
 ## fetch job for site=, default KTLX; see AppOptions) event=moore2013 (a notable event's
 ## loop, see Events)
 ##
-## On web the options come from the page's query string instead (?site=KTLX&time=...), volumes
-## live in memory (MemorySource, filled by the wasm worker through Fetcher), and a page with no
-## fetch= fetches what the other options point at, so any URL is a permalink.
+## On web the options come from the page's query string instead (?site=KTLX&time=...).
+## With no explicit site, time or fetch the app opens on NOAA's live US composite;
+## clicking a station fetches its recent loop and follows live updates.
 ##
 ## Hovering the 2D view, the cross-section or the VWP shows a readout of the value under
 ## the mouse next to it (see _update_readout); 2D values are read straight from the sweep
@@ -78,6 +78,8 @@ var fetcher := Fetcher.new()
 var overlays := Overlays.new()  # warnings and storm cells over the 2D view
 var loop_export := LoopExport.new()
 var cache := VolumeCache.new(library.source)
+var national: NationalComposite
+var overview := false  # national MRMS image until the user picks a radar
 var site := ""
 var frames: Array[String] = []  # volume names for `site`, ascending time
 var frame := -1
@@ -122,6 +124,7 @@ func _ready() -> void:
 	play_timer.one_shot = true
 	play_timer.timeout.connect(_on_play_tick)
 	view_2d.view_changed.connect(_update_info)
+	view_2d.site_clicked.connect(_select_map_site)
 	view_2d.section_changed.connect(_update_section)
 	view_3d.camera.moved.connect(_update_info)
 	add_child(fetcher)
@@ -132,10 +135,20 @@ func _ready() -> void:
 	fetcher.job_finished.connect(_on_job_finished)
 	fetcher.volume_received.connect(_on_volume_received)
 	_connect_hud()
+	hud.overview_requested.connect(_show_overview)
 	get_window().mouse_entered.connect(func() -> void: _mouse_in_window = true)
 	get_window().mouse_exited.connect(func() -> void: _mouse_in_window = false)
 
 	var opts := AppOptions.parse()
+	overview = not (
+		opts.has("site") or opts.has("time") or opts.has("event") or opts.has("fetch")
+		or opts.has("view") or opts.has("volumes")
+	)
+	national = NationalComposite.new()
+	national.visible = overview
+	view_2d.add_child(national)
+	view_2d.move_child(national, 0)
+	view_2d.set_sites(RadarSites.ids())
 	if opts.has("volumes"):
 		_set_source(DirSource.new(opts["volumes"]))
 	elif fetcher.web:
@@ -177,15 +190,18 @@ func _ready() -> void:
 			_set_section_on(true)
 	prefetch = opts.get("prefetch", "1") == "1"
 	_set_view_3d(opts.get("view", "2d") == "3d")
-	var sites := library.sites()
-	var want_site: String = opts.get("site", "").to_upper()
-	_select_site(want_site if sites.has(want_site) else library.site_of(library.latest()))
-	if opts.has("time"):
-		_go_to(RadarLibrary.nearest_in_time(frames, RadarLibrary.unix_of("X_" + opts["time"])))
-		live = false
-	_set_live(opts.get("live", "1" if live else "0") == "1")
-	_set_playing(opts.get("play", "0") == "1")
-	AppOptions.start_fetch(opts, fetcher)
+	if overview:
+		_show_overview()
+	else:
+		var sites := library.sites()
+		var want_site: String = opts.get("site", "").to_upper()
+		_select_site(want_site if sites.has(want_site) else library.site_of(library.latest()))
+		if opts.has("time"):
+			_go_to(RadarLibrary.nearest_in_time(frames, RadarLibrary.unix_of("X_" + opts["time"])))
+			live = false
+		_set_live(opts.get("live", "1" if live else "0") == "1")
+		_set_playing(opts.get("play", "0") == "1")
+		AppOptions.start_fetch(opts, fetcher)
 	loop_export.setup(self, opts)
 
 
@@ -266,13 +282,56 @@ func _fit_ui_scale() -> void:
 
 
 func _select_site(s: String) -> void:
+	if s.is_empty():
+		return
+	var was_overview := overview
+	overview = false
+	national.set_overview(false)
 	var t := RadarLibrary.unix_of(frames[frame]) if frame >= 0 else 0
 	site = s
 	frames = library.for_site(site)
 	hud.set_sites(library.sites(), site)
+	if was_overview:
+		view_2d.reset_camera()
 	# Keep roughly the same moment in time when switching sites.
 	_go_to(RadarLibrary.nearest_in_time(frames, t) if t > 0 else frames.size() - 1)
+	if volume == null:
+		var ll := RadarSites.location(site)
+		if ll != Vector2.INF:
+			_site_lonlat = Vector2(ll.y, ll.x)
+			view_2d.set_site(ll.x, ll.y)
+		_update_info()
 
+
+## Picking a marker works even before that site's first volume has been downloaded.
+func _select_map_site(s: String) -> void:
+	_select_site(s)
+	for j in fetcher.running_jobs():
+		if j.site == s:
+			return
+	if frames.is_empty():
+		if fetcher.can_live:
+			fetcher.start_live(s)
+		else:
+			fetcher.start_update(s)
+
+
+func _show_overview() -> void:
+	overview = true
+	site = ""
+	frames.clear()
+	frame = -1
+	volume = null
+	_site_lonlat = Vector2(NationalComposite.CENTER.y, NationalComposite.CENTER.x)
+	view_2d.set_site(NationalComposite.CENTER.x, NationalComposite.CENTER.y)
+	view_2d.cam.position = Vector2.ZERO
+	var size := get_viewport().get_visible_rect().size
+	view_2d.set_zoom(minf(size.x / 5600.0, size.y / 3400.0))
+	national.set_overview(true)
+	_set_live(false)
+	_set_playing(false)
+	_set_view_3d(false)
+	hud.set_sites(library.sites(), "")
 
 func _go_to(i: int) -> void:
 	if frames.is_empty():
@@ -307,6 +366,8 @@ func _step_sequence(delta: int) -> void:
 
 
 func _set_view_3d(on: bool) -> void:
+	if overview and on:
+		return
 	view_is_3d = on
 	view_2d.set_active(not on)
 	view_3d.set_active(on)
@@ -443,6 +504,8 @@ func _step_tilt(delta: int) -> void:
 
 
 func _set_live(on: bool) -> void:
+	if overview and on:
+		return
 	live = on
 	if on:
 		live_timer.start()
@@ -453,6 +516,8 @@ func _set_live(on: bool) -> void:
 
 
 func _set_playing(on: bool) -> void:
+	if overview and on:
+		return
 	playing = on
 	if on:
 		play_timer.start(1.0 / fps)
@@ -549,6 +614,8 @@ func _rescan() -> void:
 
 func _on_live_tick() -> void:
 	library.scan()
+	if overview:
+		return
 	var sites := library.sites()
 	if site.is_empty() and not sites.is_empty():
 		_select_site(library.site_of(library.latest()))
@@ -624,6 +691,7 @@ func _refresh() -> void:
 	if available.has(RotationTracks.FIELD):
 		available.append(RotationTracks.VIEW_FIELD)
 	hud.set_field(field_name, available, storm != Vector2.ZERO)
+	hud.set_overview(overview)
 	var motion := Hodograph.from_dir_speed(_storm_motion())
 	hud.set_srm(
 		VELOCITY_FIELDS.has(field_name),
@@ -805,6 +873,9 @@ func _preload_ahead() -> void:
 
 
 func _update_playback() -> void:
+	if overview:
+		hud.set_playback(false, false, 0, 0, "", fps)
+		return
 	var seq := _sequence()
 	var t := ""
 	if volume != null:
@@ -813,6 +884,12 @@ func _update_playback() -> void:
 
 
 func _update_info() -> void:
+	if overview:
+		hud.set_info(
+			"United States  ·  NOAA MRMS composite reflectivity\n"
+			+ "Select a radar marker to view its recent scans and follow live updates"
+		)
+		return
 	if volume == null:
 		var help := "Run:  nexrad update KTLX   (or: nexrad live KTLX)"
 		if fetcher.web:

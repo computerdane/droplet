@@ -7,12 +7,13 @@ extends Node2D
 
 signal view_changed
 signal section_changed
+signal site_clicked(site: String)
 
 const BASEMAP_SHADER := preload("res://shaders/basemap_2d.gdshader")
 const PPI_SHADER := preload("res://shaders/ppi.gdshader")
 const TRACKS_SHADER := preload("res://shaders/ppi_tracks.gdshader")
 const ZOOM_STEP := 1.15
-const ZOOM_MIN := 0.25
+const ZOOM_MIN := 0.05
 const ZOOM_MAX := 400.0
 const DEFAULT_ZOOM := 1.6
 const RING_STEP_KM := 50.0
@@ -25,6 +26,13 @@ const CITY_RADIUS_KM := 600.0
 const BASEMAP_CULL_KM := 6000.0
 const SECTION_COLOR := Color(1, 1, 1, 0.95)
 const CELL_FORECAST_COLOR := Color(0.55, 0.85, 1.0, 0.9)
+const SITE_COLOR := Color(0.6, 0.85, 1.0, 0.9)
+const SITE_ACTIVE_COLOR := Color(1.0, 0.75, 0.2, 1.0)
+const SITE_MARKER_RADIUS_PX := 3.5
+const SITE_HIT_RADIUS_PX := 12.0
+const SITE_LABEL_ZOOM := 0.5  # show ICAO labels only zoomed in this far or more
+const SITE_CLICK_MOVE_PX := 6.0  # press/release must stay within this to count as a click
+const DEFAULT_CENTER_LATLON := Vector2(39.0, -98.0)  # CONUS, used before any set_site()
 
 var storm_motion := Vector2.ZERO  # m/s east, north; zero = ground-relative (see main.gd)
 var section_mode := false
@@ -44,6 +52,9 @@ var _tracks_material: ShaderMaterial
 var _warnings: Array = []  # Warnings.project() output, drawn by the overlay
 var _outlook: Array = []  # the SPC outlook's areas, the same shape
 var _cells: Array = []  # StormCells.track() entries of the frame on screen
+var _sites: Array[String] = []  # RadarSites codes shown as clickable station markers
+var _site_positions: Dictionary = {}  # code -> Vector2 km, camera/world frame (+x east, +y south)
+var _press_screen := Vector2.INF  # left-button-down screen pos; used to tell a click from a drag
 
 @onready var ppi: ColorRect = $PPI
 @onready var cam: Camera2D = $Camera
@@ -96,7 +107,32 @@ func set_site(lat: float, lon: float) -> void:
 		mat.set_shader_parameter("site_lonlat", Vector2(lon, lat))
 	var bm := Basemap.get_shared()
 	_cities = bm.cities_near(lat, lon, CITY_RADIUS_KM) if bm != null else []
+	_rebuild_site_positions()
 	overlay.queue_redraw()
+
+
+## Station markers to draw and hit-test, e.g. RadarSites.ids() for every known US NEXRAD site.
+## Shown at national zoom and centred on any site; unknown codes are skipped. Safe to call
+## before set_site() (positions are projected around DEFAULT_CENTER_LATLON until it is).
+func set_sites(sites: Array[String]) -> void:
+	_sites = sites
+	_rebuild_site_positions()
+	overlay.queue_redraw()
+
+
+func _center_latlon() -> Vector2:
+	return _site_latlon if _site_latlon != Vector2.INF else DEFAULT_CENTER_LATLON
+
+
+func _rebuild_site_positions() -> void:
+	_site_positions.clear()
+	var center := _center_latlon()
+	for code in _sites:
+		var ll := RadarSites.location(code)
+		if ll == Vector2.INF:
+			continue
+		var p := Basemap.project(ll.x, ll.y, center.x, center.y)  # +x east, +y north
+		_site_positions[code] = Vector2(p.x, -p.y)  # into camera/world frame (+y south)
 
 
 func set_active(on: bool) -> void:
@@ -288,9 +324,35 @@ func _draw_overlay() -> void:
 	overlay.draw_line(Vector2(0, -s), Vector2(0, s), Color.WHITE, -1.0)
 	_draw_warnings()
 	_draw_cells()
+	_draw_site_markers()
 	_draw_cities()
 	if section_mode and has_section:
 		_draw_section_line()
+
+
+## All known NEXRAD stations as small clickable dots at constant screen size; the site
+## currently on screen (world origin) is highlighted, and codes label themselves once zoomed
+## in enough to read.
+func _draw_site_markers() -> void:
+	var z := cam.zoom.x
+	var font := ThemeDB.fallback_font
+	var show_labels := z >= SITE_LABEL_ZOOM
+	for code in _site_positions:
+		var p: Vector2 = _site_positions[code]
+		var active := p.length() < 0.5  # ~on top of the radar currently shown
+		var color := SITE_ACTIVE_COLOR if active else SITE_COLOR
+		var radius := (SITE_MARKER_RADIUS_PX + 1.5 if active else SITE_MARKER_RADIUS_PX) / z
+		overlay.draw_circle(p, radius + 1.0 / z, Color(0, 0, 0, 0.65))
+		overlay.draw_circle(p, radius, color)
+		if show_labels:
+			overlay.draw_set_transform(p, 0.0, Vector2.ONE / z)
+			overlay.draw_string_outline(
+				font, Vector2(6, -4), code, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, 3, Color(0, 0, 0, 0.7)
+			)
+			overlay.draw_string(
+				font, Vector2(6, -4), code, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, color
+			)
+			overlay.draw_set_transform(Vector2.ZERO)
 
 
 func _draw_section_line() -> void:
@@ -447,6 +509,16 @@ func _unhandled_input(event: InputEvent) -> void:
 					set_section(_to_world(e.position), _to_world(e.position))
 			MOUSE_BUTTON_LEFT, MOUSE_BUTTON_MIDDLE, MOUSE_BUTTON_RIGHT:
 				_dragging = e.pressed
+				if e.button_index == MOUSE_BUTTON_LEFT:
+					if e.pressed:
+						_press_screen = e.position
+					else:
+						if (
+							_press_screen != Vector2.INF
+							and e.position.distance_to(_press_screen) <= SITE_CLICK_MOVE_PX
+						):
+							_try_click_site(e.position)
+						_press_screen = Vector2.INF
 	elif event is InputEventMouseMotion and _drawing_section:
 		set_section(section_a, _to_world((event as InputEventMouseMotion).position))
 	elif event is InputEventMouseMotion and _dragging:
@@ -461,6 +533,22 @@ func _pan_by(screen_delta: Vector2) -> void:
 
 func _to_world(screen_pos: Vector2) -> Vector2:
 	return cam.position + (screen_pos - get_viewport_rect().size / 2.0) / cam.zoom.x
+
+
+## Hit-tests a screen click against the station markers (SITE_HIT_RADIUS_PX, constant on
+## screen); the nearest one within range emits site_clicked. No-op if none are close enough.
+func _try_click_site(screen_pos: Vector2) -> void:
+	var world := _to_world(screen_pos)
+	var hit_r := SITE_HIT_RADIUS_PX / cam.zoom.x
+	var best_code := ""
+	var best_dist := INF
+	for code in _site_positions:
+		var d: float = (_site_positions[code] as Vector2).distance_to(world)
+		if d <= hit_r and d < best_dist:
+			best_dist = d
+			best_code = code
+	if best_code != "":
+		site_clicked.emit(best_code)
 
 
 func _zoom_at(screen_pos: Vector2, factor: float) -> void:
