@@ -27,7 +27,7 @@ section and VWP; in-app fetch panel; LRU volume cache with background prefetch; 
 HUD; `key=value` options for scripted runs. The same app runs in the browser
 (https://computerdane.github.io/droplet/), fetching and decoding with nexrad-wasm.
 
-**Tests and tooling.** `cargo test` (67 tests, no network) covers the decoder, dealiasing,
+**Tests and tooling.** `cargo test` (68 tests, no network) covers the decoder, dealiasing,
 VAD, derived fields, products, cells, the chunk ring and `live()`, key selection, the
 basemap, the quota and the volume writer, mostly against the synthetic scene's truth.
 `tests/run.gd` runs the Godot unit tests against the synthetic fixtures (or real data with
@@ -39,8 +39,7 @@ runs all of it plus lint on every push. `web/smoke.mjs` drives the web build hea
 
 - The performance gate (tests/perf.sh, nightly) budgets hitches relative to the median and the work per frame
   (draw calls, primitives, video memory), not GPU time itself: under llvmpipe that is the runner's CPU.
-- The browser keeps no decoded volumes between visits (by design: raw files are cached and re-decode in ~0.5 s),
-  and its multi-volume updates decode in parallel, so they get no temporal dealiasing reference (live does).
+- The browser keeps no decoded volumes between visits (by design: raw files are cached and re-decode in ~0.5 s).
 
 ## Roadmap
 

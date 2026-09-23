@@ -50,10 +50,11 @@ gdformat scripts tests && gdlint scripts tests
 
 - `nexrad/` – Cargo workspace member (`Cargo.toml` at the repo root, build output in `nexrad/target/` via
   `.cargo/config.toml`). Library + `nexrad` binary; the `native` feature (default) holds networking and the CLI
-  so the library also builds for wasm. Unit tests sit next to the code (`#[cfg(test)]`, 67 of them).
+  so the library also builds for wasm. Unit tests sit next to the code (`#[cfg(test)]`, 68 of them).
 - `nexrad-wasm/` – wasm-bindgen wrapper (workspace member, `nexrad` without `native`): `decode(bytes)` →
   `{name, volume_json, files: Map<sNN_FIELD.bin, Uint8Array>}` via `volume::encode_volume()`, byte-identical to
-  `nexrad decode` without a prior volume on disk (the browser's update has no temporal dealiasing reference; its live does); `resolve_keys(site, at, from, to, bucket)` and `live(site, bucket, sleep, emit, log)` run the
+  `nexrad decode` without a prior volume on disk; `redealias()` redoes the dealiasing of a decoded volume against the
+  previous one (`Encoded::redealias`, from its float16 VEL, which is exact) for the update pool; `resolve_keys(site, at, from, to, bucket)` and `live(site, bucket, sleep, emit, log)` run the
   CLI's key selection and live loop over a `Bucket` whose `list`/`get` are synchronous JS functions. On wasm32 the
   record loop is serial (rayon is a non-wasm dependency). `bench/` = Web Worker page + a Node driver that serves
   it to headless Chromium and writes the results to disk.
@@ -62,7 +63,8 @@ gdformat scripts tests && gdlint scripts tests
   sync XHR for listings (workers allow it; the Rust is blocking), raw archive files kept in the Cache API (newest
   300), live sleeps via `Atomics.wait` (needs cross-origin isolation; `Fetcher.can_live` greys out Live without it).
   An update of several volumes decodes on a pool of nested workers (`{"cmd": "decode"}`, min(4, cores − 2)) and
-  passes the volumes on in key order. `build.sh` exports Godot (seeding the gitignored
+  passes the volumes on in key order, each dealiased again against the one before (`withPrior`, the CLI's temporal
+  reference; the derived products are recomputed only if DVEL changed). `build.sh` exports Godot (seeding the gitignored
   `export_presets.cfg` from `web/export_presets.template.cfg`) and copies the wasm + worker next to index.html;
   `serve.mjs` serves with COOP/COEP; `smoke.mjs` drives headless Chromium over CDP. Hosted on GitHub Pages
   (https://computerdane.github.io/droplet/, `.github/workflows/pages.yml` runs build.sh in the flake on every push

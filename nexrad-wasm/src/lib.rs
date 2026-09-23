@@ -46,6 +46,42 @@ fn encode(vol: &Volume, prior: &[volume::PriorTilt]) -> Result<(Object, volume::
     Ok((out, enc))
 }
 
+/// An update decodes its volumes in parallel, so none has its predecessor as the temporal
+/// dealiasing reference: this dealiases `volume_json` + `files` (`decode()`'s shape) again with
+/// the previous volume (`prior_json`, `prior_files`: its DVEL files suffice) if that one is its
+/// prior (`volume::is_prior`). Returns null if nothing changed, else `{volume_json, files}` with
+/// the new volume.json and the changed sweep files only.
+#[wasm_bindgen]
+pub fn redealias(volume_json: &str, files: &Map, prior_json: &str, prior_files: &Map) -> Result<JsValue, JsError> {
+    let parse = |text: &str| volume::parse_meta(text).map_err(|e| JsError::new(&e.to_string()));
+    let (meta, prior_meta) = (parse(volume_json)?, parse(prior_json)?);
+    let time = |m: &volume::VolumeMeta| Utc::parse_iso(&m.time).map_err(|e| JsError::new(&e.to_string()));
+    if !volume::is_prior(&meta.icao, time(&meta)?, &prior_meta.icao, time(&prior_meta)?) {
+        return Ok(JsValue::NULL);
+    }
+    let get = |map: &Map, name: &str| map.get(&name.into()).dyn_into::<Uint8Array>().ok().map(|a| a.to_vec());
+    let prior = volume::prior_tilts(&prior_meta, |f| get(prior_files, f));
+    let mut enc = volume::Encoded { meta, files: Vec::new() };
+    for key in files.keys() {
+        let name = key.map_err(err)?.as_string().unwrap_or_default();
+        let bytes = get(files, &name).unwrap_or_default();
+        enc.files.push((name, bytes));
+    }
+    let changed = enc.redealias(&prior);
+    if changed.is_empty() {
+        return Ok(JsValue::NULL);
+    }
+    let out_files = Map::new();
+    for name in &changed {
+        out_files.set(&name.into(), &Uint8Array::from(enc.file(name).unwrap_or_default()));
+    }
+    let out = Object::new();
+    let text = volume::meta_json(&enc.meta).map_err(|e| JsError::new(&e.to_string()))?;
+    Reflect::set(&out, &"volume_json".into(), &text.into()).map_err(err)?;
+    Reflect::set(&out, &"files".into(), &out_files.into()).map_err(err)?;
+    Ok(out.into())
+}
+
 /// A bucket whose HTTP lives in JavaScript: `list(prefix)` returns the ListObjectsV2 XML and
 /// `get(key)` a `Uint8Array`, both synchronously (sync XHR is allowed in workers), or throw.
 struct JsBucket {
@@ -117,10 +153,7 @@ pub fn live(
     let mut prior: Vec<volume::PriorTilt> = Vec::new();
     let mut prior_time: Option<Utc> = None;
     let mut sink = |vol: &Volume| -> nexrad::Result<String> {
-        let fresh = prior_time.is_some_and(|t| {
-            let age = vol.time.secs_since(t);
-            age > 0.0 && age <= volume::PRIOR_MAX_AGE_S
-        });
+        let fresh = prior_time.is_some_and(|t| volume::is_prior(&vol.icao, vol.time, &vol.icao, t));
         let (out, enc) = encode(vol, if fresh { &prior } else { &[] }).map_err(|e| format!("{:?}", JsValue::from(e)))?;
         if vol.complete {
             prior = enc.prior();

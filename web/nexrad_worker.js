@@ -11,13 +11,15 @@
 // An update of several volumes fans the decoding out to a pool of nested workers running this
 // same script ({"cmd": "decode", key, index} -> {type: "decoded", index, ...volume}) and still
 // hands the volumes on in key order, so progress and "jump to the last one" read as they do
-// from the CLI. Terminating the job's worker terminates its pool with it.
+// from the CLI. Terminating the job's worker terminates its pool with it. Decoded apart, the
+// volumes lack the CLI's temporal dealiasing reference (the previous volume); in key order each
+// is dealiased again against the one before (redealias(), a no-op unless its DVEL changes).
 //
 // Both Unidata buckets allow anonymous CORS reads and listings. Listings go through synchronous
 // XHR, which workers may use, because the key selection and live loop in nexrad-wasm are blocking
 // Rust. Raw archive files are immutable and kept in the Cache API (the newest RAW_CACHE_FILES),
 // so revisiting an event costs only the decode.
-import init, { decode, live, resolve_keys } from "./nexrad_wasm.js";
+import init, { decode, live, redealias, resolve_keys } from "./nexrad_wasm.js";
 
 const ARCHIVE = "https://unidata-nexrad-level2.s3.amazonaws.com";
 const CHUNKS = "https://unidata-nexrad-level2-chunks.s3.amazonaws.com";
@@ -52,6 +54,30 @@ function volumeMessage(vol, extra = {}) {
 
 const postVolume = (vol) => postMessage(...volumeMessage(vol));
 
+// The volume an update passed on last, as redealias() takes it: volume.json and DVEL files.
+let prior = null;
+
+// A "volume" message dealiased again against `prior` (sweep files replaced or added in place);
+// it then becomes the prior of the next one.
+function withPrior(msg) {
+  if (prior) {
+    const files = new Map(msg.names.map((n, i) => [n, new Uint8Array(msg.buffers[i])]));
+    const out = redealias(msg.volume_json, files, prior.volume_json, prior.files);
+    if (out) {
+      msg.volume_json = out.volume_json;
+      for (const [name, bytes] of out.files) {
+        const i = msg.names.indexOf(name);
+        if (i >= 0) msg.buffers[i] = bytes.buffer;
+        else msg.names.push(name), msg.buffers.push(bytes.buffer);
+      }
+    }
+  }
+  const dvel = new Map();
+  msg.names.forEach((n, i) => n.endsWith("_DVEL.bin") && dvel.set(n, new Uint8Array(msg.buffers[i].slice(0))));
+  prior = { volume_json: msg.volume_json, files: dvel };
+  return msg;
+}
+
 async function fetchRaw(key) {
   const url = `${ARCHIVE}/${key}`;
   let cache = null;
@@ -83,9 +109,10 @@ async function update({ site, at = "", from = "", to = "", workers = POOL_SIZE }
   if (n <= 1) {
     for (const [i, key] of keys.entries()) {
       line(`[${i + 1}/${keys.length}] ${fileName(key)}`);
-      const vol = decode(await fetchRaw(key), key);
-      postVolume(vol);
-      line(vol.name); // as `nexrad update` prints each decoded volume
+      const [msg] = volumeMessage(decode(await fetchRaw(key), key));
+      withPrior(msg);
+      postMessage(msg, msg.buffers);
+      line(msg.name); // as `nexrad update` prints each decoded volume
     }
     return;
   }
@@ -107,9 +134,9 @@ async function update({ site, at = "", from = "", to = "", workers = POOL_SIZE }
           if (data.type === "error") return reject(new Error(`${fileName(keys[data.index])}: ${data.message}`));
           ready.set(data.index, data);
           while (ready.has(done)) {
-            const msg = ready.get(done);
+            const msg = withPrior({ ...ready.get(done), type: "volume" });
             ready.delete(done++);
-            postMessage({ ...msg, type: "volume" }, msg.buffers);
+            postMessage(msg, msg.buffers);
             line(msg.name);
             progress();
           }

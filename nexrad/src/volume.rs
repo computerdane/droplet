@@ -229,6 +229,12 @@ pub fn prior_tilts(meta: &VolumeMeta, mut read: impl FnMut(&str) -> Option<Vec<u
         .collect()
 }
 
+/// Whether a volume of `icao` at `time` takes one of `prior_icao` at `prior_time` as its prior.
+pub fn is_prior(icao: &str, time: Utc, prior_icao: &str, prior_time: Utc) -> bool {
+    let age = time.secs_since(prior_time);
+    icao == prior_icao && age > 0.0 && age <= PRIOR_MAX_AGE_S
+}
+
 /// The prior for a volume of `icao` at `time` written under `root`: the latest complete volume
 /// of the site that started less than PRIOR_MAX_AGE_S before it (none if there is none).
 pub fn find_prior(root: &Path, icao: &str, time: Utc) -> Vec<PriorTilt> {
@@ -238,8 +244,7 @@ pub fn find_prior(root: &Path, icao: &str, time: Utc) -> Vec<PriorTilt> {
         .filter_map(|e| {
             let name = e.ok()?.file_name().into_string().ok()?;
             let t = Utc::parse_compact(name.strip_prefix(&prefix)?)?;
-            let age = time.secs_since(t);
-            (age > 0.0 && age <= PRIOR_MAX_AGE_S).then_some((t, name))
+            is_prior(icao, time, icao, t).then_some((t, name))
         })
         .max();
     let Some((_, name)) = best else { return Vec::new() };
@@ -435,7 +440,88 @@ pub fn encode_volume_with(vol: &Volume, prior: &[PriorTilt]) -> Encoded {
 impl Encoded {
     /// This volume as the prior of the next one (empty unless complete).
     pub fn prior(&self) -> Vec<PriorTilt> {
-        prior_tilts(&self.meta, |file| self.files.iter().find(|(n, _)| n == file).map(|(_, b)| b.clone()))
+        prior_tilts(&self.meta, |file| self.file(file).map(<[u8]>::to_vec))
+    }
+
+    pub fn file(&self, name: &str) -> Option<&[u8]> {
+        self.files.iter().find(|(n, _)| n == name).map(|(_, b)| b.as_slice())
+    }
+
+    /// One field of every sweep read back from the files (sweeps without it get none).
+    fn grids(&self, names: &[&str]) -> Vec<Fields> {
+        self.meta
+            .sweeps
+            .iter()
+            .map(|sw| {
+                let mut g = Fields::new();
+                for name in names {
+                    let grid = sw.fields.get(*name).and_then(|f| Grid::from_f16_le(sw.n_azimuth_bins, f.n_gates, self.file(&f.file)?));
+                    if let Some(grid) = grid {
+                        g.insert(name.to_string(), grid);
+                    }
+                }
+                g
+            })
+            .collect()
+    }
+
+    fn put(&mut self, name: &str, bytes: Vec<u8>) {
+        match self.files.iter_mut().find(|(n, _)| n == name) {
+            Some(f) => f.1 = bytes,
+            None => self.files.push((name.to_string(), bytes)),
+        }
+    }
+
+    /// Dealiases this volume again with `prior` as the temporal reference, from its own VEL
+    /// files (VEL is exact in float16, so this is what `encode_volume_with` would have given),
+    /// for volumes decoded without their predecessor at hand (the browser decodes a range in
+    /// parallel). Where DVEL changes, AZSHR, the winds, the products and the cells are computed
+    /// again from the files, as `nexrad derive` does. Returns the files that changed (volume.json
+    /// aside); none if DVEL came out the same.
+    pub fn redealias(&mut self, prior: &[PriorTilt]) -> Vec<String> {
+        let mut d = Decoded { sweeps: self.meta.sweeps.clone(), grids: self.grids(&["VEL"]) };
+        add_dealiased(&mut d, prior);
+        let mut changed = Vec::new();
+        for (sw, g) in d.sweeps.iter().zip(&d.grids) {
+            if let Some(dvel) = g.get("DVEL") {
+                let file = &sw.fields["DVEL"].file;
+                let bytes = dvel.to_f16_le();
+                if self.file(file) != Some(bytes.as_slice()) {
+                    changed.push(file.clone());
+                    self.put(file, bytes);
+                }
+            }
+        }
+        if changed.is_empty() {
+            return changed;
+        }
+        let mut grids = self.grids(&["VEL", "REF", "RHO", "ZDR"]);
+        for (g, new) in grids.iter_mut().zip(d.grids) {
+            if let Some(dvel) = new.get("DVEL") {
+                g.insert("DVEL".into(), dvel.clone());
+            }
+        }
+        let sweeps = self.meta.sweeps.clone();
+        for (sw, g) in sweeps.iter().zip(grids.iter_mut()) {
+            if let (Some(dvel), Some(f)) = (g.get("DVEL"), sw.fields.get("AZSHR")) {
+                let shear = fields::azimuthal_shear(dvel, f.first_gate_m as f64, f.gate_spacing_m as f64);
+                changed.push(f.file.clone());
+                self.put(&f.file, shear.to_f16_le());
+                g.insert("AZSHR".into(), shear);
+            }
+        }
+        self.meta.wind_profile = wind_profile(&sweeps, &grids);
+        self.meta.storm_motion = vad::bunkers(self.meta.wind_profile.as_ref());
+        let prods = products::volume_products(&sweeps, &grids);
+        if let Some((pm, pg)) = &prods {
+            for (name, grid) in products::NAMES.iter().zip(pg) {
+                changed.push(pm.fields[*name].file.clone());
+                self.put(&pm.fields[*name].file, grid.to_f16_le());
+            }
+        }
+        self.meta.cells = prods.as_ref().map(|(m, g)| volume_cells(&sweeps, &grids, m, g));
+        self.meta.products = prods.map(|(m, _)| m);
+        changed
     }
 }
 
@@ -466,6 +552,11 @@ pub fn meta_json(meta: &VolumeMeta) -> Result<String> {
 
 pub fn write_meta(out: &Path, meta: &VolumeMeta) -> Result<()> {
     write_atomic(&out.join("volume.json"), meta_json(meta)?.as_bytes())
+}
+
+/// `volume.json` text back to its metadata.
+pub fn parse_meta(text: &str) -> Result<VolumeMeta> {
+    Ok(serde_json::from_str(text)?)
 }
 
 pub fn read_meta(out: &Path) -> Result<VolumeMeta> {
@@ -567,6 +658,36 @@ mod tests {
         partial.complete = false;
         write_meta(&out, &partial).unwrap();
         assert!(find_prior(dir.path(), "KTST", t.add_secs(300.0)).is_empty(), "partial");
+    }
+
+    #[test]
+    fn redealias_in_memory_matches_encoding_with_the_prior() {
+        // Volume 1 decoded alone, then dealiased again with volume 0 as the prior, must equal
+        // volume 1 encoded with that prior. The real prior changes nothing here (the scene
+        // dealiases cleanly); one shifted by a whole period on every gate moves the lowest tilt's
+        // echo, which has nothing else to go by.
+        let vols = synth::fixture_volumes();
+        let prior = encode_volume(&vols[0]).prior();
+        let mut plain = encode_volume(&vols[1]);
+        assert!(plain.redealias(&prior).is_empty(), "a good prior agrees");
+        let shifted: Vec<PriorTilt> = prior
+            .iter()
+            .map(|p| {
+                let period = 2.0 * synth::fixture_scene().nyquist_ms as f32;
+                let mut dvel = p.dvel.clone();
+                dvel.data.iter_mut().filter(|v| **v > -900.0).for_each(|v| *v += period);
+                PriorTilt { dvel, ..*p }
+            })
+            .collect();
+        let want = encode_volume_with(&vols[1], &shifted);
+        let changed = plain.redealias(&shifted);
+        assert!(changed.iter().any(|f| f.ends_with("_DVEL.bin")) && changed.iter().any(|f| f.starts_with("p_")), "{changed:?}");
+        for f in &changed {
+            assert!(plain.file(f) == want.file(f), "{f} differs");
+        }
+        assert_eq!(plain.meta.wind_profile, want.meta.wind_profile);
+        assert_eq!(plain.meta.storm_motion, want.meta.storm_motion);
+        assert_eq!(plain.meta.products, want.meta.products);
     }
 
     fn written() -> (Volume, tempdir::Dir, PathBuf) {
