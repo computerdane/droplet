@@ -324,7 +324,7 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 
 - Decoder reads both archive layouts: bzip2 LDM records (current) and the older gzip-wrapped uncompressed stream (~pre-2016, `.gz` keys), and both radial formats: Message 31 (Build 10+, ~mid-2008 onward) and legacy Message 1 (8-bit REF on 1 km gates to 460 km, VEL/SW on 250 m gates, 1° radials, no dual-pol). Message 1 files carry no site location (`nexrad/src/sites.rs`, the NCEI station list) and the oldest (`ARCHIVE2.nnn` headers) not even the ICAO (`level2::with_site()` takes it from the file name or key). Checked on KTLX 1995, 1999-05-03 (Bridge Creek-Moore), 2005, 2007.
 - Verified against KTLX 2026-09-22 (VCP 212, bz2) and KTLX 2013-05-20 20:03Z (VCP 12, gz, the Moore tornado).
-- `live` backfills up to 10 complete scans from the archive mirror before following
+- `live` backfills the newest plus up to 10 older complete scans from the archive mirror before following
   the in-progress volume (skipping that partial if joined after its first chunk), then follows each new one.
   Recent archive scans first appear newest-first as provisional previews so the live view reaches the
   newest available time promptly. The same raw scans are then finalized oldest-first, replacing their

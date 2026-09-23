@@ -1,6 +1,5 @@
 extends Node
-## Controller: owns browsing state (site, frame, field, elevation), playback and live
-## following, and pushes it into the active view and the HUD.
+## Controller: browsing state, playback, live following, and view/HUD updates.
 ##
 ## Frames are time ordered per site. Playback loops within a sequence (gaps ≤30 min);
 ## live follows the newest, even as older backfill arrives. Elevation persists across frames.
@@ -23,9 +22,7 @@ extends Node
 ## On web the options come from the page's query string instead (?site=KTLX&time=...).
 ## With no explicit site, time or fetch the app opens on NOAA's live US composite;
 ## clicking a station fetches its recent loop and follows live updates.
-##
-## Hover readouts use sweep files; upcoming frames and mosaic neighbours preload via VolumeCache.
-## Mosaic places nearby sites' closest volumes around the selected site.
+## Readouts use sweep files; loop and mosaic volumes preload via VolumeCache.
 
 const LIVE_RESCAN_SEC := 3.0
 const OVERVIEW_OVERLAY_REFRESH_SEC := 60.0
@@ -590,6 +587,8 @@ func _on_volume_written(name: String) -> void:
 ## Replace cached data and refresh any view that shows this name.
 func _on_volume_changed(name: String) -> void:
 	cache.invalidate(name)
+	overlays.invalidate_volume(name)
+	_tracks.invalidate_volume(name)
 	_rescan()
 	if volume != null and volume.name == name:
 		_go_to(frame)
