@@ -173,7 +173,7 @@ fn parse_msg31(data: &[u8]) -> Option<(Radial, Option<VolInfo>)> {
 
     for i in 0..n_blocks {
         let p = cur.u32(32 + 4 * i)? as usize;
-        if p == 0 || p + 4 > data.len() {
+        if p == 0 || cur.bytes(p, 4).is_none() {
             continue;
         }
         let btype = data[p];
@@ -499,6 +499,23 @@ mod tests {
         let got = read_volume(&raw).unwrap(); // uncompressed stream, as in the old layout
         assert_eq!(got.radials.len(), 2);
         assert!((got.radials[1].azimuth - vol.radials[1].azimuth).abs() < 1e-5);
+    }
+
+    #[test]
+    fn malformed_msg31_pointer_is_rejected() {
+        let vol = synth::small_volume();
+        let msg = synth::msg31(&vol, &vol.radials[0], 1);
+        let mut msg = msg;
+        let body = CTM_HEADER_SIZE + MSG_HEADER_SIZE;
+        let n_blocks = u16::from_be_bytes([msg[body + 30], msg[body + 31]]) as usize;
+        for i in 0..n_blocks {
+            let pointer = body + 32 + 4 * i;
+            msg[pointer..pointer + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        }
+        let raw = [synth::volume_header(&vol), msg].concat();
+        let decoded = read_volume(&raw).unwrap();
+        assert_eq!(decoded.radials.len(), 1);
+        assert!(decoded.radials[0].moments.is_empty());
     }
 
     /// One legacy Message 1 slot (CTM + header + body, FIXED_MSG_SIZE bytes).
