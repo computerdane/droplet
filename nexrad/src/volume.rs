@@ -529,9 +529,15 @@ impl Encoded {
 /// returning that directory. The site's previous volume there, if recent, is the temporal
 /// dealiasing reference.
 pub fn write_volume(vol: &Volume, root: &Path) -> Result<PathBuf> {
-    let out = root.join(volume_dir_name(&vol.icao, vol.time));
-    std::fs::create_dir_all(&out).map_err(|e| Error::from(format!("{}: {e}", out.display())))?;
     let enc = encode_volume_with(vol, &find_prior(root, &vol.icao, vol.time));
+    write_encoded(&enc, root)
+}
+
+/// Publishes an already encoded volume, with metadata written last.
+pub fn write_encoded(enc: &Encoded, root: &Path) -> Result<PathBuf> {
+    let time = Utc::parse_iso(&enc.meta.time)?;
+    let out = root.join(volume_dir_name(&enc.meta.icao, time));
+    std::fs::create_dir_all(&out).map_err(|e| Error::from(format!("{}: {e}", out.display())))?;
     for (name, bytes) in &enc.files {
         write_atomic(&out.join(name), bytes)?;
     }

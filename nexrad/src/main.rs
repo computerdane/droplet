@@ -148,28 +148,22 @@ fn run(args: &[String]) -> Result<()> {
                 let mut out = std::io::LineWriter::new(std::io::stdout());
                 let mut log = std::io::LineWriter::new(std::io::stderr());
 
-                // Backfill ~10 recent complete archive volumes, oldest first, before following
-                // the chunks bucket: the archive mirror never holds an in-progress scan, so this
-                // cannot show a partial volume as if it were done. Reuses the same
-                // download+decode path as `update` (and its temporal dealiasing reference: each
-                // decode finds the previous one just written on disk). A temporarily unreachable
-                // mirror is logged and skipped, not fatal - live following still starts.
-                let mut last_backfilled: Option<String> = None;
+                // Publish newest first, then finalize the temporal chain oldest first.
+                // A temporarily unavailable mirror must not prevent chunk following.
+                let mut last_backfilled = None;
                 let archive_bucket = HttpBucket::new(archive::BUCKET);
                 match archive::recent_keys(&archive_bucket, site, archive::BACKFILL_COUNT) {
                     Ok(keys) => {
-                        for (i, k) in keys.iter().enumerate() {
-                            let _ = writeln!(log, "[{}/{}] {}", i + 1, keys.len(), archive::file_name(k));
-                            match archive::download(&archive_bucket, k, &raw_dir, &mut log).and_then(|p| decode(&p, &volumes_dir)) {
-                                Ok(path) => {
-                                    let _ = writeln!(out, "{}", path.display());
-                                    last_backfilled = path.file_name().and_then(|n| n.to_str()).map(str::to_owned);
-                                }
-                                Err(e) => {
-                                    let _ = writeln!(log, "{site}: backfill {}: {e}", archive::file_name(k));
-                                }
-                            }
-                        }
+                        last_backfilled = archive::backfill(
+                            &archive_bucket,
+                            &keys,
+                            &raw_dir,
+                            &volumes_dir,
+                            |path| {
+                                let _ = writeln!(out, "{}", path.display());
+                            },
+                            &mut log,
+                        );
                         if !keys.is_empty() {
                             enforce_quota(&root);
                         }
@@ -184,16 +178,25 @@ fn run(args: &[String]) -> Result<()> {
                     std::thread::sleep(std::time::Duration::from_secs_f64(interval.max(0.0)));
                     true
                 };
+                let (seed_name, mut prior_time, mut prior) = match last_backfilled {
+                    Some(seed) => (Some(seed.name), Some(seed.time), seed.prior),
+                    None => (None, None, Vec::new()),
+                };
                 let mut sink = |v: &level2::Volume| -> Result<String> {
                     let name = volume::volume_dir_name(&v.icao, v.time);
-                    if v.complete && last_backfilled.as_deref() == Some(name.as_str()) {
+                    if v.complete && seed_name.as_deref() == Some(name.as_str()) {
                         // Exact duplicate of the backfill's last volume (the archive mirror
                         // caught up to it before live started): already on disk, skip the
                         // redundant decode + write instead of reporting it a second time.
                         return Ok(name);
                     }
-                    let dir = volume::write_volume(v, &volumes_dir)?;
+                    // Never seed from a provisional volume left on disk by a failed finalization.
+                    let fresh = prior_time.is_some_and(|t| volume::is_prior(&v.icao, v.time, &v.icao, t));
+                    let enc = volume::encode_volume_with(v, if fresh { &prior } else { &[] });
+                    let dir = volume::write_encoded(&enc, &volumes_dir)?;
                     if v.complete {
+                        prior = enc.prior();
+                        prior_time = Some(v.time);
                         enforce_quota(&root);
                     }
                     Ok(dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string())
