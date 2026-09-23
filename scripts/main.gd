@@ -309,11 +309,10 @@ func _select_map_site(s: String) -> void:
 	for j in fetcher.running_jobs():
 		if j.site == s:
 			return
-	if frames.is_empty():
-		if fetcher.can_live:
-			fetcher.start_live(s)
-		else:
-			fetcher.start_update(s)
+	if fetcher.can_live:
+		fetcher.start_live(s)
+	else:
+		fetcher.start_update(s)
 
 
 func _show_overview() -> void:

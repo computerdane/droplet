@@ -43,8 +43,7 @@ func set_overview(on: bool) -> void:
 	if _timer == null:
 		return
 	if on:
-		if texture == null:
-			_load()
+		_load()  # returning to the map should not show an hours-old image
 		_timer.start()
 	else:
 		_timer.stop()
