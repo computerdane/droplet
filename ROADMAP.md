@@ -52,9 +52,9 @@ Ordered by what unblocks the most.
    forecasts, tornado debris signature flags. Left: SPC outlooks, overlays in 3D.
 5. **Finishing 3D.** Done: hover readout in 3D (ray pick against the cones, checked against
    the rendered pixels), the A-B section curtain, warnings and cells in 3D, mosaic cross-sections.
-6. **Data quality.** Temporal dealiasing against the previous volume, VAD as a dealiasing
-   reference, caching the live ring position, multi-site live in one process, a disk quota
-   for `data/`.
+6. **Data quality.** Done: caching the live ring position, a disk quota for `data/`. Left:
+   temporal dealiasing against the previous volume, VAD as a dealiasing reference,
+   multi-site live in one process.
 7. **Reach.** Message 1 parsing for pre-2008 archives, loop export to video, touch
    controls, a bookmark list of notable events.
 

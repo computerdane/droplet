@@ -102,7 +102,9 @@ pub fn live(site: &str, bucket: &JsValue, sleep: &Function, emit: &Function, log
     };
     let sleep = || sleep.call0(&JsValue::NULL).map(|v| v.is_truthy()).unwrap_or(false);
     let mut log = LineWriter { log, buf: Vec::new() };
-    chunks::live(&bucket, site, &mut sink, None, sleep, &mut log).map_err(|e| JsError::new(&e.to_string()))
+    // No ring memory in the browser yet: the worker starts with the full search.
+    let start = chunks::Start::Newest { hint: None, now: nexrad::time::Utc(0) };
+    chunks::live(&bucket, site, &mut sink, start, &mut |_, _| {}, sleep, &mut log).map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// Passes each complete line written to it to a JS function.

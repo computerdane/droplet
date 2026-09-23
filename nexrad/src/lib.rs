@@ -13,6 +13,8 @@ pub mod level2;
 #[cfg(feature = "native")]
 pub mod net;
 pub mod products;
+#[cfg(feature = "native")]
+pub mod prune;
 pub mod synth;
 pub mod time;
 pub mod vad;

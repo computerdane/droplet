@@ -13,6 +13,9 @@
 //! Live (chunks bucket, seconds behind real time):
 //!     nexrad live KTLX [--interval 5]             # poll, decode partial volumes as they grow
 //!
+//! Disk: update, live and `nexrad prune` keep data/ under $DROPLET_QUOTA_GB (default 20) by
+//! deleting the oldest volumes and raw files (see nexrad::prune).
+//!
 //! Basemap (state/county lines and city labels, once):
 //!     nexrad basemap                              # -> data/basemap/
 //!
@@ -28,10 +31,19 @@ use std::process::exit;
 use nexrad::archive::{self, Selection};
 use nexrad::net::HttpBucket;
 use nexrad::time::Utc;
-use nexrad::{Result, basemap, chunks, level2, synth, volume};
+use nexrad::{Result, basemap, chunks, level2, prune, synth, volume};
 
 fn root() -> PathBuf {
     std::env::var_os("DROPLET_ROOT").map(PathBuf::from).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
+}
+
+/// Keeps `data/` under `$DROPLET_QUOTA_GB` (see nexrad::prune); reports on stderr.
+fn enforce_quota(root: &Path) {
+    match prune::prune_data(&root.join("data"), prune::quota_bytes()) {
+        Ok(Some(summary)) => eprintln!("{summary}"),
+        Ok(None) => {}
+        Err(e) => eprintln!("prune: {e}"),
+    }
 }
 
 fn usage() -> ! {
@@ -40,6 +52,7 @@ fn usage() -> ! {
     eprintln!("       nexrad live SITE [--interval SECONDS]");
     eprintln!("       nexrad derive [VOLUME_DIR...]");
     eprintln!("       nexrad basemap");
+    eprintln!("       nexrad prune                  (keep data/ under $DROPLET_QUOTA_GB, default 20)");
     eprintln!("       nexrad synth [OUT_DIR]");
     exit(2)
 }
@@ -94,6 +107,7 @@ fn run(args: &[String]) -> Result<()> {
                 println!("{}", path.display());
                 let _ = std::io::stdout().flush();
             }
+            enforce_quota(&root);
         }
         "decode" => {
             if rest.is_empty() {
@@ -124,10 +138,26 @@ fn run(args: &[String]) -> Result<()> {
             };
             let mut sink = |v: &level2::Volume| -> Result<String> {
                 let dir = volume::write_volume(v, &volumes_dir)?;
+                if v.complete {
+                    enforce_quota(&root);
+                }
                 Ok(dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string())
             };
-            chunks::live(&bucket, &site, &mut sink, None, sleep, &mut err)?;
+            // Remember where the ring was, so the next run needs a few listings, not ~20.
+            let ring_file = root.join("data").join("live_ring.json");
+            let mut ring: serde_json::Map<String, serde_json::Value> =
+                std::fs::read_to_string(&ring_file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+            let hint = ring.get(&site).and_then(|v| Some((v.get(0)?.as_u64()? as u32, Utc::parse_compact(v.get(1)?.as_str()?)?)));
+            let start = chunks::Start::Newest { hint, now: Utc::now() };
+            let mut remember = |v: u32, t: Utc| {
+                ring.insert(site.clone(), serde_json::json!([v, t.compact()]));
+                if let Ok(text) = serde_json::to_string(&ring) {
+                    let _ = volume::write_atomic(&ring_file, text.as_bytes());
+                }
+            };
+            chunks::live(&bucket, &site, &mut sink, start, &mut remember, sleep, &mut err)?;
         }
+        "prune" => enforce_quota(&root),
         "derive" | "winds" => {
             let dirs: Vec<PathBuf> = if rest.is_empty() {
                 let mut d: Vec<PathBuf> = std::fs::read_dir(&volumes_dir)?

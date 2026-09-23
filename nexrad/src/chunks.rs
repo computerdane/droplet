@@ -94,25 +94,71 @@ pub fn find_latest_volume(bucket: &dyn Bucket, site: &str) -> Result<u32> {
     Ok(lo)
 }
 
+/// Volumes never come faster than this (seconds), which bounds how far the ring can have
+/// moved since a known position.
+pub const MIN_VOLUME_SECS: f64 = 150.0;
+
+/// Locates the newest volume number from a remembered position: volume `known` started at
+/// `known_time`, `now` is the current time. The newest number is at most elapsed /
+/// MIN_VOLUME_SECS ahead, so a binary search over that window (numbers whose newest volume
+/// is not older than `known_time`) takes a handful of listings instead of ~20. None if the
+/// hint is no use (too old for the ring, or the known number no longer holds that volume).
+pub fn find_latest_volume_from(bucket: &dyn Bucket, site: &str, known: u32, known_time: Utc, now: Utc) -> Result<Option<u32>> {
+    let window = (now.secs_since(known_time).max(0.0) / MIN_VOLUME_SECS).ceil() as u32 + 2;
+    if window >= MAX_VOLUME - 10 || !(1..=MAX_VOLUME).contains(&known) {
+        return Ok(None);
+    }
+    if volume_time(bucket, site, known)? != Some(known_time) {
+        return Ok(None);
+    }
+    let at = |offset: u32| (known - 1 + offset) % MAX_VOLUME + 1;
+    let (mut lo, mut hi) = (0u32, window);
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        match volume_time(bucket, site, at(mid))? {
+            Some(t) if t >= known_time => lo = mid,
+            _ => hi = mid - 1,
+        }
+    }
+    Ok(Some(at(lo)))
+}
+
+/// Where `live` starts: a given volume number (tests), or the newest one, found from a
+/// remembered position if there is a usable one (`hint`: volume, its start time; `now` is the
+/// current time) and by the full ring search otherwise.
+pub enum Start {
+    Volume(u32),
+    Newest { hint: Option<(u32, Utc)>, now: Utc },
+}
+
 /// Follows `site` on the chunks bucket: starts on the in-progress volume (skipping it if
 /// joined after its first chunk), hands the partial volume to `sink` (which stores it and
 /// returns its name) each time chunks arrive, marks it complete on the E chunk, then moves on
-/// to the next number. `sleep` runs between polls and returns false to stop; `start` skips the
-/// ring search (tests).
+/// to the next number. `sleep` runs between polls and returns false to stop; `remember` is told each volume
+/// number and start time as it begins, for the next run's `Start::Newest` hint.
+#[allow(clippy::too_many_arguments)]
 pub fn live(
     bucket: &dyn Bucket,
     site: &str,
     sink: &mut dyn FnMut(&Volume) -> Result<String>,
-    start: Option<u32>,
+    start: Start,
+    remember: &mut dyn FnMut(u32, Utc),
     mut sleep: impl FnMut() -> bool,
     log: &mut dyn Write,
 ) -> Result<()> {
     let site = site.to_uppercase();
     let mut volume = match start {
-        Some(v) => v,
-        None => {
+        Start::Volume(v) => v,
+        Start::Newest { hint, now } => {
             let _ = writeln!(log, "locating newest {site} volume...");
-            find_latest_volume(bucket, &site)?
+            let near = match hint {
+                Some((v, t)) => find_latest_volume_from(bucket, &site, v, t, now)?,
+                None => None,
+            };
+            match near {
+                Some(v) => v,
+                None => find_latest_volume(bucket, &site)?,
+            }
         }
     };
     let mut seen: HashSet<String> = HashSet::new();
@@ -147,6 +193,11 @@ pub fn live(
                     return Ok(());
                 }
                 continue;
+            }
+            if buf.is_empty()
+                && let Some(t) = chunk_time(new[0])
+            {
+                remember(volume, t);
             }
             let mut fetched_all = true;
             for k in new {
@@ -260,6 +311,39 @@ mod tests {
     }
 
     #[test]
+    fn finds_latest_volume_from_a_hint() {
+        // The ring as in finds_latest_volume, newest = 437, 5 min apart; a hint from 90 min
+        // ago (18 volumes back) needs a short binary search, not the full one.
+        let base = Utc::from_ymd_hms(2024, 5, 1, 22, 0, 0);
+        let newest = 437u32;
+        let time_of = move |n: u32| base.add_secs(-300.0 * ((newest + MAX_VOLUME - n) % MAX_VOLUME) as f64);
+        let b = FakeBucket {
+            lister: Some(Box::new(move |prefix: &str| {
+                let n: u32 = prefix.split('/').nth(1).unwrap().parse().unwrap();
+                vec![format!("KTST/{n}/{}-001-S", time_of(n).stamp())]
+            })),
+            ..Default::default()
+        };
+        let now = base.add_secs(60.0);
+        assert_eq!(find_latest_volume_from(&b, "KTST", 419, time_of(419), now).unwrap(), Some(newest));
+        assert!(b.listed.borrow().len() <= 8, "{} listings", b.listed.borrow().len());
+        // Across the wrap at 999.
+        let newest = 5u32;
+        let time_of = move |n: u32| base.add_secs(-300.0 * ((newest + MAX_VOLUME - n) % MAX_VOLUME) as f64);
+        let b = FakeBucket {
+            lister: Some(Box::new(move |prefix: &str| {
+                let n: u32 = prefix.split('/').nth(1).unwrap().parse().unwrap();
+                vec![format!("KTST/{n}/{}-001-S", time_of(n).stamp())]
+            })),
+            ..Default::default()
+        };
+        assert_eq!(find_latest_volume_from(&b, "KTST", 990, time_of(990), now).unwrap(), Some(5));
+        // A stale hint (the number was reused since) or one too old for the ring: no answer.
+        assert_eq!(find_latest_volume_from(&b, "KTST", 990, time_of(990).add_secs(-3600.0), now).unwrap(), None);
+        assert_eq!(find_latest_volume_from(&b, "KTST", 990, time_of(990), now.add_secs(4.0e5)).unwrap(), None);
+    }
+
+    #[test]
     fn live_follows_a_growing_volume() {
         let vol = synth::small_volume();
         let parts = synth::ldm_records(&synth::encode_archive(&vol, Layout::Bz2));
@@ -310,7 +394,9 @@ mod tests {
             visible.set((visible.get() + 3).min(n));
             polls.get() <= 12
         };
-        live(&b, "ktst", &mut write_to(dir.path()), Some(7), sleep, &mut log).unwrap();
+        let mut remembered = Vec::new();
+        live(&b, "ktst", &mut write_to(dir.path()), Start::Volume(7), &mut |v, t| remembered.push((v, t)), sleep, &mut log).unwrap();
+        assert_eq!(remembered, [(7, vol.time)], "the volume and its start, once");
         let log = String::from_utf8(log).unwrap();
         let name = format!("KTST_{}", vol.time.compact());
         let writes: Vec<&str> = log.lines().filter(|l| l.starts_with(&name)).collect();
@@ -338,7 +424,8 @@ mod tests {
             &b,
             "KTST",
             &mut write_to(dir.path()),
-            Some(7),
+            Start::Volume(7),
+            &mut |_, _| {},
             || {
                 polls += 1;
                 polls <= 2

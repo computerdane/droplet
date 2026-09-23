@@ -20,6 +20,7 @@ nexrad live KTLX                                   # poll chunks bucket, rewrite
 nexrad basemap                                     # once: Census states/counties + cities -> data/basemap/
 nexrad decode data/raw/*_V06*                      # re-decode everything (e.g. after decoder/dealias changes)
 nexrad derive [data/volumes/...]                   # (re)compute AZSHR/KDP, VAD winds, storm motion, CREF/ET/VIL without re-decoding
+nexrad prune                                       # keep data/ under $DROPLET_QUOTA_GB (default 20; update and live do it too)
 nexrad synth                                       # synthetic fixture volumes -> tests/fixtures/volumes/
 cargo test                                         # Rust tests (decoder, dealias, VAD, chunks, live, fixtures); no network, ~6 s
 cargo clippy --all-targets && cargo fmt --check    # lint (rustfmt.toml: 140 columns)
@@ -139,6 +140,9 @@ gdformat scripts tests && gdlint scripts tests
 - `nexrad/src/volume.rs` – the on-disk format Godot reads: `rasterise()` bins radials, `write_volume()` (+
   `add_dealiased()` for DVEL, VAD winds), `read_meta`/`read_field`, `add_winds()`, `add_products()`. `grid.rs` is the polar
   float32 grid; `time.rs` the UTC/Julian/ISO conversions (no chrono).
+- `nexrad/src/prune.rs` – disk quota (native): oldest volume dirs / raw files by the time in their names go first, each
+  site's newest is kept; 85 % of `$DROPLET_QUOTA_GB` for volumes. Run after `update`, after each complete `live` volume
+  and by `nexrad prune`; the summary line carries no volume names (the fetch panel would take them for new volumes).
 - `nexrad/src/main.rs` – CLI (hand-rolled args, same subcommands and stdout/stderr protocol the fetch panel
   parses). `data/` and `tests/` resolve under `$DROPLET_ROOT`, else the current directory.
 - `data/raw/` – downloaded archive files (gitignored). `data/volumes/` – decoded, `data/basemap/` – basemap buffers (all gitignored).
@@ -256,7 +260,9 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 
 - Decoder reads both archive layouts: bzip2 LDM records (current) and the older gzip-wrapped uncompressed stream (~pre-2016, `.gz` keys). Only Message 31 radials are parsed (Build 10+, ~mid-2008 onward); pre-2008 files use Message 1 and would need a separate parser.
 - Verified against KTLX 2026-09-22 (VCP 212, bz2) and KTLX 2013-05-20 20:03Z (VCP 12, gz, the Moore tornado).
-- `live` starts on the in-progress volume (skipping it if joined after its first chunk), then follows each new one. It bootstraps by probing ~20 S3 listings to find the newest volume number; could cache the last number in `data/`.
+- `live` starts on the in-progress volume (skipping it if joined after its first chunk), then follows each new one. It
+  remembers the ring position in `data/live_ring.json` (`chunks::Start::Newest` hint: a binary search over the numbers the
+  ring can have moved since, a few listings) and falls back to the ~20-listing search; the web worker has no memory yet.
 - Done: time animation + live following, column products (CREF, ET, VIL), azimuthal shear, KDP and rotation tracks, 3D cones, basemap, site picker, multi-site mosaic,
   background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
   storm-relative velocity, fetching from the UI, translucent volume rendering, VAD wind profile +
