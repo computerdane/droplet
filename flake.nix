@@ -120,6 +120,11 @@
             # golden screenshots (tests/golden.sh): software GL under a virtual X server, with
             # this flake's Mesa rather than the host driver, so every machine renders alike.
             xvfb-run
+            # PR automation and offline Chromium smoke tests use this same locked toolset.
+            nodejs_24
+            chromium
+            actionlint
+            shellcheck
           ];
 
           shellHook = ''

@@ -1,0 +1,38 @@
+name: Issue approval
+
+on:
+  issues:
+    types: [opened, edited, reopened, closed]
+  issue_comment:
+    types: [created, edited, deleted]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: issue-approval
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: github.event_name != 'issue_comment' || !github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Always load policy and executable code from the default branch.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Reconcile human approvals
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOSED_NUMBER: ${{ github.event.issue.state == 'closed' && github.event.issue.number || '' }}
+        run: |
+          node tools/automation/queue.mjs setup-labels
+          node tools/automation/queue.mjs sync-labels
+          if [ -n "$CLOSED_NUMBER" ]; then
+            node tools/automation/queue.mjs sync-labels --number "$CLOSED_NUMBER"
+          fi

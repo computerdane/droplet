@@ -1,0 +1,17 @@
+# Closing, reopening, or retargeting a PR requests preview reconciliation.
+# This unprivileged workflow neither checks out nor executes repository code.
+# Pages receives workflow_run on the default branch and reconciles actual state.
+name: Preview lifecycle
+
+on:
+  pull_request:
+    types: [closed, edited, reopened]
+
+permissions: {}
+
+jobs:
+  request-cleanup:
+    if: github.event.action != 'edited' || github.event.changes.base != null
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Preview cleanup requested'

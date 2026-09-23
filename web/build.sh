@@ -5,6 +5,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 out="${1:-export/web}"
+# Smoke screenshots and prior exports are build products, not project resources.
+mkdir -p export
+touch export/.gdignore
 # export_presets.cfg is gitignored (the editor rewrites it); seed it from the committed copy.
 [ -f export_presets.cfg ] || cp web/export_presets.template.cfg export_presets.cfg
 # Godot only looks for export templates under its data dir; link the flake's there (CI, fresh machines).
@@ -17,6 +20,7 @@ mkdir -p "$out"
 touch "$out/.gdignore" # keep the editor from importing the export (and packing it)
 godot --headless --path . --import >/dev/null
 godot --headless --path . --export-release Web "$(realpath "$out")/index.html"
+node web/prepare_export.mjs "$out"
 cp nexrad-wasm/pkg/nexrad_wasm.js nexrad-wasm/pkg/nexrad_wasm_bg.wasm web/nexrad_worker.js "$out/"
 # The page downloads the basemap in the background (scripts/basemap.gd); build it with `nexrad basemap`.
 if [ -f data/basemap/basemap.json ]; then

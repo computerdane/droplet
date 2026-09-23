@@ -1,0 +1,30 @@
+name: Agent-discovered issue
+description: Record a concrete issue found during automated or agent work
+title: "agent: "
+labels: [needs-approval, agent-discovered]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every issue needs a human `/approve` comment before work begins. This template is for findings; creating the issue does not authorize a fix.
+  - type: textarea
+    id: finding
+    attributes:
+      label: Finding
+      description: State the observed problem and its impact.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Include reproduction steps, relevant output, or file and line references.
+    validations:
+      required: true
+  - type: textarea
+    id: suggested
+    attributes:
+      label: Suggested next step
+      description: Optional proposed resolution or investigation.
+    validations:
+      required: false

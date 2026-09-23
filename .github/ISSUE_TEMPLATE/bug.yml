@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible problem
+title: "bug: "
+labels: [needs-approval, bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every issue needs a human `/approve` comment before work begins. Include steps and expected versus actual behavior where possible.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the problem and its impact.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest useful reproduction.
+      placeholder: |
+        1. ...
+        2. ...
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Relevant OS, versions, and configuration.
+    validations:
+      required: false
