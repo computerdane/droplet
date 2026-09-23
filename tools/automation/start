@@ -2,6 +2,7 @@
 # Start one interactive coordinator using the existing Codex login.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+export GH_CONFIG_DIR="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh-droplet-bot}"
 mkdir -p .automation
 touch .automation/.gdignore
 exec 9>.automation/coordinator.lock
@@ -9,6 +10,8 @@ if ! flock -n 9; then
   echo 'A coordinator is already running in this checkout.' >&2
   exit 1
 fi
+# This checkout is dedicated to the machine user; keep Git pushes on that account.
+git config --local credential.https://github.com.helper '!gh auth git-credential'
 node tools/automation/queue.mjs reconcile
 node tools/automation/queue.mjs status >.automation/startup.json
-exec codex --approve-for-me --model gpt-6-sol 'Use the github-loop skill in skills/github-loop/SKILL.md. Start a goal to manage the approved GitHub development queue for this working session. Continue watching for new issues, questions, review feedback, and CI results until I ask you to stop. Schedule independent issues in parallel and use native GitHub stacks for dependent changes. Choose specialist models according to the skill routing policy. Follow the approval gate and keep implementation in separate worktrees. Read .automation/startup.json to recover existing work. Do not merge PRs.' "$@"
+exec codex --approve-for-me --model gpt-6-sol 'I authorize you to claim and implement all issues that have been approved by me on GitHub. Use the github-loop skill in skills/github-loop/SKILL.md. Start a goal to manage the approved GitHub development queue for this working session. Continue watching for new issues, questions, review feedback, and CI results until I ask you to stop. Schedule independent issues in parallel and use native GitHub stacks for dependent changes. Choose specialist models according to the skill routing policy. Follow the approval gate and keep implementation in separate worktrees. Read .automation/startup.json to recover existing work. Do not merge PRs.' "$@"
