@@ -1,6 +1,6 @@
 class_name Hud
 extends Control
-## On-screen controls: info text, site picker, 2D/3D toggle, field buttons, colour legend and
+## On-screen controls: info text, site picker, 2D/3D toggle, field picker, colour legend and
 ## a playback bar. Built in code; emits intent signals and main.gd pushes state back via
 ## the set_* methods. Nothing here takes keyboard focus, so shortcuts keep working, except
 ## the text fields of the fetch panel while it is open.
@@ -79,7 +79,8 @@ var outlook_button: Button
 var section_button: Button
 var section: SectionView
 var fetch_panel: FetchPanel
-var field_buttons: Dictionary = {}  # name -> Button
+var field_option: OptionButton
+var _field_names: Array = []
 var srm_row: HFlowContainer
 var srm_button: Button
 var srm_auto_button: Button
@@ -206,21 +207,22 @@ func _build_top_right() -> void:
 	row.add_child(view_button)
 
 	var fields := _flow(box)
-	var group := ButtonGroup.new()
-	var names: Array = RadarVolume.FIELDS + RadarVolume.PRODUCTS + [RotationTracks.VIEW_FIELD]
-	for i in names.size():
-		var fname: String = names[i]
+	field_option = OptionButton.new()
+	field_option.focus_mode = Control.FOCUS_NONE
+	field_option.fit_to_longest_item = false
+	field_option.tooltip_text = "Radar product / field to display (number keys cycle it)"
+	_field_names = RadarVolume.FIELDS + RadarVolume.PRODUCTS + [RotationTracks.VIEW_FIELD]
+	for i in _field_names.size():
+		var fname: String = _field_names[i]
 		var tip := "%s (%d)" % [fname, i + 1] if i < 8 else "%s (0)" % fname
 		if FIELD_NAMES.has(fname):
 			tip = "%s: %s (0 cycles KDP / AZSHR / HCA)" % [fname, FIELD_NAMES[fname]]
 		if fname in RadarVolume.PRODUCTS:
 			tip = "%s: %s, plan view only (9 cycles products)" % [fname, PRODUCT_NAMES[fname]]
-		var b := _button(fname, tip)
-		b.toggle_mode = true
-		b.button_group = group
-		b.pressed.connect(func() -> void: field_selected.emit(fname))
-		fields.add_child(b)
-		field_buttons[fname] = b
+		field_option.add_item(fname)
+		field_option.set_item_tooltip(i, tip)
+	field_option.item_selected.connect(func(i: int) -> void: field_selected.emit(_field_names[i]))
+	fields.add_child(field_option)
 
 	_build_srm_row(box)
 
@@ -604,10 +606,12 @@ func set_view_3d(on: bool) -> void:
 
 
 func set_field(field_name: String, available: Array, storm_relative := false) -> void:
-	for n in field_buttons:
-		var b: Button = field_buttons[n]
-		b.set_pressed_no_signal(n == field_name)
-		b.modulate = Color.WHITE if available.has(n) else Color(1, 1, 1, 0.4)
+	for i in _field_names.size():
+		var n: String = _field_names[i]
+		field_option.set_item_text(i, n if available.has(n) else "%s (no data)" % n)
+	var idx := _field_names.find(field_name)
+	if idx >= 0 and field_option.selected != idx:
+		field_option.select(idx)
 	var rng := Colormaps.range_of(field_name)
 	legend_tex.texture = Colormaps.texture_for(field_name)
 	legend_lo.text = str(rng[0])
