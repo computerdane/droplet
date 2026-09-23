@@ -436,9 +436,8 @@ func _loop_volumes() -> Array[RadarVolume]:
 	return out
 
 
-## 9: the first column product, then the next one.
-func _cycle_product() -> void:
-	var cycle: Array = RadarVolume.PRODUCTS + [RotationTracks.VIEW_FIELD]
+## 9 / 0: the first field of `cycle`, then the next one.
+func _cycle_fields(cycle: Array) -> void:
 	_set_field(cycle[(cycle.find(field_name) + 1) % cycle.size()])
 
 
@@ -978,6 +977,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		_:
 			if FIELD_KEYS.has(e.keycode):
 				_set_field(FIELD_KEYS[e.keycode])
+			elif e.keycode == KEY_9:
+				_cycle_fields(RadarVolume.PRODUCTS + [RotationTracks.VIEW_FIELD])
+			elif e.keycode == KEY_0:
+				_cycle_fields(["KDP", "AZSHR"])
 
 
 func _cycle_site() -> void:
