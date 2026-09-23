@@ -58,8 +58,10 @@ report it. The launcher does not disable the sandbox.
 
 Ask questions and request refinements on issues, including unapproved discoveries.
 Codex answers while the loop runs and catches up after restarting. Questions and
-discussion do not authorize implementation. To approve an issue, post this as an
-entire, unedited comment:
+discussion do not authorize implementation. Use the Question issue form for
+codebase questions; asking and answering a question does not need `/approve`.
+Requests to change the code still need a human `/approve` comment. To approve an
+issue, post this as an entire, unedited comment:
 
 ```text
 /approve
@@ -163,6 +165,7 @@ node tools/automation/queue.mjs check 42
 node tools/automation/queue.mjs checkpoint 42 --phase in-review --pr 57 --notes-file /tmp/handoff.md
 node tools/automation/queue.mjs stack --prs 57,58
 node tools/automation/queue.mjs checkpoint 42 --repair
+node tools/automation/queue.mjs reply 42 --issue-body --body-file /tmp/answer.md
 node tools/automation/queue.mjs reply 42 --comment 123456 --body-file /tmp/reply.md
 node tools/automation/queue.mjs propose --title 'Observed problem' --body-file /tmp/finding.md
 ```
@@ -171,8 +174,11 @@ node tools/automation/queue.mjs propose --title 'Observed problem' --body-file /
 `claim` checks approval, limits, conflicts, dependencies, and existing work before
 creating an issue worktree. `check` guards further work/pushes against revoked or
 changed scope. `checkpoint` is local and still works after a hold; update visible
-issue labels to match separately. `reply` adds a retry marker. Search for duplicates
-before `propose`. `stack` registers or appends a native stack; it does not merge.
+issue labels to match separately. Use `reply --issue-body` to answer the question
+in the issue body, and `reply --comment ID` to follow up on an existing comment.
+Replies include a marker so retrying the same response does not post a duplicate.
+Search for duplicates before `propose`. `stack` registers or appends a native stack;
+it does not merge.
 
 `claim --recover` reserves a slot and scope for local Git recovery when stack
 updates have made ancestry stale. It does not permit implementation or pushing.

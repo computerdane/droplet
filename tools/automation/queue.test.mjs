@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync,
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { approval, scopeHash, reply, claim, checkpoint, checkJob, loadState, saveState, parseArgs, GitHub, sync,
+import { approval, scopeHash, reply, claim, checkpoint, checkJob, loadState, saveState, parseArgs, GitHub, sync, LABELS,
   normalizePaths, pathsOverlap, reconcile, stack } from './queue.mjs';
 
 const policy = { approvers: [{ login: 'owner', id: 7 }], max_repair_attempts: 3,
@@ -47,6 +47,13 @@ test('questions neither approve nor revoke implementation', () => {
   assert.equal(decide([comment(), question]).approved, true);
 });
 
+test('question issues cannot be approved even with a human /approve and ready label', () => {
+  const questionIssue = { ...issue, labels: [{ name: 'question' }, { name: 'ready' }] };
+  assert.match(decide([comment()], { issue: questionIssue }).reason, /discussion-only/);
+  assert.equal(decide([comment()], { issue: questionIssue }).approved, false);
+  assert.ok(LABELS.question);
+});
+
 test('scope edits, renames and reopen events require new approval, labels do not', () => {
   assert.equal(decide([comment()], { edited: '2026-09-23T12:00:00Z' }).approved, false);
   for (const event of ['renamed', 'closed', 'reopened']) {
@@ -59,7 +66,10 @@ test('scope edits, renames and reopen events require new approval, labels do not
 });
 
 class FakeGitHub {
-  constructor(comments = [], allowed = true) { this.comments = comments; this.allowed = allowed; this.mutations = []; this.policy = policy; }
+  constructor(comments = [], allowed = true) {
+    this.comments = comments; this.allowed = allowed; this.mutations = []; this.policy = policy;
+    this.issueValue = structuredClone(issue);
+  }
   worker() { return { id: 99 }; }
   endpoint(suffix) { return suffix; }
   api(endpoint, { method = 'GET', data } = {}) {
@@ -69,7 +79,7 @@ class FakeGitHub {
     this.comments.push(posted);
     return posted;
   }
-  issue() { return { issue: structuredClone(issue), decision: { approved: this.allowed, reason: 'held', comment_id: 1, scope: 'abc' } }; }
+  issue() { return { issue: structuredClone(this.issueValue), decision: { approved: this.allowed, reason: 'held', comment_id: 1, scope: 'abc' } }; }
   issues() { return [issue]; }
   pulls() { return []; }
   labels(value, desired) { this.mutations.push({ number: value.number, desired }); }
@@ -91,6 +101,39 @@ test('edited question can receive a new answer without replying to bot comments'
   assert.equal(github.mutations.length, 2);
   assert.throws(() => reply(github, 12, 100, 'Keep going'), /maintainer comment/);
 });
+
+test('issue-body question receives one answer per title/body version', () => {
+  const github = new FakeGitHub();
+  github.issueValue = { ...issue, user: { id: 7 }, labels: [{ name: 'question' }] };
+  assert.equal(reply(github, 12, undefined, 'Initial answer', { issueBody: true }).already_replied, false);
+  assert.equal(reply(github, 12, undefined, 'Initial answer', { issueBody: true }).already_replied, true);
+  github.issueValue.body = 'A substantively updated question';
+  assert.equal(reply(github, 12, undefined, 'Updated answer', { issueBody: true }).already_replied, false);
+  assert.equal(github.mutations.length, 2);
+  assert.match(github.mutations[0].data.body, new RegExp(`droplet-reply:issue-body:${scopeHash(issue)}`));
+});
+
+test('issue-body replies reject closed, non-question, and non-maintainer issues and empty text', () => {
+  const github = new FakeGitHub();
+  github.issueValue = { ...issue, user: { id: 7 }, labels: [{ name: 'question' }] };
+  assert.throws(() => reply(github, 12, undefined, ' ', { issueBody: true }), /empty/);
+  for (const change of [{ state: 'closed' }, { labels: [] }, { user: { id: 99 } }]) {
+    github.issueValue = { ...issue, user: { id: 7 }, labels: [{ name: 'question' }], ...change };
+    assert.throws(() => reply(github, 12, undefined, 'Answer', { issueBody: true }), /open question issue authored/);
+  }
+  assert.equal(github.mutations.length, 0);
+  github.issue = () => { throw new Error('Approval commands belong on an issue, not a PR'); };
+  assert.throws(() => reply(github, 12, undefined, 'Answer', { issueBody: true }), /not a PR/);
+});
+
+test('question issue cannot be claimed even after human approval', () => temp(root => {
+  const github = new FakeGitHub([comment()]);
+  github.issueValue = { ...issue, labels: [{ name: 'question' }] };
+  github.issue = () => ({ issue: github.issueValue,
+    decision: approval(github.issueValue, github.comments, [], undefined, policy) });
+  assert.throws(() => claim(github, 12, root, () => assert.fail('executed git')), /discussion-only/);
+  assert.deepEqual(loadState(root), { jobs: {} });
+}));
 
 test('unapproved claim cannot execute git or create a worktree', () => temp(root => {
   assert.throws(() => claim(new FakeGitHub([], false), 12, root, () => assert.fail('executed git')), /held/);
@@ -133,10 +176,33 @@ test('approval reconciliation removes stale authorization display', () => {
   assert.deepEqual(github.mutations, [{ number: 12, desired: 'needs-approval' }]);
 });
 
+test('question label sync clears workflow state labels and preserves question', () => {
+  const github = new FakeGitHub();
+  github.issueValue.labels = [{ name: 'question' }, { name: 'needs-approval' }, { name: 'ready' }];
+  sync(github);
+  assert.deepEqual(github.mutations, [{ number: 12, desired: null }]);
+  const deleted = [];
+  const client = new GitHub({ ...policy, repository: 'x/y' }, args => {
+    deleted.push(args);
+    return '';
+  });
+  client.labels(github.issueValue, null);
+  assert.deepEqual(deleted.map(args => args.at(-1)).sort(), [
+    'repos/x/y/issues/12/labels/needs-approval', 'repos/x/y/issues/12/labels/ready',
+  ]);
+});
+
 test('CLI rejects invalid identifiers and missing options before mutation', () => {
   for (const args of [['claim', '-1'], ['claim', '1;echo bad'], ['reply', '1'], ['watch'], ['watch', '--since', 'a', '--seconds', '0']]) {
     assert.throws(() => parseArgs(args));
   }
+  assert.equal(parseArgs(['reply', '12', '--issue-body', '--body-file', 'answer.txt'])['issue-body'], true);
+  assert.equal(parseArgs(['reply', '12', '--comment', '5', '--body-file', 'answer.txt']).comment, 5);
+  for (const args of [
+    ['reply', '12', '--issue-body', '--comment', '5', '--body-file', 'answer.txt'],
+    ['reply', '12', '--issue-body'],
+    ['reply', '12', '--body-file', 'answer.txt'],
+  ]) assert.throws(() => parseArgs(args), /exactly one|body-file/);
 });
 
 test('path scopes compare component boundaries and fail closed for unknown work', () => {

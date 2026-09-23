@@ -1,0 +1,23 @@
+name: Question
+description: Ask a question about the codebase
+title: "question: "
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Questions and answers do not need `/approve`. If you are requesting a code change, use a Task or Feature issue; implementation still requires a human `/approve` comment.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What would you like to know about the codebase?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Relevant files, links, or details that may help answer your question.
+    validations:
+      required: false

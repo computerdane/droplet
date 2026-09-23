@@ -16,6 +16,7 @@ export const LABELS = {
   'in-review': ['5319e7', 'A pull request is ready for human review'],
   blocked: ['b60205', 'Work needs input or has exhausted its repair attempts'],
   'agent-discovered': ['c5def5', 'Proposed by an agent; requires human approval'],
+  question: ['d4c5f9', 'Discussion question; not eligible for implementation'],
 };
 
 export function run(args, { input, cwd = ROOT } = {}) {
@@ -97,6 +98,7 @@ export const scopeHash = issue => digest([issue.title, issue.body || '']);
 export function approval(issue, comments, events, edited, policy) {
   const denied = reason => ({ approved: false, reason });
   if (issue.state !== 'open') return denied('issue closed');
+  if (issue.labels.some(label => label.name === 'question')) return denied('question issue is discussion-only');
   const commands = comments.filter(c => policy.approvers.some(a => a.id === c.user.id)
     && ['/approve', '/hold'].includes((c.body || '').trim()));
   commands.sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id);
@@ -179,8 +181,8 @@ export function sync(github, number) {
   for (const brief of number ? [{ number }] : github.issues()) {
     const { issue, decision } = github.issue(brief.number);
     const existing = new Set(issue.labels.map(l => l.name));
-    let desired = issue.state === 'closed' ? null : 'needs-approval';
-    if (decision.approved) desired = ['in-review', 'in-progress', 'blocked'].find(l => existing.has(l)) || 'ready';
+    let desired = issue.state === 'closed' || existing.has('question') ? null : 'needs-approval';
+    if (desired && decision.approved) desired = ['in-review', 'in-progress', 'blocked'].find(l => existing.has(l)) || 'ready';
     github.labels(issue, desired);
   }
 }
@@ -468,17 +470,27 @@ export function stack(github, numbers) {
   }) };
 }
 
-export function reply(github, number, commentId, body) {
+export function reply(github, number, commentId, body, { issueBody = false } = {}) {
+  if (!body.trim()) throw new Error('Reply cannot be empty');
   const worker = github.worker();
   const comments = github.api(github.endpoint(`issues/${number}/comments?per_page=100`), { paginate: true });
-  const source = comments.find(c => c.id === commentId);
-  if (!source || !github.policy.approvers.some(a => a.id === source.user.id)) {
-    throw new Error('Reply target must be an existing maintainer comment on this issue');
+  let marker;
+  if (issueBody) {
+    const { issue } = github.issue(number);
+    if (issue.state !== 'open' || !issue.labels.some(label => label.name === 'question')
+        || !github.policy.approvers.some(a => a.id === issue.user?.id)) {
+      throw new Error('Reply target must be an open question issue authored by the maintainer');
+    }
+    marker = `<!-- droplet-reply:issue-body:${scopeHash(issue)} -->`;
+  } else {
+    const source = comments.find(c => c.id === commentId);
+    if (!source || !github.policy.approvers.some(a => a.id === source.user.id)) {
+      throw new Error('Reply target must be an existing maintainer comment on this issue');
+    }
+    marker = `<!-- droplet-reply:${commentId}:${source.updated_at} -->`;
   }
-  const marker = `<!-- droplet-reply:${commentId}:${source.updated_at} -->`;
   const previous = comments.find(c => c.user.id === worker.id && (c.body || '').includes(marker));
   if (previous) return { url: previous.html_url, already_replied: true };
-  if (!body.trim()) throw new Error('Reply cannot be empty');
   const posted = github.api(github.endpoint(`issues/${number}/comments`), { method: 'POST', data: { body: `${body.trimEnd()}\n\n${marker}` } });
   return { url: posted.html_url, already_replied: false };
 }
@@ -494,6 +506,7 @@ const HELP = `Usage: node tools/automation/queue.mjs COMMAND [options]
   checkpoint NUMBER [--phase working|in-review|blocked|done] [--notes-file FILE]
                     [--session ID] [--pr NUMBER] [--repair]
   reply NUMBER --comment ID --body-file FILE   Answer a human comment, even before approval
+  reply NUMBER --issue-body --body-file FILE   Answer a maintainer's question in the issue body
   propose --title TITLE --body-file FILE      File a discovered issue after checking duplicates
   sync-labels [--number NUMBER]   Reconcile visible labels from human approval
   setup-labels                   Create/update workflow labels
@@ -505,7 +518,7 @@ export function parseArgs(argv) {
   const specs = {
     status: [], watch: ['since', 'seconds'], check: ['recovery'], claim: ['paths', 'base-issue', 'recover'], reconcile: [], stack: ['prs'],
     checkpoint: ['phase', 'notes-file', 'session', 'pr', 'repair'],
-    reply: ['comment', 'body-file'], propose: ['title', 'body-file'], 'sync-labels': ['number'], 'setup-labels': [],
+    reply: ['comment', 'issue-body', 'body-file'], propose: ['title', 'body-file'], 'sync-labels': ['number'], 'setup-labels': [],
   };
   if (!(command in specs)) throw new Error(HELP);
   const args = { command };
@@ -513,7 +526,7 @@ export function parseArgs(argv) {
   while (rest.length) {
     const key = rest.shift().replace(/^--/, '');
     if (!specs[command].includes(key)) throw new Error(`Unknown option: ${key}`);
-    args[key] = ['repair', 'recover', 'recovery'].includes(key) ? true : rest.shift();
+    args[key] = ['repair', 'recover', 'recovery', 'issue-body'].includes(key) ? true : rest.shift();
     if (args[key] === undefined) throw new Error(`Missing value for ${key}`);
   }
   for (const key of ['number', 'comment', 'pr', 'base-issue']) {
@@ -525,7 +538,9 @@ export function parseArgs(argv) {
   }
   if (['check', 'claim', 'checkpoint', 'reply'].includes(command) && !args.number) throw new Error('Issue number is required');
   if (command === 'watch' && !args.since) throw new Error('--since is required');
-  if (command === 'reply' && (!args.comment || !args['body-file'])) throw new Error('--comment and --body-file are required');
+  if (command === 'reply' && (!args['body-file'] || Boolean(args.comment) === Boolean(args['issue-body']))) {
+    throw new Error('Reply requires --body-file and exactly one of --comment or --issue-body');
+  }
   if (command === 'propose' && (!args.title || !args['body-file'])) throw new Error('--title and --body-file are required');
   if (command === 'stack') {
     if (!args.prs || !/^[1-9][0-9]*(,[1-9][0-9]*)+$/.test(args.prs)) throw new Error('--prs must list at least two PR numbers');
@@ -571,7 +586,8 @@ function main() {
     case 'reconcile': value = reconcile(github); break;
     case 'stack': value = stack(github, args.prs); break;
     case 'checkpoint': value = checkpoint(github, args); break;
-    case 'reply': value = reply(github, args.number, args.comment, readFileSync(args['body-file'], 'utf8')); break;
+    case 'reply': value = reply(github, args.number, args.comment, readFileSync(args['body-file'], 'utf8'),
+      { issueBody: args['issue-body'] }); break;
     case 'propose':
       github.worker();
       value = github.api(github.endpoint('issues'), { method: 'POST', data: {
