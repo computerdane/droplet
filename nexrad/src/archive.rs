@@ -170,11 +170,14 @@ pub fn backfill(
 ) -> Option<BackfillSeed> {
     use crate::{level2, volume};
     let mut downloaded = Vec::new();
+    let mut excluded: Vec<String> =
+        keys.iter().filter_map(|key| Some(volume::volume_dir_name(file_name(key).get(..4)?, key_time(key)?))).collect();
     for (i, key) in keys.iter().rev().enumerate() {
         let _ = writeln!(log, "[{}/{}] {}", i + 1, keys.len(), file_name(key));
         let result = (|| -> Result<()> {
             let raw = download(bucket, key, raw_dir, log)?;
             let vol = level2::read_file(&raw)?;
+            excluded.push(volume::volume_dir_name(&vol.icao, vol.time));
             let path = volume::write_encoded(&volume::encode_volume(&vol), volumes_dir)?;
             emit(&path);
             downloaded.push(raw);
@@ -191,7 +194,11 @@ pub fn backfill(
         let result = (|| -> Result<()> {
             let vol = level2::read_file(raw)?;
             let valid = previous.as_ref().is_some_and(|(site, time)| volume::is_prior(&vol.icao, vol.time, site, *time));
-            let enc = volume::encode_volume_with(&vol, if valid { &prior } else { &[] });
+            // Preserve update's starting reference on populated roots. Selected names may
+            // still be provisional after failures and must never supply this reference.
+            let initial =
+                if previous.is_none() { volume::find_prior_excluding(volumes_dir, &vol.icao, vol.time, &excluded) } else { Vec::new() };
+            let enc = volume::encode_volume_with(&vol, if valid { &prior } else { &initial });
             let path = volume::write_encoded(&enc, volumes_dir)?;
             emit(&path);
             if vol.complete {
@@ -318,6 +325,74 @@ mod tests {
         .unwrap();
         assert_eq!(seed.name, names[0]);
         assert_eq!(seed.time, vols[0].time);
+    }
+
+    #[test]
+    fn backfill_preserves_external_prior_and_excludes_failed_selected_scans() {
+        use crate::{level2, synth, volume};
+        let dir = volume::tempdir::Dir::new("backfill-prior");
+        let raw = dir.path().join("raw");
+        let out = dir.path().join("volumes");
+        let expected = dir.path().join("expected");
+        let vols = synth::fixture_volumes();
+        let mut external = volume::encode_volume(&vols[0]);
+        external.meta.time = vols[0].time.add_secs(-300.0).isoformat();
+        let period = 2.0 * synth::fixture_scene().nyquist_ms as f32;
+        for (name, bytes) in &mut external.files {
+            if name.ends_with("_DVEL.bin") {
+                for gate in bytes.as_chunks_mut::<2>().0 {
+                    let value = half::f16::from_le_bytes([gate[0], gate[1]]).to_f32();
+                    if value > -900.0 {
+                        gate.copy_from_slice(&half::f16::from_f32(value + period).to_le_bytes());
+                    }
+                }
+            }
+        }
+        volume::write_encoded(&external, &out).unwrap();
+        volume::write_encoded(&external, &expected).unwrap();
+        let bucket = FakeBucket::default();
+        let keys: Vec<String> = vols[..2].iter().map(|v| format!("{}{}_V06", v.icao, v.time.compact())).collect();
+        for (key, vol) in keys.iter().zip(&vols) {
+            let bytes = synth::encode_archive(vol, synth::Layout::Bz2);
+            volume::write_volume(&level2::read_volume(&bytes).unwrap(), &expected).unwrap();
+            bucket.objects.borrow_mut().insert(key.clone(), bytes);
+        }
+        backfill(&bucket, &keys, &raw, &out, |_| {}, &mut Vec::new()).unwrap();
+        let names: Vec<String> = vols[..2].iter().map(|v| volume::volume_dir_name(&v.icao, v.time)).collect();
+        let plain = volume::encode_volume(&vols[0]);
+        assert!(
+            plain.files.iter().any(|(file, bytes)| {
+                file.ends_with("_DVEL.bin") && *bytes != std::fs::read(expected.join(&names[0]).join(file)).unwrap()
+            }),
+            "the external reference must change the solution"
+        );
+        for name in &names {
+            for entry in std::fs::read_dir(expected.join(name)).unwrap() {
+                let entry = entry.unwrap();
+                assert_eq!(std::fs::read(entry.path()).unwrap(), std::fs::read(out.join(name).join(entry.file_name())).unwrap());
+            }
+        }
+        // Make the first selected scan fail finalization. The second must skip its provisional
+        // disk version and still use the external reference within the 15-minute window.
+        backfill(
+            &bucket,
+            &keys,
+            &raw,
+            &out,
+            |path| {
+                if path.file_name().unwrap().to_string_lossy() == names[0] {
+                    std::fs::remove_file(raw.join(file_name(&keys[0]))).unwrap();
+                }
+            },
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let second = level2::read_volume(&bucket.objects.borrow()[&keys[1]]).unwrap();
+        let want = volume::encode_volume_with(&second, &external.prior());
+        for (file, bytes) in want.files {
+            assert_eq!(bytes, std::fs::read(out.join(&names[1]).join(file)).unwrap());
+        }
+        assert_eq!(volume::read_meta(&out.join(&names[1])).unwrap(), want.meta);
     }
 
     #[test]
