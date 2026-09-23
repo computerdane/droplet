@@ -7,7 +7,7 @@ extends Node
 ## Desktop: runs the nexrad CLI (`nexrad update ...`, `nexrad live SITE`) with non-blocking
 ## pipes polled every frame; it writes volumes to data/volumes. Needs the `nexrad` binary on
 ## PATH (the dev shell adds nexrad/target/release, filled by `cargo build --release`; override
-## with DROPLET_NEXRAD) and a project directory on disk (res:// as a real folder).
+## with DROPLET_NEXRAD) and a writable data root (DROPLET_ROOT, or the source checkout).
 ##
 ## Web: one Web Worker per job (web/nexrad_worker.js, running nexrad-wasm next to index.html),
 ## which fetches straight from the Unidata buckets and hands each decoded volume over whole;
@@ -116,7 +116,8 @@ func _start(kind: String, site: String, args: PackedStringArray) -> Job:
 	job.site = site
 	job.args = args
 	# The CLI resolves data/ under DROPLET_ROOT.
-	OS.set_environment("DROPLET_ROOT", ProjectSettings.globalize_path("res://"))
+	if OS.get_environment("DROPLET_ROOT").is_empty():
+		OS.set_environment("DROPLET_ROOT", ProjectSettings.globalize_path("res://"))
 	var exe := OS.get_environment("DROPLET_NEXRAD")
 	var p := OS.execute_with_pipe(exe if not exe.is_empty() else "nexrad", args, false)
 	if p.is_empty():

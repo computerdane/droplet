@@ -3,6 +3,29 @@
 A weather radar visualizer built with Godot. Live NEXRAD data seconds behind real time,
 plus history browsing back to the early 1990s.
 
+## Desktop package (NixOS / Linux)
+
+From this checkout, run `nix run`. Nix builds the app and decoder and bundles the
+basemap; no dev shell or manual data setup is needed. Click a radar to follow it live.
+
+```sh
+nix run
+nix run . -- -- site=KTLX fetch=live
+nix build                       # result/bin/droplet
+nix profile add .#droplet       # install droplet and its desktop menu entry
+```
+
+Downloaded scans live in `${XDG_CACHE_HOME:-~/.cache}/droplet/data`, with the
+decoder's default 20 GB quota (`DROPLET_QUOTA_GB` overrides it). Saved animations
+live in `${XDG_DATA_HOME:-~/.local/share}/droplet/exports`. Set `DROPLET_ROOT` to
+override the cache root, or `DROPLET_EXPORT_DIR` to change the export directory.
+The basemap is pinned by hash and updated with the package, not at launch.
+
+The decoder is also available separately: `nix run .#nexrad -- update KTLX`.
+When run separately it writes under the current directory unless `DROPLET_ROOT`
+is set. For NixOS or Home Manager, add this flake's `packages.${system}.droplet`
+to `environment.systemPackages` or `home.packages`.
+
 ## Development
 
 ```sh

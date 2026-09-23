@@ -7,8 +7,8 @@ const DEFAULT_ROOT := "res://data/volumes"
 var root: String
 
 
-func _init(p_root: String = DEFAULT_ROOT) -> void:
-	root = p_root
+func _init(p_root: String = "") -> void:
+	root = p_root if not p_root.is_empty() else AppOptions.data_path("volumes")
 
 
 func names() -> PackedStringArray:

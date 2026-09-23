@@ -5,6 +5,12 @@ class_name AppOptions
 const DEFAULT_FETCH_SITE := "KTLX"
 
 
+## Native packages keep mutable data outside the read-only installed project.
+static func data_path(child: String) -> String:
+	var root := OS.get_environment("DROPLET_ROOT") if not OS.has_feature("web") else ""
+	return (root.path_join("data") if not root.is_empty() else "res://data").path_join(child)
+
+
 static func parse() -> Dictionary:
 	var args := OS.get_cmdline_user_args()
 	if OS.has_feature("web"):

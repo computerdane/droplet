@@ -84,7 +84,13 @@ func run(path := "") -> void:
 		path = name
 	else:
 		if path.is_empty():
-			var dir := "user://exports" if OS.has_feature("template") else "res://data/exports"
+			var dir := OS.get_environment("DROPLET_EXPORT_DIR")
+			if dir.is_empty():
+				dir = (
+					"user://exports"
+					if OS.has_feature("template")
+					else AppOptions.data_path("exports")
+				)
 			DirAccess.make_dir_recursive_absolute(dir)
 			path = dir.path_join(name)
 		var f := FileAccess.open(path, FileAccess.WRITE)

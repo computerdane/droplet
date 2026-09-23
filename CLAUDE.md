@@ -3,7 +3,7 @@
 Weather radar visualizer. Godot 4.7 renders NEXRAD Level II data; a Rust crate (`nexrad/`,
 CLI `nexrad`) fetches and decodes it. Everything runs from the Nix dev shell (`nix develop`,
 or direnv). Godot, gdformat/gdlint and the Rust toolchain are all provided; `cargo build
---release` puts `nexrad` on the shell's PATH (`nix build` packages the same binary).
+--release` puts `nexrad` on the shell's PATH (`nix build .#nexrad` packages the same binary; `nix run` launches the complete desktop app).
 
 Goals: **live** view that is never behind (seconds, via the real-time chunks bucket) and
 **history** browsing of any volume back to the early 1990s (via the archive mirror), with visualizations
@@ -326,5 +326,5 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Web: decoded volumes are not persisted (raw files are, in
   the Cache API; re-decoding costs ~0.5 s/volume against 84 MB stored per decoded volume).
 - Mosaic uses whatever is on disk; `nexrad live` takes several sites (a thread each; the fetch panel starts one job per site
-  for a live mosaic). Fetching from the UI needs the `nexrad` binary (PATH or `DROPLET_NEXRAD`) and a source checkout (not an export).
+  for a live mosaic). Fetching from the UI needs the `nexrad` binary (PATH or `DROPLET_NEXRAD`) and a writable `DROPLET_ROOT` (defaults to the source checkout). The Nix package configures both and bundles a basemap.
 - 3D range rings and the height scale are the selected site's; mosaic neighbours get a ground disk and their name.

@@ -28,10 +28,79 @@
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = [ "-p" "nexrad" ];
           cargoTestFlags = [ "-p" "nexrad" ];
+          meta.mainProgram = "nexrad";
+        };
+        basemapSources = map pkgs.fetchurl [
+          {
+            url = "https://www2.census.gov/geo/tiger/GENZ2023/shp/cb_2023_us_state_500k.zip";
+            hash = "sha256-SptPXPmTzSNzisSbWPu1VvHwl/z15ASp3BA0jdQfdDI=";
+          }
+          {
+            url = "https://www2.census.gov/geo/tiger/GENZ2023/shp/cb_2023_us_county_500k.zip";
+            hash = "sha256-mdZZex/Hdn3u9i4B0o2LXcvVeOFRhV99wNFzy/W/CGg=";
+          }
+          {
+            url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_populated_places_simple.geojson";
+            hash = "sha256-/T+oZ6Mgy9XFtrtbxVCv7sKTn7LO9ojlCABygqVaxC8=";
+          }
+        ];
+        basemap = pkgs.runCommand "droplet-basemap" {} ''
+          mkdir -p data/raw/basemap
+          ${pkgs.lib.concatMapStringsSep "\n" (src: "cp ${src} data/raw/basemap/${src.name}") basemapSources}
+          ${nexrad}/bin/nexrad basemap
+          cp -r data/basemap "$out"
+        '';
+        project = pkgs.stdenvNoCC.mkDerivation {
+          pname = "droplet-project";
+          version = "0.1.0";
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./project.godot ./scenes ./scripts ./shaders
+            ];
+          };
+          nativeBuildInputs = [ pkgs.godot ];
+          # Import at build time so launch never needs to write into the Nix store.
+          buildPhase = ''
+            export HOME="$TMPDIR/godot-home"
+            mkdir -p "$HOME"
+            godot --headless --path . --import
+          '';
+          installPhase = ''
+            mkdir -p "$out"
+            cp -r project.godot scenes scripts shaders .godot "$out/"
+          '';
+        };
+        launcher = pkgs.writeShellApplication {
+          name = "droplet";
+          text = ''
+            export DROPLET_ROOT="''${DROPLET_ROOT:-''${XDG_CACHE_HOME:-$HOME/.cache}/droplet}"
+            export DROPLET_EXPORT_DIR="''${DROPLET_EXPORT_DIR:-''${XDG_DATA_HOME:-$HOME/.local/share}/droplet/exports}"
+            export DROPLET_NEXRAD="${nexrad}/bin/nexrad"
+            export DROPLET_BASEMAP="${basemap}"
+            mkdir -p "$DROPLET_ROOT/data/volumes" "$DROPLET_EXPORT_DIR"
+            exec ${pkgs.godot}/bin/godot --path ${project} "$@"
+          '';
+        };
+        droplet = pkgs.symlinkJoin {
+          name = "droplet-0.1.0";
+          paths = [ launcher (pkgs.makeDesktopItem {
+            name = "droplet";
+            desktopName = "Droplet";
+            comment = "Weather radar visualizer";
+            exec = "droplet";
+            terminal = false;
+            categories = [ "Science" "Geoscience" ];
+          }) ];
+          meta = {
+            description = "NEXRAD weather radar visualizer";
+            mainProgram = "droplet";
+            platforms = pkgs.lib.platforms.linux;
+          };
         };
       in
       {
-        packages.default = nexrad;
+        packages = { inherit droplet nexrad; default = droplet; };
 
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [

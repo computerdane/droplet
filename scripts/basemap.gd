@@ -45,7 +45,10 @@ static func _start_loading() -> void:
 	if _tried:
 		return
 	_tried = true
-	var root: String = AppOptions.parse().get("basemap", DEFAULT_ROOT)
+	var default_root := DEFAULT_ROOT
+	if not OS.has_feature("web") and OS.has_environment("DROPLET_BASEMAP"):
+		default_root = OS.get_environment("DROPLET_BASEMAP")
+	var root: String = AppOptions.parse().get("basemap", default_root)
 	if root == "0":
 		return
 	if OS.has_feature("web"):
