@@ -6,18 +6,18 @@ will be hosted. `CLAUDE.md` describes the architecture; this file is about direc
 ## Where we are
 
 **Pipeline (`nexrad/`, Rust).** Level II decoder for both archive layouts
-(bz2 LDM records and the older gzip stream, Message 31 only), archive fetch of the newest /
+(bz2 LDM records and the older gzip stream, Message 31 and legacy Message 1 radials), archive fetch of the newest /
 at-a-time / range of volumes, live following of the chunks bucket (several sites per
 process, ring position remembered), region-based velocity dealiasing (DVEL) with the VAD
 profile as a fallback reference, VAD wind profile with Bunkers storm motion and SRH,
-per-gate derived fields (azimuthal shear, KDP), column products (composite reflectivity,
+per-gate derived fields (azimuthal shear, KDP, hydrometeor class with a melting layer), column products (composite reflectivity,
 echo tops, VIL, low-level rotation), SCIT-style storm cells with a debris-signature flag,
 a disk quota, the basemap build (shared borders once, simplified), and a CLI whose progress
 lines the UI parses. The whole pipeline is ~0.7 s per volume natively, and the library has
 no C or platform dependencies, so it also compiles to WebAssembly.
 
 **Viewer (`scripts/`, `shaders/`, Godot 4.7).** 2D plan view with basemap, rings and
-decluttered city labels; ten fields, four column products and rotation tracks with
+decluttered city labels; eleven fields (hydrometeor classes among them), four column products and rotation tracks with
 colormaps; loop playback over sequences with scrubbing and live following; site picker and
 nearest-radar mosaic; 3D beam-height cones and ray-marched volume rendering with an orbit
 camera; vertical cross-sections (mosaic too); storm-relative velocity (manual or
@@ -27,18 +27,17 @@ section and VWP; in-app fetch panel; LRU volume cache with background prefetch; 
 HUD; `key=value` options for scripted runs. The same app runs in the browser
 (https://computerdane.github.io/droplet/), fetching and decoding with nexrad-wasm.
 
-**Tests and tooling.** `cargo test` (59 tests, no network) covers the decoder, dealiasing,
+**Tests and tooling.** `cargo test` (63 tests, no network) covers the decoder, dealiasing,
 VAD, derived fields, products, cells, the chunk ring and `live()`, key selection, the
 basemap, the quota and the volume writer, mostly against the synthetic scene's truth.
 `tests/run.gd` runs the Godot unit tests against the synthetic fixtures (or real data with
-`volumes=`); `tests/golden.sh` renders 12 views under Xvfb with the flake's Mesa and compares
+`volumes=`); `tests/golden.sh` renders 13 views under Xvfb with the flake's Mesa and compares
 them with committed PNGs, and checks the 3D pick against the rendered pixels; GitHub Actions
 runs all of it plus lint on every push. `web/smoke.mjs` drives the web build headless.
 
 **Gaps.**
 
 - The performance gate (tests/perf.sh, nightly) measures hitches relative to the median, not absolute GPU cost.
-- Hydrometeor classification is missing.
 - The browser keeps no decoded volumes and no live ring memory between visits.
 
 ## Roadmap
@@ -54,7 +53,8 @@ Ordered by what unblocks the most.
 3. **Derived products.** Done: composite reflectivity, echo tops and VIL (nexrad/src/products.rs,
    plan view, 9 cycles them), azimuthal shear and KDP (nexrad/src/fields.rs, per-gate fields
    next to the moments like DVEL; 0 toggles them), low-level rotation (ROT) and rotation tracks
-   (max ROT over the loop, on the GPU). Left: a hydrometeor classifier.
+   (max ROT over the loop, on the GPU), hydrometeor classification (nexrad/src/hca.rs, Park et al.
+   fuzzy logic with a melting layer from the bright band or climatology; 0 cycles to it).
 4. **Context overlays.** Done: NWS warning polygons (IEM archive, history and live, 2D),
    storm cell identification (nexrad/src/cells.rs) and tracking with motion vectors and
    forecasts, tornado debris signature flags, SPC day 1 outlooks (2D). Overlays in 3D are done

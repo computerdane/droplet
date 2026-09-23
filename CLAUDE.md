@@ -19,7 +19,7 @@ nexrad update KTLX --from ... --to ...             # a range of volumes
 nexrad live KTLX [KFDR ...]                        # poll chunks bucket, rewrite partial volumes as they grow (a thread per site)
 nexrad basemap                                     # once: Census states/counties + cities -> data/basemap/
 nexrad decode data/raw/*_V06*                      # re-decode everything (e.g. after decoder/dealias changes)
-nexrad derive [data/volumes/...]                   # (re)compute AZSHR/KDP, VAD winds, storm motion, CREF/ET/VIL without re-decoding
+nexrad derive [data/volumes/...]                   # (re)compute AZSHR/KDP/HCA, VAD winds, storm motion, CREF/ET/VIL without re-decoding
 nexrad prune                                       # keep data/ under $DROPLET_QUOTA_GB (default 20; update and live do it too)
 nexrad synth                                       # synthetic fixture volumes -> tests/fixtures/volumes/
 cargo test                                         # Rust tests (decoder, dealias, VAD, chunks, live, fixtures); no network, ~6 s
@@ -50,7 +50,7 @@ gdformat scripts tests && gdlint scripts tests
 
 - `nexrad/` – Cargo workspace member (`Cargo.toml` at the repo root, build output in `nexrad/target/` via
   `.cargo/config.toml`). Library + `nexrad` binary; the `native` feature (default) holds networking and the CLI
-  so the library also builds for wasm. Unit tests sit next to the code (`#[cfg(test)]`, 59 of them).
+  so the library also builds for wasm. Unit tests sit next to the code (`#[cfg(test)]`, 63 of them).
 - `nexrad-wasm/` – wasm-bindgen wrapper (workspace member, `nexrad` without `native`): `decode(bytes)` →
   `{name, volume_json, files: Map<sNN_FIELD.bin, Uint8Array>}` via `volume::encode_volume()`, byte-identical to
   `nexrad decode`; `resolve_keys(site, at, from, to, bucket)` and `live(site, bucket, sleep, emit, log)` run the
@@ -105,7 +105,7 @@ gdformat scripts tests && gdlint scripts tests
 - `tests/run.gd` – Godot unit tests: every `test_*` method of `tests/unit/test_*.gd` (which extend
   `tests/test_case.gd`: `check()`, `check_eq()`, `note()`, `lib`, `fixtures`) against the fixture volumes by default
   (`volumes=` for real data; fixture-only assertions are gated on `fixtures`). Exits 1 on any failure or no volumes.
-- `tests/golden.sh` + `tests/golden/*.png` – golden screenshots: six views of the fixtures (`basemap=0 hover=0 prefetch=0`)
+- `tests/golden.sh` + `tests/golden/*.png` – golden screenshots: 13 views of the fixtures (`basemap=0 hover=0 prefetch=0`)
   rendered by the flake's Mesa llvmpipe under Xvfb (`DROPLET_GL_LIBS`, not the host driver) and compared by
   `tests/compare.gd` (≤ 0.2 % of pixels off by > 24/255). Re-render with `--update` after an intended visual change and
   look at the PNGs before committing. `.github/workflows/ci.yml` runs lint, `cargo test`, the Godot tests and these.
@@ -113,6 +113,16 @@ gdformat scripts tests && gdlint scripts tests
   10⁻³ s⁻¹, + cyclonic, ±750 m × ±1 gate) and `KDP` (°/km, half the slope of unwrapped, median-filtered PHI over ±1 km
   in REF ≥ 40 dBZ, ±3 km below; only RHO ≥ 0.9, REF ≥ 20 dBZ and PHI within 6° of the fit). `volume::add_derived_fields()`,
   rayon over sweeps natively.
+- `nexrad/src/hca.rs` – hydrometeor classification `HCA` (class codes 1..11: GC BS DS WS CR GR BD RA HR RH UK; names and
+  colours in `Colormaps.HCA_CLASSES`) next to every sweep with REF + ZDR + RHO, on the ZDR geometry: Park et al. (2009) fuzzy
+  logic (trapezoid memberships of Z, ZDR, ρhv, 10 log KDP, SD(Z), SD(ΦDP), per-class weights), dropping the classes the beam
+  (±½ beamwidth) rules out by being below / in / above the melting layer; best score < 0.5 = UK. The melting layer is the
+  volume's bright band when it shows one (tilts 3.5–10.5°, ≤ 80 km: ρhv 0.90–0.97, Z 30–47, ZDR 0.8–2.5; ≥ 300 gates with an
+  IQR ≤ 1 km; 10th/90th height percentiles), else a latitude/season freezing-level climatology (`source` says which;
+  convective volumes usually get climatology). `volume::add_hca()` runs after `add_derived_fields()` (it reads KDP), ~0.15
+  s/volume natively, ~0.5 s serial. Categorical fields (`Colormaps.is_categorical`) get a constant-step colormap, the nearer
+  tilt instead of interpolation in sections and volume rendering (`categorical` uniform), a class legend, the class name in
+  the readout, and the melting layer as dashed lines in the section.
 - `nexrad/src/products.rs` – column products CREF / ET / VIL / ROT from the REF (AZSHR) tilts (`tilts()` is the Rust twin of
   `RadarVolume.tilts()`; `beam_at_ground()` inverts the 4/3-earth beam model), ~0.1 s/volume.
 - `scripts/rotation_tracks.gd` + `shaders/ppi_tracks.gdshader` – rotation tracks (the `TRACKS` button, 9 cycles to it): every
@@ -248,11 +258,13 @@ gdformat scripts tests && gdlint scripts tests
 - Per field: `n_gates`, `first_gate_m` (range to centre of gate 0), `gate_spacing_m`. Fields on the same sweep can differ (REF often 1832 gates, others 1192).
 - Split-cut VCPs produce two sweeps at ~the same elevation: a surveillance cut (REF/ZDR/PHI/RHO/CFP) and a Doppler cut (REF/VEL/SW). `RadarVolume.tilts()` / `tilt_near()` pick one sweep per elevation that has the requested field.
 - `DVEL` = dealiased `VEL`, written next to every VEL sweep with the same geometry (VEL stays raw); `AZSHR` next to every
-  DVEL and `KDP` next to every PHI (nexrad/src/fields.rs), same geometry as their source.
+  DVEL, `KDP` next to every PHI (nexrad/src/fields.rs) and `HCA` next to every ZDR with REF and RHO (nexrad/src/hca.rs),
+  same geometry as their source.
   Volumes decoded before it existed (e.g. old `live` output with no raw file) simply lack it.
 - `wind_profile` = `{height_m, u_ms, v_ms, n}` (parallel lists, m above the radar, m/s east/north) or null;
   `storm_motion` = `{method, right, left, mean_0_6km, shear_0_6km: [u, v], srh_0_1km, srh_0_3km}` or null
   (nexrad/src/vad.rs). Added without a format_version bump; older volume.json lacks them (`nexrad derive`).
+- `melting_layer` = `{bottom_m, top_m, source: "detected" or "climatology", n}` (m above the radar) or null: what HCA assumed.
 - `cells` = `[{x_km, y_km, area_km2, max_dbz, vil, top_km, rot, tds}]` (km east/north of the radar, strongest first) or null.
 - `products` = `{azimuth_step_deg, n_azimuth_bins, fields: {CREF, ET, VIL, ROT}}` (files `p_<NAME>.bin`, same float16 layout) or
   null: column products on a grid whose range is *ground distance* (nexrad/src/products.rs). CREF = column max REF (dBZ),
@@ -287,7 +299,8 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Done: time animation + live following, column products (CREF, ET, VIL), azimuthal shear, KDP and rotation tracks, 3D cones, basemap, site picker, multi-site mosaic,
   background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
   storm-relative velocity, fetching from the UI, translucent volume rendering, VAD wind profile +
-  hodograph + automatic (Bunkers) storm motion, hover readout (2D, 3D, section, VWP), VWP time-height plot, NWS warning polygons, storm cell tracking with TDS flags.
+  hodograph + automatic (Bunkers) storm motion, hover readout (2D, 3D, section, VWP), VWP time-height plot, NWS warning polygons, storm cell tracking with TDS flags,
+  hydrometeor classification with a melting layer.
 - Next ideas: dealiasing that uses the previous volume as a temporal reference.
 - Web: decoded volumes are not persisted (raw files are, in
   the Cache API; re-decoding costs ~0.5 s/volume against 84 MB stored per decoded volume).

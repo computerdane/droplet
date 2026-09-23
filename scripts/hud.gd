@@ -38,6 +38,7 @@ const DEFAULT_SPEED_INDEX := 2
 const FIELD_NAMES := {
 	"KDP": "specific differential phase",
 	"AZSHR": "azimuthal shear of DVEL, positive = cyclonic",
+	"HCA": "hydrometeor classification",
 }
 const PRODUCT_NAMES := {
 	"CREF": "composite reflectivity",
@@ -94,6 +95,7 @@ var legend_tex: TextureRect
 var legend_lo: Label
 var legend_hi: Label
 var legend_unit: Label
+var legend_classes: HBoxContainer  # class abbreviations under a categorical legend (HCA)
 var play_button: Button
 var slider: HSlider
 var time_label: Label
@@ -210,7 +212,7 @@ func _build_top_right() -> void:
 		var fname: String = names[i]
 		var tip := "%s (%d)" % [fname, i + 1] if i < 8 else "%s (0)" % fname
 		if FIELD_NAMES.has(fname):
-			tip = "%s: %s (0 toggles KDP / AZSHR)" % [fname, FIELD_NAMES[fname]]
+			tip = "%s: %s (0 cycles KDP / AZSHR / HCA)" % [fname, FIELD_NAMES[fname]]
 		if fname in RadarVolume.PRODUCTS:
 			tip = "%s: %s, plan view only (9 cycles products)" % [fname, PRODUCT_NAMES[fname]]
 		var b := _button(fname, tip)
@@ -240,6 +242,18 @@ func _build_top_right() -> void:
 	labels.add_child(legend_lo)
 	labels.add_child(legend_unit)
 	labels.add_child(legend_hi)
+	legend_classes = _hbox()
+	legend_classes.custom_minimum_size = Vector2(LEGEND_WIDTH, 0)
+	legend_classes.size_flags_horizontal = Control.SIZE_SHRINK_END
+	legend_classes.add_theme_constant_override("separation", 0)
+	legend_classes.visible = false
+	for c: Array in Colormaps.HCA_CLASSES:
+		var l := _label(10)
+		l.text = c[0]
+		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		legend_classes.add_child(l)
+	box.add_child(legend_classes)
 
 	hodograph = Hodograph.new()
 	hodograph.size = HODOGRAPH_SIZE
@@ -410,6 +424,7 @@ func _layout() -> void:
 	var legend_w := minf(LEGEND_WIDTH, col_w)
 	legend_tex.custom_minimum_size.x = legend_w
 	legend_lo.get_parent().custom_minimum_size.x = legend_w
+	legend_classes.custom_minimum_size.x = legend_w
 	var top := _top_box.position.y + _top_box.get_combined_minimum_size().y + GAP
 	if stacked:
 		top = info_bottom + GAP
@@ -598,6 +613,9 @@ func set_field(field_name: String, available: Array, storm_relative := false) ->
 	legend_lo.text = str(rng[0])
 	legend_hi.text = str(rng[1])
 	legend_unit.text = Colormaps.unit_of(field_name)
+	var categorical := Colormaps.is_categorical(field_name)
+	legend_classes.visible = categorical
+	legend_lo.get_parent().visible = not categorical
 	if storm_relative:
 		legend_unit.text = "storm-rel. " + legend_unit.text
 

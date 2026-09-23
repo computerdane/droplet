@@ -24,6 +24,7 @@ const PLOT_BG := Color(0.07, 0.08, 0.11)
 const GRID := Color(1, 1, 1, 0.12)
 const TEXT := Color(1, 1, 1, 0.8)
 const BEAM_LINE := Color(1, 1, 1, 0.18)
+const ML_LINE := Color(1.0, 0.85, 0.3, 0.8)  # melting layer (HCA)
 
 var storm_motion := Vector2.ZERO  # m/s east, north; zero = ground-relative
 var _plot: Control
@@ -119,6 +120,7 @@ func show_section(
 			mat.set_shader_parameter("geom_a", _geometry(pv, ia, field_name))
 			mat.set_shader_parameter("geom_b", _geometry(pv, ib, field_name))
 			mat.set_shader_parameter("blend", ia != ib)
+			mat.set_shader_parameter("categorical", Colormaps.is_categorical(field_name))
 			mat.set_shader_parameter("lo_deg", band[2])
 			mat.set_shader_parameter("hi_deg", band[3])
 			mat.set_shader_parameter("half_beam_deg", BEAMWIDTH_DEG / 2.0)
@@ -243,7 +245,11 @@ func sample_at(local: Vector2) -> Dictionary:
 			var w := (elev - ea) / (eb - ea)
 			var half := BEAMWIDTH_DEG / 2.0
 			if va > -900.0 and vb > -900.0:
-				v = lerpf(va, vb, w)
+				v = (
+					(va if w < 0.5 else vb)
+					if Colormaps.is_categorical(field_name)
+					else lerpf(va, vb, w)
+				)
 			elif va > -900.0 and elev - ea < half:
 				v = va
 			elif vb > -900.0 and eb - elev < half:
@@ -386,6 +392,16 @@ func _draw_overlay() -> void:
 					_overlay.draw_polyline(pts, BEAM_LINE)
 				if bh > H_MAX_KM:
 					pts.clear()
+		# The melting layer the classification assumed (heights above that radar).
+		var ml = (piece["volume"] as RadarVolume).meta.get("melting_layer")
+		if Colormaps.is_categorical(_last[1]) and ml is Dictionary:
+			var xa := r.position.x + t0 * r.size.x
+			var xb := r.position.x + t1 * r.size.x
+			for key in ["bottom_m", "top_m"]:
+				var y: float = r.end.y - ml[key] / 1000.0 / H_MAX_KM * r.size.y
+				_overlay.draw_dashed_line(Vector2(xa, y), Vector2(xb, y), ML_LINE, 1.0, 6.0)
+			var yt: float = r.end.y - ml["top_m"] / 1000.0 / H_MAX_KM * r.size.y
+			_overlay.draw_string(font, Vector2(xa + 4, yt - 3), "ML", 0, -1, FONT_SIZE, ML_LINE)
 
 
 ## Smallest of 1, 2, 5 x 10^n giving at most `max_ticks` steps over `span`.

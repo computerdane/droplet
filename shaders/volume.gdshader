@@ -33,6 +33,7 @@ uniform float cmap_min = -30.0;
 uniform float cmap_max = 80.0;
 uniform float threshold = 15.0;
 uniform bool threshold_abs = false;
+uniform bool categorical = false;  // class codes (HCA): nearer tilt, no interpolation, even opacity
 uniform float density = 0.05;  // opacity per km of ray at full strength
 uniform int steps = 192;
 uniform vec2 other_sites[16];  // mosaic, local frame +x east, +y south
@@ -94,7 +95,8 @@ float value_at(vec2 ground, float h) {
 	bool ok_a = va > -900.0;
 	bool ok_b = vb > -900.0;
 	if (ok_a && ok_b) {
-		return mix(va, vb, (elev - elevs[k]) / (elevs[k + 1] - elevs[k]));
+		float w = (elev - elevs[k]) / (elevs[k + 1] - elevs[k]);
+		return categorical ? (w < 0.5 ? va : vb) : mix(va, vb, w);
 	}
 	if (ok_a && elev - elevs[k] < half_beam_deg) {
 		return va;
@@ -134,7 +136,7 @@ void fragment() {
 		if (v > -900.0) {
 			float m = threshold_abs ? abs(v) : v;
 			if (m >= threshold) {
-				float w = 0.15 + 0.85 * clamp((m - threshold) / strength_span, 0.0, 1.0);
+				float w = categorical ? 0.5 : 0.15 + 0.85 * clamp((m - threshold) / strength_span, 0.0, 1.0);
 				float a = 1.0 - exp(-density * w * dt);
 				float c = clamp((v - cmap_min) / (cmap_max - cmap_min), 0.0, 1.0);
 				color += (1.0 - alpha) * a * texture(colormap, vec2(c, 0.5)).rgb;

@@ -5,7 +5,7 @@ extends RefCounted
 
 const MISSING := -1000.0
 const RANGE_FOLDED := -2000.0
-const FIELDS := ["REF", "VEL", "SW", "ZDR", "PHI", "RHO", "CFP", "DVEL", "KDP", "AZSHR"]
+const FIELDS := ["REF", "VEL", "SW", "ZDR", "PHI", "RHO", "CFP", "DVEL", "KDP", "AZSHR", "HCA"]
 ## Column products (nexrad/src/products.rs): one grid each over ground distance, kept as an
 ## extra sweep at 0° after the real ones (is_product()); plan view only.
 const PRODUCTS := ["CREF", "ET", "VIL", "ROT"]

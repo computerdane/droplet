@@ -67,6 +67,7 @@ func show_volume(
 	_mat.set_shader_parameter("cmap_max", rng[1])
 	_mat.set_shader_parameter("threshold", threshold)
 	_mat.set_shader_parameter("threshold_abs", threshold_abs)
+	_mat.set_shader_parameter("categorical", Colormaps.is_categorical(field_name))
 	_mat.set_shader_parameter("density", density)
 	_mat.set_shader_parameter("other_sites", others)
 	_mat.set_shader_parameter("n_other_sites", others.size())

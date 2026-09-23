@@ -8,7 +8,7 @@
 //!     nexrad decode data/raw/KTLX*                # raw -> data/volumes/<ICAO>_<time>/
 //!     nexrad update KTLX [--at ...]               # fetch + decode
 //!     nexrad derive [data/volumes/KTLX_*]         # (re)compute VAD winds, storm motion and
-//!                                                 # the column products (alias: winds)
+//!                                                 # the derived fields, products and HCA (alias: winds)
 //!
 //! Live (chunks bucket, seconds behind real time):
 //!     nexrad live KTLX [KFDR ...] [--interval 5]  # poll, decode partial volumes as they grow
@@ -203,7 +203,11 @@ fn run(args: &[String]) -> Result<()> {
                     None => "no storm motion (profile too sparse)".to_string(),
                 };
                 let prods = if volume::add_derived(&d)? { "AZSHR/KDP, CREF/ET/VIL" } else { "AZSHR/KDP, no REF so no products" };
-                println!("{name}: {desc}; {prods}");
+                let hca = match volume::read_meta(&d)?.melting_layer {
+                    Some(ml) => format!("; HCA, melting layer {:.1}-{:.1} km ({})", ml.bottom_m / 1000.0, ml.top_m / 1000.0, ml.source),
+                    None => String::new(),
+                };
+                println!("{name}: {desc}; {prods}{hca}");
             }
         }
         "basemap" => {

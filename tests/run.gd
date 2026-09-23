@@ -31,6 +31,11 @@ func _initialize() -> void:
 	var failed := PackedStringArray()
 	for file in _test_files():
 		var script: GDScript = load(UNIT_DIR.path_join(file))
+		# A parse error leaves a script without methods: count it, or the file would silently pass.
+		if script == null or not script.can_instantiate():
+			failed.append("%s: does not load" % file)
+			print("%s\n  FAIL  does not load" % file)
+			continue
 		var methods := PackedStringArray()
 		for m in script.get_script_method_list():
 			var name: String = m["name"]

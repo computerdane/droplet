@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::grid::Grid;
 use crate::level2::{MISSING, RANGE_FOLDED, Volume};
 use crate::time::Utc;
-use crate::{Error, Result, cells, dealias, fields, products, round_to, vad};
+use crate::{Error, Result, cells, dealias, fields, hca, products, round_to, vad};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct FieldMeta {
@@ -61,6 +61,9 @@ pub struct VolumeMeta {
     /// Storm cells (see `cells`), strongest first.
     #[serde(default)]
     pub cells: Option<Vec<cells::Cell>>,
+    /// Melting layer the hydrometeor classification used (see `hca`).
+    #[serde(default)]
+    pub melting_layer: Option<hca::MeltingLayer>,
     pub sweeps: Vec<SweepMeta>,
 }
 
@@ -199,6 +202,46 @@ pub fn add_derived_fields(d: &mut Decoded) {
     }
 }
 
+/// Adds HCA (hydrometeor class, see `hca`) next to the ZDR of every sweep that has REF, ZDR
+/// and RHO, returning the melting layer it used: this volume's bright band if it shows one,
+/// else the climatology for the site's latitude (none without a latitude). Run after
+/// `add_derived_fields` (it reads KDP).
+pub fn add_hca(d: &mut Decoded, latitude: Option<f64>, height_m: Option<f64>, time: Utc) -> Option<hca::MeltingLayer> {
+    let have: Vec<usize> = (0..d.grids.len()).filter(|&i| ["REF", "ZDR", "RHO"].iter().all(|n| d.grids[i].contains_key(*n))).collect();
+    if have.is_empty() {
+        return None;
+    }
+    let moment = |i: usize, name: &str| {
+        let f = &d.sweeps[i].fields.get(name)?;
+        Some(hca::Moment { grid: &d.grids[i][name], first_gate_m: f.first_gate_m as f64, gate_spacing_m: f.gate_spacing_m as f64 })
+    };
+    let inputs: Vec<hca::SweepIn> = have
+        .iter()
+        .map(|&i| hca::SweepIn {
+            elevation_deg: d.sweeps[i].elevation_deg,
+            refl: moment(i, "REF").unwrap(),
+            zdr: moment(i, "ZDR").unwrap(),
+            rho: moment(i, "RHO").unwrap(),
+            phi: moment(i, "PHI"),
+            kdp: moment(i, "KDP"),
+        })
+        .collect();
+    let ml = hca::detect_melting_layer(&inputs)
+        .or_else(|| latitude.map(|lat| hca::climatological_melting_layer(lat, time, height_m.unwrap_or(0.0))))?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let grids: Vec<Grid> = inputs.par_iter().map(|s| hca::classify(s, &ml)).collect();
+    #[cfg(target_arch = "wasm32")]
+    let grids: Vec<Grid> = inputs.iter().map(|s| hca::classify(s, &ml)).collect();
+    drop(inputs);
+    for (&i, grid) in have.iter().zip(grids) {
+        let mut meta = d.sweeps[i].fields["ZDR"].clone();
+        meta.file = format!("s{i:02}_HCA.bin");
+        d.sweeps[i].fields.insert("HCA".into(), meta);
+        d.grids[i].insert("HCA".into(), grid);
+    }
+    Some(ml)
+}
+
 /// Storm cells (see `cells`) from the product grids of `volume_products` and the lowest tilt
 /// that has REF, RHO and ZDR.
 pub fn volume_cells(sweeps: &[SweepMeta], grids: &[Fields], meta: &products::ProductsMeta, prods: &[Grid]) -> Vec<cells::Cell> {
@@ -264,6 +307,7 @@ pub fn encode_volume(vol: &Volume) -> Encoded {
     let mut d = rasterise(vol);
     add_dealiased(&mut d);
     add_derived_fields(&mut d);
+    let melting_layer = add_hca(&mut d, vol.latitude, vol.height_m, vol.time);
     let profile = wind_profile(&d.sweeps, &d.grids);
     let mut files = Vec::new();
     for (sw, fields) in d.sweeps.iter().zip(&d.grids) {
@@ -296,6 +340,7 @@ pub fn encode_volume(vol: &Volume) -> Encoded {
         storm_motion,
         products: prods.map(|(m, _)| m),
         cells,
+        melting_layer,
         sweeps: d.sweeps,
     };
     Encoded { meta, files }
@@ -342,7 +387,7 @@ pub fn read_field(out: &Path, sw: &SweepMeta, name: &str) -> Result<Option<Grid>
     Grid::from_f16_le(sw.n_azimuth_bins, f.n_gates, &bytes).map(Some).ok_or_else(|| format!("{}: wrong size", f.file).into())
 }
 
-/// Recomputes the derived per-gate fields (AZSHR, KDP), the column products and the cells of an already
+/// Recomputes the derived per-gate fields (AZSHR, KDP, HCA), the column products and the cells of an already
 /// decoded volume from its REF, DVEL, PHI, RHO and ZDR files. False if it has no REF (no products).
 pub fn add_derived(out: &Path) -> Result<bool> {
     let mut meta = read_meta(out)?;
@@ -357,8 +402,10 @@ pub fn add_derived(out: &Path) -> Result<bool> {
         d.grids.push(g);
     }
     add_derived_fields(&mut d);
+    let time = crate::time::Utc::parse_iso(&meta.time)?;
+    meta.melting_layer = add_hca(&mut d, meta.latitude, meta.height_m, time);
     for (sw, g) in d.sweeps.iter().zip(&d.grids) {
-        for name in ["AZSHR", "KDP"] {
+        for name in ["AZSHR", "KDP", "HCA"] {
             if let Some(grid) = g.get(name) {
                 write_atomic(&out.join(&sw.fields[name].file), &grid.to_f16_le())?;
             }
@@ -422,7 +469,7 @@ mod tests {
         assert_eq!(meta.sweeps.iter().map(|s| s.azimuth_step_deg).collect::<Vec<_>>(), [0.5, 0.5, 1.0]);
         assert_eq!(meta.sweeps.iter().map(|s| s.n_azimuth_bins).collect::<Vec<_>>(), [720, 720, 360]);
         assert_eq!(meta.sweeps[1].fields.keys().collect::<Vec<_>>(), ["AZSHR", "DVEL", "REF", "SW", "VEL"]);
-        assert_eq!(meta.sweeps[0].fields.keys().collect::<Vec<_>>(), ["KDP", "PHI", "REF", "RHO", "ZDR"]);
+        assert_eq!(meta.sweeps[0].fields.keys().collect::<Vec<_>>(), ["HCA", "KDP", "PHI", "REF", "RHO", "ZDR"]);
         let files: std::collections::BTreeSet<String> =
             std::fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
         assert!(!files.iter().any(|f| f.ends_with(".tmp")));
@@ -462,7 +509,7 @@ mod tests {
         for (sw, radials) in meta.sweeps.iter().zip(vol.sweeps()) {
             let step = sw.azimuth_step_deg as f32;
             for name in sw.fields.keys() {
-                if ["DVEL", "AZSHR", "KDP"].contains(&name.as_str()) {
+                if ["DVEL", "AZSHR", "KDP", "HCA"].contains(&name.as_str()) {
                     continue;
                 }
                 let grid = read_field(&out, sw, name).unwrap().unwrap();
@@ -555,8 +602,9 @@ mod tests {
         }
         let mut stripped = read_meta(&out).unwrap();
         stripped.products = None;
+        stripped.melting_layer = None;
         for s in &mut stripped.sweeps {
-            s.fields.retain(|n, _| n != "AZSHR" && n != "KDP");
+            s.fields.retain(|n, _| n != "AZSHR" && n != "KDP" && n != "HCA");
         }
         write_meta(&out, &stripped).unwrap();
         assert!(add_derived(&out).unwrap());
@@ -629,6 +677,33 @@ mod tests {
         let median = core[core.len() / 2];
         let want = 0.025 * (refl.data[top] - 30.0 - 2.0); // REF's max includes noise
         assert!((median - want).abs() < 0.3, "KDP in the core {median}, want ~{want}");
+
+        // HCA: the scan has no dual-pol tilt high enough for a bright band, so the melting layer
+        // is climatological (above the storm's lowest tilts); the core is rain, the debris spot
+        // at its centre (RHO ~0.75, ZDR ~0) is not.
+        let ml = meta.melting_layer.as_ref().expect("melting layer");
+        assert_eq!(ml.source, "climatology");
+        assert!((2000.0..3500.0).contains(&ml.top_m), "{ml:?}");
+        let h = read_field(&out, s0, "HCA").unwrap().unwrap();
+        let (mut rain, mut ring, mut debris) = (0, 0, Vec::new());
+        for a in 0..h.n_az {
+            for g in 0..h.n_gates {
+                let c = h.at(a, g);
+                if c < -900.0 {
+                    continue;
+                }
+                let name = hca::CLASSES[c as usize - 1];
+                let p = xy(s0, &s0.fields["HCA"], a, g);
+                if near(p, 0.7) {
+                    debris.push(name);
+                } else if near(p, 6.0) && !near(p, 3.0) {
+                    ring += 1;
+                    rain += ["RA", "HR", "RH", "BD"].contains(&name) as usize;
+                }
+            }
+        }
+        assert!(ring > 20 && rain * 10 >= ring * 9, "rain classes on {rain} of {ring} core gates");
+        assert!(!debris.is_empty() && debris.iter().all(|c| !["RA", "HR"].contains(c)), "debris classed {debris:?}");
     }
 
     #[test]

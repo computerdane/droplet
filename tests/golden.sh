@@ -23,6 +23,7 @@ declare -A CASES=(
 	[echo_tops]="field=ET zoom=3"
 	[azshr]="field=AZSHR zoom=4 pan=15,15"
 	[rotation_tracks]="field=TRACKS zoom=4 pan=15,15"
+	[hca_section]="field=HCA zoom=3 section=-10,-15,50,45 hover=690,335"
 )
 
 : "${DROPLET_GL_LIBS:?run inside nix develop}"

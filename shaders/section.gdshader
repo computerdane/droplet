@@ -21,6 +21,8 @@ uniform float h_max_km = 18.0;
 uniform float lo_deg = 0.0;
 uniform float hi_deg = 1.0;
 uniform bool blend = false;
+// Class codes (HCA): take the nearer tilt instead of interpolating.
+uniform bool categorical = false;
 uniform float half_beam_deg = 0.475;
 // Per tilt (a, b): elevation, first gate centre, gate spacing (km) and gate count.
 uniform vec4 geom_a = vec4(0.5, 2.125, 0.25, 1192.0);
@@ -73,7 +75,7 @@ void fragment() {
 		bool ok_b = vb > -900.0;
 		float t = (elev - geom_a.x) / (geom_b.x - geom_a.x);
 		if (ok_a && ok_b) {
-			v = mix(va, vb, t);
+			v = categorical ? (t < 0.5 ? va : vb) : mix(va, vb, t);
 		} else if (ok_a && elev - geom_a.x < half_beam_deg) {
 			v = va;
 		} else if (ok_b && geom_b.x - elev < half_beam_deg) {

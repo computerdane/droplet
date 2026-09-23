@@ -146,3 +146,34 @@ func test_rotation_tracks() -> void:
 			one += int(a > -900.0)
 			both += int(b > -900.0)
 	check(one > 0 and both > one, "the fixture storm moves: %d then %d points" % [one, both])
+
+
+## HCA holds whole class codes; the categorical colormap paints each class its own colour at
+## its code (no blending between neighbours), and the readout names the class.
+func test_hca() -> void:
+	var tex: GradientTexture1D = ColormapsScript.texture_for("HCA")
+	var img := tex.get_image()
+	var rng := ColormapsScript.range_of("HCA")
+	var n: int = ColormapsScript.HCA_CLASSES.size()
+	for k in n:
+		var t: float = (k + 1 - rng[0]) / (rng[1] - rng[0])
+		var got := img.get_pixel(clampi(int(t * img.get_width()), 0, img.get_width() - 1), 0)
+		var want := Color(ColormapsScript.HCA_CLASSES[k][2])
+		check(got.is_equal_approx(want), "class %d colour %s, want %s" % [k + 1, got, want])
+	check_eq(ColormapsScript.format_value("HCA", 8.0), "light / moderate rain (RA)", "readout")
+	if not fixtures:
+		return
+	var vol = lib.open(lib.latest("KTST"))
+	var tilts: Array = vol.tilts("HCA")
+	check(not tilts.is_empty(), "fixture has HCA tilts")
+	check(vol.meta.get("melting_layer") is Dictionary, "melting layer in volume.json")
+	var seen := {}
+	for i in tilts:
+		var img2: Image = vol.read_image(i, "HCA")
+		for y in range(0, img2.get_height(), 7):
+			for x in img2.get_width():
+				var v := img2.get_pixel(x, y).r
+				if v > -900.0:
+					check(v == roundf(v) and v >= 1.0 and v <= n, "class code %s" % v)
+					seen[int(v)] = true
+	check(seen.has(8) or seen.has(9), "rain in the fixture storm: %s" % [seen.keys()])

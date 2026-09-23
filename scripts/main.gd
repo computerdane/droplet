@@ -62,7 +62,7 @@ const FIELD_KEYS := {
 }
 const HINT_COMMON := (
 	"Space play   Left/Right step   Shift+Left/Right prev/next loop   Home/End first/last\n"
-	+ "[ ] speed   L live   Up/Down tilt   1-8 field   9 products   0 KDP/shear   S site\n"
+	+ "[ ] speed   L live   Up/Down tilt   1-8 field   9 products   0 KDP/shear/HCA   S site\n"
 	+ "M mosaic   V 2D/3D   R reset view   X section   F fetch   T storm-relative   W hodograph\n"
 	+ "P VWP   A warnings   O SPC outlook   C cells   E export loop   "
 )
@@ -883,6 +883,14 @@ func _update_info() -> void:
 		lines.append("zoom %.2f px/km   cache %d MB" % [view_2d.zoom(), cache_mb])
 	if _storm_vector() != Vector2.ZERO:
 		lines.append("storm-relative: " + _storm_source())
+	var ml = volume.meta.get("melting_layer")
+	if Colormaps.is_categorical(field_name) and ml is Dictionary:
+		lines.append(
+			(
+				"melting layer %.1f-%.1f km ARL (%s)"
+				% [ml["bottom_m"] / 1000.0, ml["top_m"] / 1000.0, ml["source"]]
+			)
+		)
 	if mosaic:
 		lines.append("mosaic: " + Mosaic.summary(_neighbors))
 	lines.append_array(overlays.info_lines())
@@ -980,7 +988,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			elif e.keycode == KEY_9:
 				_cycle_fields(RadarVolume.PRODUCTS + [RotationTracks.VIEW_FIELD])
 			elif e.keycode == KEY_0:
-				_cycle_fields(["KDP", "AZSHR"])
+				_cycle_fields(["KDP", "AZSHR", "HCA"])
 
 
 func _cycle_site() -> void:

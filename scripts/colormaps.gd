@@ -19,6 +19,7 @@ const RANGES := {
 	"VIL": [0.0, 80.0],  # kg/m², vertically integrated liquid
 	"ROT": [-10.0, 20.0],  # 1e-3 /s, low-level rotation (as AZSHR)
 	"TRACKS": [-10.0, 20.0],  # 1e-3 /s, rotation tracks (ROT over time)
+	"HCA": [0.5, 11.5],  # hydrometeor class code 1..11 (CLASS_NAMES)
 }
 
 const UNITS := {
@@ -37,6 +38,7 @@ const UNITS := {
 	"VIL": "kg/m²",
 	"ROT": "10⁻³/s",
 	"TRACKS": "10⁻³/s",
+	"HCA": "class",
 }
 
 ## Stops as [value, colour] pairs.
@@ -143,6 +145,23 @@ const STOPS := {
 	],
 }
 
+## Hydrometeor classes (nexrad/src/hca.rs): code k = index k - 1, [abbreviation, name, colour].
+const HCA_CLASSES := [
+	["GC", "ground clutter / AP", "8c8c8c"],
+	["BS", "biological scatterers", "c8b496"],
+	["DS", "dry snow", "7fb2ff"],
+	["WS", "wet snow", "b06fe0"],
+	["CR", "ice crystals", "d8ecff"],
+	["GR", "graupel", "ff9ec8"],
+	["BD", "big drops", "ffd000"],
+	["RA", "light / moderate rain", "3cc83c"],
+	["HR", "heavy rain", "157a15"],
+	["RH", "rain / hail", "e02020"],
+	["UK", "unknown", "4a4a60"],
+]
+## Fields whose values are class codes: one flat colour per class, never interpolated.
+const CATEGORICAL := ["HCA"]
+
 ## Fields drawn with another field's colours.
 const SAME_AS := {"DVEL": "VEL", "CREF": "REF", "ROT": "AZSHR", "TRACKS": "AZSHR"}
 
@@ -165,6 +184,9 @@ static func format_value(field_name: String, v: float) -> String:
 		return "range folded"
 	if v < -900.0:
 		return "no data"
+	if field_name == "HCA":
+		var k := clampi(roundi(v) - 1, 0, HCA_CLASSES.size() - 1)
+		return "%s (%s)" % [HCA_CLASSES[k][1], HCA_CLASSES[k][0]]
 	var unit := unit_of(field_name).get_slice(" ", 0)
 	match field_name:
 		"RHO":
@@ -185,6 +207,8 @@ static func format_value(field_name: String, v: float) -> String:
 static func texture_for(field_name: String) -> GradientTexture1D:
 	if _cache.has(field_name):
 		return _cache[field_name]
+	if field_name in CATEGORICAL:
+		return _categorical_texture(field_name)
 	var stops: Array = STOPS.get(
 		SAME_AS.get(field_name, field_name), [[0.0, "000000"], [1.0, "ffffff"]]
 	)
@@ -198,5 +222,26 @@ static func texture_for(field_name: String) -> GradientTexture1D:
 	var tex := GradientTexture1D.new()
 	tex.gradient = grad
 	tex.width = 512
+	_cache[field_name] = tex
+	return tex
+
+
+static func is_categorical(field_name: String) -> bool:
+	return field_name in CATEGORICAL
+
+
+## One constant-colour step per class over the field's range, so class k (at k) falls in the
+## middle of its step.
+static func _categorical_texture(field_name: String) -> GradientTexture1D:
+	var grad := Gradient.new()
+	grad.interpolation_mode = Gradient.GRADIENT_INTERPOLATE_CONSTANT
+	grad.offsets = PackedFloat32Array()
+	grad.colors = PackedColorArray()
+	var n := HCA_CLASSES.size()
+	for k in n:
+		grad.add_point(float(k) / n, Color(HCA_CLASSES[k][2]))
+	var tex := GradientTexture1D.new()
+	tex.gradient = grad
+	tex.width = n * 8
 	_cache[field_name] = tex
 	return tex
