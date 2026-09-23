@@ -37,7 +37,7 @@ runs all of it plus lint on every push. `web/smoke.mjs` drives the web build hea
 
 **Gaps.**
 
-- The performance gate (frame times) is not automated.
+- The performance gate (tests/perf.sh, nightly) measures hitches relative to the median, not absolute GPU cost.
 - Hydrometeor classification is missing.
 - The browser keeps no decoded volumes and no live ring memory between visits.
 
@@ -47,7 +47,7 @@ Ordered by what unblocks the most.
 
 1. **Test fixtures and CI.** Done: synthetic volume generator, `cargo test`, Godot test runner
    on the fixtures, golden screenshots under Xvfb (`tests/golden.sh`), GitHub Actions
-   (`.github/workflows/ci.yml`). Left: the nightly performance gate.
+   (`.github/workflows/ci.yml`), the nightly performance gate (`tests/perf.sh`, `perf.yml`).
    Prerequisite for everything below being safe to ship. See "Automated testing".
 2. **Web build and hosting.** See "Web build". Includes URL-state permalinks, which fall
    out of the existing `key=value` options.
@@ -91,8 +91,9 @@ Five layers, cheapest first. Each maps onto a tool already in the dev shell.
   PNGs with a pixel-difference tolerance, regenerate goldens only with an explicit flag.
   Seed set: 2D DVEL with SRM and mosaic, 3D cones with mosaic, volume render, section with
   VWP, hodograph and a pinned hover.
-- **Performance gate.** `frametimes.gd` fails above thresholds (median, p99, spike count),
-  run nightly on a real loop rather than per commit.
+- **Performance gate (done, `tests/perf.sh`).** `frametimes.gd` fails above budgets (p99 and
+  spike count relative to the median, so any runner works), run nightly on a real loop
+  (`.github/workflows/perf.yml`) rather than per commit.
 - **Web smoke (done, `web/smoke.mjs`).** Serves the export, loads a permalink in headless
   Chromium over the DevTools protocol, waits for the startup fetch to finish with zero
   console errors, screenshots actual radar. Needs network (the Unidata buckets).
