@@ -81,7 +81,9 @@ gdformat scripts tests && gdlint scripts tests
   label same-band regions with a vectorised union-find, merge along the longest boundaries, skip
   ambiguous boundaries (mean jump ≈ Vn), then pick each component's absolute fold by agreement with the
   tilt below (`dealias_volume` goes bottom-up; the lowest tilt uses "most gates unchanged").
-  Weak spots: violent-storm cores aloft and isolated small echoes can still come out one fold off.
+  `add_dealiased` runs it twice: the second pass gives components the tilt below cannot place (isolated echoes aloft)
+  the fold the first pass's VAD profile predicts (`vad::radial_reference`), if ≥ 70 % of their gates agree.
+  Weak spots: violent-storm cores aloft can still come out one fold off.
 - `nexrad/src/vad.rs` – VAD wind profile: per 1 km ring (5–60 km slant range, tilts ≤ 20°) least-squares fit of
   [1, sin, cos] to DVEL, then refit on raw VEL unfolded against that fit (immune to dealias errors); rings
   need 25 % coverage, samples in all 8 sectors, rms ≤ 4.5 m/s; median per 250 m height bin. `bunkers()`
@@ -267,8 +269,7 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
   background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
   storm-relative velocity, fetching from the UI, translucent volume rendering, VAD wind profile +
   hodograph + automatic (Bunkers) storm motion, hover readout (2D, 3D, section, VWP), VWP time-height plot, NWS warning polygons, storm cell tracking with TDS flags.
-- Next ideas: dealiasing that uses the previous volume as a temporal reference,
-  a VAD-based temporal reference for dealiasing.
+- Next ideas: dealiasing that uses the previous volume as a temporal reference.
 - Web: decoded volumes are not persisted (raw files are, in
   the Cache API; re-decoding costs ~0.5 s/volume against 84 MB stored per decoded volume).
 - Mosaic uses whatever is on disk; `live` follows one site per process (the fetch panel can start several

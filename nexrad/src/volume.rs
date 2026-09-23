@@ -123,7 +123,9 @@ pub fn rasterise(vol: &Volume) -> Decoded {
     Decoded { sweeps, grids }
 }
 
-/// Adds a DVEL field (dealiased VEL, same geometry) to every sweep that has VEL.
+/// Adds a DVEL field (dealiased VEL, same geometry) to every sweep that has VEL. Two passes:
+/// the second gives components the tilt below cannot place (isolated echoes, often aloft in
+/// strong winds) the fold the first pass's VAD profile predicts, when that is decisive.
 pub fn add_dealiased(d: &mut Decoded) {
     let have: Vec<usize> =
         (0..d.grids.len()).filter(|&i| d.grids[i].contains_key("VEL") && d.sweeps[i].nyquist_ms.is_some_and(|n| n != 0.0)).collect();
@@ -140,7 +142,23 @@ pub fn add_dealiased(d: &mut Decoded) {
             }
         })
         .collect();
-    let out = dealias::dealias_volume(&inputs);
+    let mut out = dealias::dealias_volume(&inputs);
+    let first: Vec<vad::SweepIn> = inputs
+        .iter()
+        .zip(&out)
+        .map(|(s, dvel)| vad::SweepIn {
+            dvel,
+            vel: Some(s.vel),
+            nyquist: s.nyquist,
+            elevation_deg: s.elevation_deg,
+            first_gate_m: s.first_gate_m,
+            gate_spacing_m: s.gate_spacing_m,
+        })
+        .collect();
+    if let Some(profile) = vad::wind_profile(&first) {
+        let fallbacks: Vec<Vec<f64>> = inputs.iter().map(|s| vad::radial_reference(&profile, s)).collect();
+        out = dealias::dealias_volume_with(&inputs, Some(&fallbacks));
+    }
     for (&i, dvel) in have.iter().zip(out) {
         let mut meta = d.sweeps[i].fields["VEL"].clone();
         meta.file = format!("s{i:02}_DVEL.bin");

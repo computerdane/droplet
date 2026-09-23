@@ -82,6 +82,47 @@ pub fn beam_height_m(slant_m: f64, elevation_deg: f64) -> f64 {
     (slant_m * slant_m + r * r + 2.0 * slant_m * r * e.sin()).sqrt() - r
 }
 
+/// How far above the top or below the bottom of a profile it is still used, m.
+pub const PROFILE_REACH_M: f64 = 500.0;
+
+/// Wind (u, v) of the profile at `height_m`, linear between its levels; None beyond
+/// PROFILE_REACH_M of its ends.
+pub fn wind_at(p: &WindProfile, height_m: f64) -> Option<(f64, f64)> {
+    let h = &p.height_m;
+    if h.is_empty() || height_m < h[0] - PROFILE_REACH_M || height_m > h[h.len() - 1] + PROFILE_REACH_M {
+        return None;
+    }
+    let k = h.partition_point(|&x| x <= height_m);
+    if k == 0 {
+        return Some((p.u_ms[0], p.v_ms[0]));
+    }
+    if k == h.len() {
+        return Some((p.u_ms[k - 1], p.v_ms[k - 1]));
+    }
+    let f = (height_m - h[k - 1]) / (h[k] - h[k - 1]);
+    Some((p.u_ms[k - 1] + f * (p.u_ms[k] - p.u_ms[k - 1]), p.v_ms[k - 1] + f * (p.v_ms[k] - p.v_ms[k - 1])))
+}
+
+/// The radial velocity the profile predicts on every gate of `sw` (row-major like its grid),
+/// NaN where the beam is outside the profile: a dealiasing reference (see `dealias`).
+pub fn radial_reference(p: &WindProfile, sw: &crate::dealias::SweepIn) -> Vec<f64> {
+    let (n_az, n_g) = (sw.vel.n_az, sw.vel.n_gates);
+    let cos_e = sw.elevation_deg.to_radians().cos();
+    let wind: Vec<Option<(f64, f64)>> =
+        (0..n_g).map(|g| wind_at(p, beam_height_m(sw.first_gate_m + g as f64 * sw.gate_spacing_m, sw.elevation_deg))).collect();
+    let mut out = vec![f64::NAN; n_az * n_g];
+    for a in 0..n_az {
+        let az = ((a as f64 + 0.5) * 360.0 / n_az as f64).to_radians();
+        let (s, c) = (az.sin() * cos_e, az.cos() * cos_e);
+        for (g, w) in wind.iter().enumerate() {
+            if let Some((u, v)) = w {
+                out[a * n_g + g] = u * s + v * c;
+            }
+        }
+    }
+    out
+}
+
 /// One fitted ring: (height_m, u, v, rms).
 pub type RingFit = (f64, f64, f64, f64);
 

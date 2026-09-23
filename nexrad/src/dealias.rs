@@ -15,6 +15,8 @@
 //!    With a reference (the already unfolded tilt below, see `dealias_volume`) the shift is
 //!    the one most of its gates agree with the reference on; otherwise it is the one that
 //!    keeps most of its gates at their measured value.
+//!    A fallback reference (`dealias_sweep_with`; `volume::add_dealiased` passes the radial wind
+//!    of a first pass's VAD profile) places components the reference misses, when decisive.
 //!
 //! This follows the idea of Py-ART's dealias_region_based.
 
@@ -28,6 +30,8 @@ pub const INTERVAL_SPLITS: usize = 3;
 pub const AMBIGUOUS: f64 = 0.4;
 /// A component needs this many gates overlapping the reference to use it.
 pub const MIN_REFERENCE_GATES: usize = 20;
+/// A fallback reference decides a component's fold only if this share of its gates agree.
+pub const FALLBACK_MIN_SHARE: f64 = 0.7;
 
 /// One sweep to unfold, with the geometry needed to resample it onto another tilt.
 pub struct SweepIn<'a> {
@@ -42,6 +46,12 @@ pub struct SweepIn<'a> {
 /// closest sweep at or below its elevation that is already done. Results come back in
 /// the input order.
 pub fn dealias_volume(sweeps: &[SweepIn]) -> Vec<Grid> {
+    dealias_volume_with(sweeps, None)
+}
+
+/// `dealias_volume` with a fallback reference per sweep (same order as `sweeps`; see
+/// `dealias_sweep_with`), e.g. the radial wind a VAD profile predicts.
+pub fn dealias_volume_with(sweeps: &[SweepIn], fallbacks: Option<&[Vec<f64>]>) -> Vec<Grid> {
     let mut order: Vec<usize> = (0..sweeps.len()).collect();
     order.sort_by(|&a, &b| sweeps[a].elevation_deg.total_cmp(&sweeps[b].elevation_deg));
     let mut out: Vec<Option<Grid>> = (0..sweeps.len()).map(|_| None).collect();
@@ -49,7 +59,8 @@ pub fn dealias_volume(sweeps: &[SweepIn]) -> Vec<Grid> {
     for i in order {
         let sw = &sweeps[i];
         let reference = below.as_ref().map(|(j, grid)| resample(sw, &sweeps[*j], grid));
-        let unfolded = dealias_sweep(sw.vel, sw.nyquist, reference.as_deref());
+        let fallback = fallbacks.map(|f| f[i].as_slice());
+        let unfolded = dealias_sweep_with(sw.vel, sw.nyquist, reference.as_deref(), fallback);
         below = Some((i, unfolded.clone()));
         out[i] = Some(unfolded);
     }
@@ -60,6 +71,13 @@ pub fn dealias_volume(sweeps: &[SweepIn]) -> Vec<Grid> {
 /// unfolded estimate on the same grid (NaN where unknown) used to pick each component's
 /// absolute fold.
 pub fn dealias_sweep(vel: &Grid, nyquist: f64, reference: Option<&[f64]>) -> Grid {
+    dealias_sweep_with(vel, nyquist, reference, None)
+}
+
+/// `dealias_sweep` with a `fallback` estimate (same layout as `reference`) for components the
+/// reference does not cover: used when at least FALLBACK_MIN_SHARE of its gates agree on the
+/// fold, so a storm-scale circulation that departs from it by about a fold keeps its own.
+pub fn dealias_sweep_with(vel: &Grid, nyquist: f64, reference: Option<&[f64]>, fallback: Option<&[f64]>) -> Grid {
     let mut out = vel.clone();
     if nyquist.is_nan() || nyquist <= 0.0 {
         return out;
@@ -143,7 +161,7 @@ pub fn dealias_sweep(vel: &Grid, nyquist: f64, reference: Option<&[f64]>) -> Gri
     let (fold, top) = merge(n_regions, &size, edges, period);
 
     // Per valid gate, the extra fold that would bring it closest to the reference.
-    let ref_k: Option<Vec<Option<i64>>> = reference.map(|reference| {
+    let votes_for = |reference: &[f64]| -> Vec<Option<i64>> {
         (0..n)
             .filter(|&i| valid[i])
             .map(|i| {
@@ -156,9 +174,11 @@ pub fn dealias_sweep(vel: &Grid, nyquist: f64, reference: Option<&[f64]>) -> Gri
                 }
             })
             .collect()
-    });
+    };
+    let ref_k = reference.map(votes_for);
+    let fallback_k = fallback.map(votes_for);
     let gate_regions: Vec<u32> = (0..n).filter(|&i| valid[i]).map(|i| region[i]).collect();
-    let fold = recentre(&fold, &top, &size, &gate_regions, ref_k.as_deref());
+    let fold = recentre(&fold, &top, &size, &gate_regions, ref_k.as_deref(), fallback_k.as_deref());
 
     for i in 0..n {
         if valid[i] {
@@ -281,9 +301,17 @@ fn merge(n: usize, size: &[usize], edges: HashMap<(u32, u32), (usize, f64)>, per
 
 /// Shifts each component (regions sharing a `top`) as a whole. `ref_k` is, per valid gate,
 /// the extra fold that would bring it closest to the reference (None where unknown); a
-/// component with enough such gates takes their most common vote. Otherwise it takes the
-/// shift that keeps most of its gates at their measured value (fold 0).
-fn recentre(fold: &[i64], top: &[usize], size: &[usize], gate_regions: &[u32], ref_k: Option<&[Option<i64>]>) -> Vec<i64> {
+/// component with enough such gates takes their most common vote; failing that, the
+/// `fallback_k` vote if it is decisive. Otherwise it takes the shift that keeps most of its
+/// gates at their measured value (fold 0).
+fn recentre(
+    fold: &[i64],
+    top: &[usize],
+    size: &[usize],
+    gate_regions: &[u32],
+    ref_k: Option<&[Option<i64>]>,
+    fallback_k: Option<&[Option<i64>]>,
+) -> Vec<i64> {
     let n = top.len();
     // Ascending fold order and first-maximum wins, as numpy's argmax did.
     let mut votes: Vec<BTreeMap<i64, usize>> = vec![BTreeMap::new(); n];
@@ -291,16 +319,27 @@ fn recentre(fold: &[i64], top: &[usize], size: &[usize], gate_regions: &[u32], r
         *votes[top[i]].entry(fold[i]).or_insert(0) += size[i];
     }
     let mut shift: Vec<i64> = votes.iter().map(|v| -argmax(v)).collect();
-    if let Some(ref_k) = ref_k {
-        let mut ref_votes: Vec<BTreeMap<i64, usize>> = vec![BTreeMap::new(); n];
-        for (g, k) in gate_regions.iter().zip(ref_k) {
+    let tally = |k: &[Option<i64>]| {
+        let mut out: Vec<BTreeMap<i64, usize>> = vec![BTreeMap::new(); n];
+        for (g, k) in gate_regions.iter().zip(k) {
             if let Some(k) = k {
-                *ref_votes[top[*g as usize]].entry(*k).or_insert(0) += 1;
+                *out[top[*g as usize]].entry(*k).or_insert(0) += 1;
             }
         }
-        for (t, v) in ref_votes.iter().enumerate() {
-            if v.values().sum::<usize>() >= MIN_REFERENCE_GATES {
-                shift[t] = argmax(v);
+        out
+    };
+    let ref_votes = ref_k.map(tally);
+    let fallback_votes = fallback_k.map(tally);
+    for t in 0..n {
+        if let Some(v) = ref_votes.as_ref().map(|r| &r[t])
+            && v.values().sum::<usize>() >= MIN_REFERENCE_GATES
+        {
+            shift[t] = argmax(v);
+        } else if let Some(v) = fallback_votes.as_ref().map(|f| &f[t]) {
+            let total = v.values().sum::<usize>();
+            let k = argmax(v);
+            if total >= MIN_REFERENCE_GATES && v[&k] as f64 >= FALLBACK_MIN_SHARE * total as f64 {
+                shift[t] = k;
             }
         }
     }
@@ -451,6 +490,40 @@ mod tests {
         let mut sparse = vec![f64::NAN; 360 * 50];
         sparse[..MIN_REFERENCE_GATES - 1].fill(55.0);
         assert_eq!(dealias_sweep(&vel, vn, Some(&sparse)), vel);
+    }
+
+    #[test]
+    fn fallback_places_components_the_reference_misses() {
+        // Two isolated echoes, each folded once (true 35 m/s reads -5 at Vn 20). The reference
+        // (tilt below) covers the first only; a fallback (VAD) of 33 m/s everywhere places the
+        // second. A fallback that splits a component's votes is ignored.
+        let vn = 20.0;
+        let mut vel = Grid::filled(360, 60, crate::level2::MISSING);
+        for a in 10..30 {
+            for g in 5..15 {
+                vel.set(a, g, -5.0);
+                vel.set(a + 100, g + 30, -5.0);
+            }
+        }
+        let mut reference = vec![f64::NAN; 360 * 60];
+        for a in 10..30 {
+            for g in 5..15 {
+                reference[a * 60 + g] = 34.0;
+            }
+        }
+        let fallback = vec![33.0f64; 360 * 60];
+        let out = dealias_sweep_with(&vel, vn, Some(&reference), Some(&fallback));
+        assert_eq!((out.at(20, 10), out.at(120, 40)), (35.0, 35.0));
+        let without = dealias_sweep_with(&vel, vn, Some(&reference), None);
+        assert_eq!((without.at(20, 10), without.at(120, 40)), (35.0, -5.0), "no fallback: measured value kept");
+        let mut split = fallback.clone();
+        for a in 110..130 {
+            for g in 35..45 {
+                split[a * 60 + g] = -5.0; // half the second echo votes for no fold
+            }
+        }
+        let out = dealias_sweep_with(&vel, vn, Some(&reference), Some(&split));
+        assert_eq!(out.at(120, 40), -5.0, "indecisive fallback ignored");
     }
 
     #[test]
