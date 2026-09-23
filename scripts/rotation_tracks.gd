@@ -75,6 +75,14 @@ class Loops:
 		_own = null
 		_neighbors.clear()
 
+	## Rebuild only tracks containing a scan replaced under its existing name.
+	func invalidate_volume(name: String) -> void:
+		if _own != null and _own.names.has(name):
+			_own = null
+		for site in _neighbors.keys():
+			if (_neighbors[site]["names"] as Array).has(name):
+				_neighbors.erase(site)
+
 	## Tracks of `loop` (oldest first).
 	func of(loop: Array[RadarVolume]) -> RotationTracks:
 		var names: Array[String] = []

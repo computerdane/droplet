@@ -240,3 +240,51 @@ func test_neighbor_tracks() -> void:
 	check_eq(n["n_tracks"], 1, "up to the frame shown")
 	var own := loops.of(loop)
 	check(own != null and loops.of(loop) == own, "own tracks kept while the loop is unchanged")
+	var neighbor_tracks: RotationTracks = n["tracks"]
+	var neighbor_name: String = (n["volume"] as RadarVolume).name
+	loops.invalidate_volume(neighbor_name)
+	check(loops.of(loop) == own, "neighbor replacement keeps own tracks")
+	loops.add_to_neighbors(neighbors, lib, loop)
+	check(n["tracks"] != neighbor_tracks, "same-name neighbor replacement rebuilds tracks")
+	neighbor_tracks = n["tracks"]
+	loops.invalidate_volume(loop[-1].name)
+	check(loops.of(loop) != own, "same-name own replacement rebuilds tracks")
+	loops.add_to_neighbors(neighbors, lib, loop)
+	check(n["tracks"] == neighbor_tracks, "own replacement keeps neighbor tracks")
+
+
+## Cells tracked through a loop also use names as cache keys. A replaced own or mosaic
+## neighbour scan invalidates only the derived track that contains that scan.
+func test_cell_track_replacement() -> void:
+	if not fixtures:
+		return
+	var loop: Array[RadarVolume] = []
+	for name in lib.for_site("KTST"):
+		loop.append(lib.open(name))
+	var cache: VolumeCache = VolumeCacheScript.new(lib.source)
+	var neighbors := Mosaic.neighbors(lib, cache, loop[-1], "REF", 0.0)
+	if not check_eq(neighbors.size(), 1, "KTSU is a cell neighbour"):
+		return
+	var overlays := Overlays.new()
+	overlays.library = lib
+	for v in loop:
+		overlays._cell_names.append(v.name)
+	overlays._cell_frames = StormCells.track(loop)
+	overlays._mosaic_cells([], loop, neighbors)
+	var site: String = neighbors[0]["site"]
+	if not check(overlays._neighbor_cells.has(site), "neighbor cells cached"):
+		return
+	var own_names: Array[String] = overlays._cell_names.duplicate()
+	overlays._neighbor_cells[site]["test_marker"] = true
+	var neighbor_name: String = (neighbors[0]["volume"] as RadarVolume).name
+	overlays.invalidate_volume(neighbor_name)
+	check_eq(overlays._cell_names, own_names, "neighbor replacement keeps own cells")
+	check(not overlays._neighbor_cells.has(site), "neighbor replacement evicts neighbor cells")
+	overlays._mosaic_cells([], loop, neighbors)
+	check(overlays._neighbor_cells.has(site), "neighbor cells rebuilt with unchanged names")
+	check(not overlays._neighbor_cells[site].has("test_marker"), "neighbor cell memo was rebuilt")
+	overlays.invalidate_volume(loop[-1].name)
+	check(overlays._cell_names.is_empty(), "own replacement evicts own cells")
+	check(overlays._cell_frames.is_empty(), "own replacement evicts own frames")
+	check(overlays._neighbor_cells.has(site), "own replacement keeps neighbor cells")
+	overlays.free()

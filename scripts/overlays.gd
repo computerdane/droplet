@@ -28,6 +28,17 @@ var _neighbor_cells := {}  # site -> {"names": Array[String], "frames": StormCel
 var _hud: Hud
 
 
+## A scan was replaced under the same name. Its derived cells, including a mosaic
+## neighbour's track through that scan, must be rebuilt on the next update.
+func invalidate_volume(name: String) -> void:
+	if _cell_names.has(name):
+		_cell_names.clear()
+		_cell_frames.clear()
+	for site in _neighbor_cells.keys():
+		if (_neighbor_cells[site]["names"] as Array).has(name):
+			_neighbor_cells.erase(site)
+
+
 func _ready() -> void:
 	add_child(warnings)
 	add_child(outlooks)
