@@ -1,36 +1,45 @@
 # Roadmap
 
-State of the project as of 2026-09-22, what comes next, how it will be tested, and how it
+State of the project as of 2026-09-23, what comes next, how it will be tested, and how it
 will be hosted. `CLAUDE.md` describes the architecture; this file is about direction.
 
 ## Where we are
 
 **Pipeline (`nexrad/`, Rust).** Level II decoder for both archive layouts
 (bz2 LDM records and the older gzip stream, Message 31 only), archive fetch of the newest /
-at-a-time / range of volumes, live following of the chunks bucket, region-based velocity
-dealiasing (DVEL), VAD wind profile with Bunkers storm motion and SRH, basemap build,
-and a CLI whose progress lines the UI parses. Ported from Python/numpy on 2026-09-22 with
-bit-identical output; decode + dealias + VAD + write is ~0.45 s per volume, and the library
-has no C or platform dependencies, so it also compiles to WebAssembly.
+at-a-time / range of volumes, live following of the chunks bucket (several sites per
+process, ring position remembered), region-based velocity dealiasing (DVEL) with the VAD
+profile as a fallback reference, VAD wind profile with Bunkers storm motion and SRH,
+per-gate derived fields (azimuthal shear, KDP), column products (composite reflectivity,
+echo tops, VIL, low-level rotation), SCIT-style storm cells with a debris-signature flag,
+a disk quota, the basemap build (shared borders once, simplified), and a CLI whose progress
+lines the UI parses. The whole pipeline is ~0.7 s per volume natively, and the library has
+no C or platform dependencies, so it also compiles to WebAssembly.
 
 **Viewer (`scripts/`, `shaders/`, Godot 4.7).** 2D plan view with basemap, rings and
-decluttered city labels; eight fields with colormaps; loop playback over sequences with
-scrubbing and live following; site picker and nearest-radar mosaic; 3D beam-height cones
-and ray-marched volume rendering with an orbit camera; vertical cross-sections; storm-
-relative velocity (manual or automatic); hodograph; VWP time-height barbs; hover readout in
-2D, section and VWP; in-app fetch panel driving the sidecar; LRU volume cache with
-background prefetch; responsive HUD; `key=value` options for scripted runs.
+decluttered city labels; ten fields, four column products and rotation tracks with
+colormaps; loop playback over sequences with scrubbing and live following; site picker and
+nearest-radar mosaic; 3D beam-height cones and ray-marched volume rendering with an orbit
+camera; vertical cross-sections (mosaic too); storm-relative velocity (manual or
+automatic); hodograph; VWP time-height barbs; NWS warning polygons and tracked storm cells
+with motion, forecasts and rotation / TDS markers, in 2D and 3D; hover readout in 2D, 3D,
+section and VWP; in-app fetch panel; LRU volume cache with background prefetch; responsive
+HUD; `key=value` options for scripted runs. The same app runs in the browser
+(https://computerdane.github.io/droplet/), fetching and decoding with nexrad-wasm.
 
-**Tests and tooling.** `tests/run.gd` runs the Godot unit tests in `tests/unit/` (tilt
-selection, sequences, projection, preload, beam model, storm motion lookup, readout) against
-the synthetic fixtures, or real data with `volumes=`, `tests/screenshot.gd`, `tests/frametimes.gd`,
-gdformat and gdlint. `nexrad/src/synth.rs` generates synthetic Archive2 files and fixture
-volumes; `cargo test` covers the decoder, dealiasing, VAD, chunk ring, `live()`, key
-selection, the basemap readers and the volume writer without network or real data (43
-tests, ~6 s). All green.
+**Tests and tooling.** `cargo test` (57 tests, no network) covers the decoder, dealiasing,
+VAD, derived fields, products, cells, the chunk ring and `live()`, key selection, the
+basemap, the quota and the volume writer, mostly against the synthetic scene's truth.
+`tests/run.gd` runs the Godot unit tests against the synthetic fixtures (or real data with
+`volumes=`); `tests/golden.sh` renders 14 views under Xvfb with the flake's Mesa and compares
+them with committed PNGs, and checks the 3D pick against the rendered pixels; GitHub Actions
+runs all of it plus lint on every push. `web/smoke.mjs` drives the web build headless.
 
 **Gaps.**
 
+- The performance gate (frame times) is not automated.
+- Hydrometeor classification, SPC outlooks and pre-2008 (Message 1) archives are missing.
+- The browser keeps no decoded volumes and no live ring memory between visits.
 
 ## Roadmap
 
