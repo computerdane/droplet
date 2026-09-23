@@ -140,6 +140,8 @@ gdformat scripts tests && gdlint scripts tests
   REF ≥ 40, RHO ≤ 0.80, ZDR ≤ 0.5 on the lowest dual-pol tilt within 3 km of the rotation maximum, ROT ≥ 10).
 - `scripts/storm_cells.gd` – `StormCells.track()` links a loop's cells frame to frame (greedy, nearest to where each was
   heading, ≤ 10 km; 15 km for a cell seen once), motion from the last 4 positions, 15/30/45 min forecast points.
+  With mosaic on, each neighbour site's loop is tracked too and its cells shown where it is the nearest radar
+  (`StormCells.from_neighbor` turns them into the selected frame; twins within 6 km across a boundary keep the nearer radar's).
   `scripts/overlays.gd` (`Overlays`, owned by main) holds Warnings, Outlooks + the tracked cells of the frame on screen and
   feeds PpiView (`set_warnings`, `set_cells`), the info text and the readout. It owns the toggles: A / C / O keys, the
   Warnings / Cells / SPC buttons, `warnings=` `cells=` `outlook=` (default 1, 1, 0); a toggle emits `changed`.
@@ -314,4 +316,4 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Mosaic uses whatever is on disk; `nexrad live` takes several sites (a thread each; the fetch panel starts one job per site
   for a live mosaic). Fetching from the UI needs the `nexrad` binary (PATH or `DROPLET_NEXRAD`) and a source checkout (not an export).
 - The 3D ground disk/rings are centred on the selected site only.
-- Cells and rotation tracks are the selected site's only.
+- Rotation tracks are the selected site's only (cells come from every mosaic site, see `Overlays._mosaic_cells`).

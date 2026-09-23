@@ -114,3 +114,42 @@ func test_cell_tracking() -> void:
 	check(ahead[0].distance_to(b["pos"] + m * 0.9) < 0.01, "15 min ahead")
 	check_eq(StormCells.nearest(frames[1], b["pos"] + Vector2(3, 0), 6.0), b, "nearest cell")
 	check_eq(StormCells.nearest(frames[1], b["pos"] + Vector2(30, 0), 6.0), {}, "none nearby")
+
+
+## Mosaic cells: the neighbour KTSU sees the fixture storm too; its cell, turned and moved into
+## KTST's frame, lands on KTST's cell. Nearer KTST, the storm is shown once, as KTST's.
+func test_mosaic_cells() -> void:
+	if not fixtures:
+		return
+	var cache: VolumeCache = VolumeCache.new(lib.source)
+	var own: RadarVolume = lib.open(lib.latest("KTST"))
+	var neighbors := Mosaic.neighbors(lib, cache, own, "REF", 0.5)
+	if not check_eq(neighbors.size(), 1, "KTSU is a neighbour"):
+		return
+	var n: Dictionary = neighbors[0]
+	var theirs: Array = (n["volume"] as RadarVolume).meta.get("cells", [])
+	var frames := StormCells.track([own] as Array[RadarVolume])
+	if not check(not theirs.is_empty() and frames[0].size() == 1, "each radar sees the storm"):
+		return
+	var cell := {"pos": Vector2(theirs[0]["x_km"], theirs[0]["y_km"])}
+	cell["track"] = PackedVector2Array([cell["pos"]])
+	cell["motion"] = Vector2(10, 6)
+	var moved := StormCells.from_neighbor(cell, n["offset_km"], n["rotation"], "KTSU")
+	var mine: Vector2 = frames[0][0]["pos"]
+	check(
+		moved["pos"].distance_to(mine) < 3.0, "KTSU's cell %s at KTST's %s" % [moved["pos"], mine]
+	)
+	check(
+		(moved["motion"] as Vector2).distance_to(Vector2(10, 6)) < 0.5,
+		"motion barely turned over 60 km"
+	)
+	check_eq(moved["site"], "KTSU", "site named")
+	var radars := PackedVector2Array([Vector2.ZERO, n["offset_km"]])
+	check_eq(StormCells.nearest_radar(mine, radars), 0, "the storm is nearer KTST")
+	var ov := Overlays.new()
+	ov.library = lib
+	var loop: Array[RadarVolume] = [own]
+	var shown: Array = ov._mosaic_cells(frames[0], loop, neighbors)
+	check_eq(shown.size(), 1, "one cell in the mosaic")
+	check(not shown[0].has("site"), "KTST's own")
+	ov.free()

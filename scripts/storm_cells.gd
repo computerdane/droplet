@@ -103,6 +103,34 @@ static func forecast(cell: Dictionary) -> PackedVector2Array:
 	return out
 
 
+## `cell` of a mosaic neighbour seen from the selected radar: positions (km east, north) turned
+## by `rotation` (the neighbour's, rad clockwise, see Mosaic.neighbors) and moved by `offset`
+## (its position), the motion turned the same way; "site" names the radar that saw it.
+static func from_neighbor(
+	cell: Dictionary, offset: Vector2, rotation: float, site: String
+) -> Dictionary:
+	var c := cell.duplicate()
+	c["pos"] = offset + (cell["pos"] as Vector2).rotated(-rotation)
+	var tr := PackedVector2Array()
+	for p in cell["track"] as PackedVector2Array:
+		tr.append(offset + p.rotated(-rotation))
+	c["track"] = tr
+	var m: Vector2 = cell["motion"]
+	c["motion"] = m if m == Vector2.INF else m.rotated(-rotation)
+	c["site"] = site
+	return c
+
+
+## Index into `radars` (km east, north) of the one nearest `pos`: the radar whose data the
+## mosaic shows there.
+static func nearest_radar(pos: Vector2, radars: PackedVector2Array) -> int:
+	var best := 0
+	for k in radars.size():
+		if pos.distance_to(radars[k]) < pos.distance_to(radars[best]):
+			best = k
+	return best
+
+
 ## The cell whose centroid is nearest `pos` (km east, north), if within `km`, else {}.
 static func nearest(cells: Array, pos: Vector2, km: float) -> Dictionary:
 	var best := {}
@@ -118,8 +146,14 @@ static func describe(c: Dictionary) -> PackedStringArray:
 	var lines := PackedStringArray()
 	lines.append(
 		(
-			"Cell %d  %.0f dBZ  VIL %.0f kg/m²  top %.1f km"
-			% [c["id"], c["max_dbz"], c["vil"], c["top_km"]]
+			"%sCell %d  %.0f dBZ  VIL %.0f kg/m²  top %.1f km"
+			% [
+				c["site"] + " " if c.has("site") else "",
+				c["id"],
+				c["max_dbz"],
+				c["vil"],
+				c["top_km"]
+			]
 		)
 	)
 	var m: Vector2 = c["motion"]

@@ -654,7 +654,8 @@ func _refresh() -> void:
 
 ## Warnings and tracked cells for the frame on screen (Overlays).
 func _refresh_overlays() -> void:
-	overlays.update(view_2d, view_3d, volume, _loop_volumes(), frame - _sequence().x)
+	overlays.library = library
+	overlays.update(view_2d, view_3d, volume, _loop_volumes(), frame - _sequence().x, _neighbors)
 	_readout_key.clear()
 	_update_info()
 

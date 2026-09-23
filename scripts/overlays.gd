@@ -1,8 +1,9 @@
 class_name Overlays
 extends Node
 ## Context over the 2D and 3D views for the volume on screen: NWS warnings in effect
-## (Warnings), the SPC day 1 outlook (Outlooks, 2D only) and the storm cells of the selected
-## site tracked through the loop (StormCells), with their lines in the info text and the hover
+## (Warnings), the SPC day 1 outlook (Outlooks, 2D only) and the storm cells tracked through the
+## loop (StormCells; in a mosaic each radar's cells where it is the nearest radar, tracked through
+## that site's own volumes), with their lines in the info text and the hover
 ## readout. Owns their toggles: A / C / O and the HUD's Warnings / Cells / SPC buttons, and the
 ## warnings= cells= outlook= options. main.gd calls update() on every refresh.
 
@@ -11,6 +12,8 @@ signal changed
 
 ## Cells within this of the mouse are described in the readout.
 const READOUT_CELL_KM := 6.0
+## Cells of two radars closer than this are one storm seen twice (mosaic).
+const MOSAIC_TWIN_KM := 6.0
 
 var warnings := Warnings.new()
 var outlooks := Outlooks.new()
@@ -18,8 +21,10 @@ var cells_on := true
 var active_warnings: Array = []  # Warnings.active_at() the volume's time
 var active_outlook: Array = []  # Outlooks.active_at() the volume's time
 var cells: Array = []  # this frame's tracked cells (StormCells.track())
+var library: RadarLibrary  # set by main: the mosaic neighbours' loops
 var _cell_frames: Array = []
 var _cell_names: Array[String] = []  # the loop _cell_frames was tracked for
+var _neighbor_cells := {}  # site -> {"names": Array[String], "frames": StormCells.track()}
 var _hud: Hud
 
 
@@ -68,9 +73,15 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
-## `loop` is the selected site's loop (oldest first), `index` the frame on screen within it.
+## `loop` is the selected site's loop (oldest first), `index` the frame on screen within it,
+## `neighbors` the mosaic neighbours on screen (Mosaic.neighbors(), may be empty).
 func update(
-	view: PpiView, view_3d: VolumeView3D, volume: RadarVolume, loop: Array[RadarVolume], index: int
+	view: PpiView,
+	view_3d: VolumeView3D,
+	volume: RadarVolume,
+	loop: Array[RadarVolume],
+	index: int,
+	neighbors: Array = []
 ) -> void:
 	var t := RadarLibrary.unix_of(volume.name) if volume != null else 0
 	active_warnings = warnings.active_at(t)
@@ -85,6 +96,8 @@ func update(
 			_cell_frames = StormCells.track(loop)
 		if index >= 0 and index < _cell_frames.size():
 			cells = _cell_frames[index]
+		if not neighbors.is_empty():
+			cells = _mosaic_cells(cells, loop, neighbors)
 	var polys := []
 	var outlook_polys := []
 	if volume != null:
@@ -95,6 +108,60 @@ func update(
 	view.set_warnings(polys, outlook_polys)
 	view.set_cells(cells)
 	view_3d.overlay.set_overlays(polys, cells)
+
+
+## `own` (the selected radar's cells) and every neighbour's cells in the selected radar's frame,
+## each kept only where its radar is the nearest one (as the mosaic draws the data).
+func _mosaic_cells(own: Array, loop: Array[RadarVolume], neighbors: Array) -> Array:
+	var radars := PackedVector2Array([Vector2.ZERO])
+	for n in neighbors:
+		radars.append(n["offset_km"])
+	var out := own.filter(
+		func(c: Dictionary) -> bool: return StormCells.nearest_radar(c["pos"], radars) == 0
+	)
+	if library == null or loop.is_empty():
+		return out
+	var t0 := RadarLibrary.unix_of(loop[0].name) - Mosaic.MAX_SKEW_SEC
+	var t1 := RadarLibrary.unix_of(loop[-1].name) + Mosaic.MAX_SKEW_SEC
+	for k in neighbors.size():
+		var n: Dictionary = neighbors[k]
+		var shown: RadarVolume = n["volume"]
+		var site: String = n["site"]
+		var names: Array[String] = []
+		for name in library.for_site(site):
+			var t := RadarLibrary.unix_of(name)
+			if t >= t0 and t <= t1:
+				names.append(name)
+		var memo: Dictionary = _neighbor_cells.get(site, {})
+		if memo.get("names", []) != names:
+			var vols: Array[RadarVolume] = []
+			for name in names:
+				var v := RadarVolume.open(library.source, name)
+				if v != null:
+					vols.append(v)
+			memo = {"names": names, "frames": StormCells.track(vols)}
+			_neighbor_cells[site] = memo
+		var i: int = (memo["names"] as Array).find(shown.name)
+		if i < 0 or i >= (memo["frames"] as Array).size():
+			continue
+		for c: Dictionary in memo["frames"][i]:
+			var moved := StormCells.from_neighbor(c, n["offset_km"], n["rotation"], site)
+			if StormCells.nearest_radar(moved["pos"], radars) == k + 1:
+				# One storm by the boundary between two radars can show up in both: keep the
+				# centroid from the radar nearer to it.
+				var twin := StormCells.nearest(out, moved["pos"], MOSAIC_TWIN_KM)
+				if twin.is_empty():
+					out.append(moved)
+				elif _radar_km(moved, radars, k + 1) < _radar_km(twin, radars, -1):
+					out[out.find(twin)] = moved
+	return out
+
+
+## Distance (km) from a cell to the radar that saw it: index `k` of `radars`, or (k < 0) the
+## one it is nearest to.
+static func _radar_km(cell: Dictionary, radars: PackedVector2Array, k: int) -> float:
+	var pos: Vector2 = cell["pos"]
+	return pos.distance_to(radars[k if k >= 0 else StormCells.nearest_radar(pos, radars)])
 
 
 func info_lines() -> PackedStringArray:
