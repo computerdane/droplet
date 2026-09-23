@@ -7,8 +7,8 @@
 // ArrayBuffers, transferred), and finally {type: "done"} or {type: "error", message}. Live also
 // sends {type: "ring", volume, time_ms} as each volume begins: where the chunks ring was, which
 // the page keeps (localStorage) and passes back as `hint` so the next visit skips the search.
-// Before following the chunks bucket, live() first backfills ~10 recent complete archive
-// volumes (recent_keys(), the archive mirror, never an in-progress scan) in chronological order
+// Before following the chunks bucket, live() first backfills the newest plus 10 older complete archive
+// volumes (recent_keys(), the archive mirror, never an in-progress scan) newest first, then finalizes them chronologically
 // through the same "volume"/"line" protocol, one decode+download failure logged and skipped
 // rather than aborting the backfill (an unreachable mirror does not block live following either).
 //
@@ -35,7 +35,7 @@ const RAW_CACHE_FILES = 300; // 7 to 11 MB each
 // Decoders per update job; Godot's renderer and its worker threads need cores too.
 const POOL_SIZE = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 2));
 // Recent complete archive volumes live() backfills before following the chunks bucket.
-const BACKFILL_COUNT = 10;
+const BACKFILL_COUNT = 11;
 
 const line = (text) => postMessage({ type: "line", line: text });
 const fileName = (key) => key.split("/").pop();
@@ -81,6 +81,8 @@ function withPrior(msg) {
       }
     }
   }
+  const meta = JSON.parse(msg.volume_json);
+  if (!meta.complete || meta.provisional) return msg;
   const dvel = new Map();
   msg.names.forEach((n, i) => n.endsWith("_DVEL.bin") && dvel.set(n, new Uint8Array(msg.buffers[i].slice(0))));
   prior = { volume_json: msg.volume_json, files: dvel };
@@ -166,12 +168,9 @@ async function update({ site, at = "", from = "", to = "", workers = POOL_SIZE }
   }
 }
 
-// Recent complete archive volumes (the archive mirror never holds an in-progress scan), oldest
-// first, through the same "volume"/"line" protocol as update() - what live() sends before it
-// starts following the chunks bucket. One key's download/decode failure is logged and skipped
-// rather than aborting the rest; an unreachable mirror altogether is logged, not thrown, so it
-// cannot permanently block live following. Leaves `prior` set to the last one that decoded, the
-// temporal dealiasing reference the first followed chunk volume seeds live() with.
+// Deliver newest first without a prior, then finalize oldest first from the same raw bytes.
+// Holding raw bytes is bounded by BACKFILL_COUNT; decoded volumes are transferred immediately.
+// Do not let provisional volumes become temporal references, even if a later decode fails.
 async function backfill(site) {
   let keys;
   try {
@@ -180,15 +179,32 @@ async function backfill(site) {
     line(`${site}: backfill unavailable: ${e?.message ?? e}`);
     return;
   }
-  for (const [i, key] of keys.entries()) {
+  const raw = new Map();
+  for (const [i, key] of [...keys].reverse().entries()) {
     line(`[${i + 1}/${keys.length}] ${fileName(key)}`);
     try {
-      const [msg] = volumeMessage(decode(await fetchRaw(key), key));
-      withPrior(msg);
+      const bytes = await fetchRaw(key);
+      const [msg] = volumeMessage(decode(bytes, key));
+      msg.volume_json = JSON.stringify({ ...JSON.parse(msg.volume_json), provisional: true });
+      raw.set(key, bytes);
       postMessage(msg, msg.buffers);
       line(msg.name);
     } catch (e) {
       line(`${site}: backfill ${fileName(key)}: ${e?.message ?? e}`);
+    }
+  }
+  prior = null;
+  for (const key of keys) {
+    if (!raw.has(key)) continue;
+    try {
+      const [msg] = volumeMessage(decode(raw.get(key), key));
+      withPrior(msg);
+      postMessage(msg, msg.buffers);
+      line(msg.name);
+    } catch (e) {
+      line(`${site}: backfill finalize ${fileName(key)}: ${e?.message ?? e}`);
+    } finally {
+      raw.delete(key);
     }
   }
 }
