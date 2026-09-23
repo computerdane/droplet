@@ -4,7 +4,7 @@
 // Incrementing CACHE_VERSION will kick off the install event and force
 // previously cached resources to be updated from the network.
 /** @type {string} */
-const CACHE_VERSION = '1790197684|2740204';
+const CACHE_VERSION = '1790198599|2639258';
 /** @type {string} */
 const CACHE_PREFIX = 'Droplet-sw-cache-' + encodeURIComponent(self.registration.scope) + '-';
 const CACHE_NAME = CACHE_PREFIX + CACHE_VERSION;
