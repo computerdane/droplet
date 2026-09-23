@@ -88,7 +88,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion:
 		var rel := (event as InputEventMouseMotion).relative
 		if _rotating:
-			yaw -= rel.x * ROTATE_SPEED
+			yaw += rel.x * ROTATE_SPEED
 			pitch = clampf(pitch + rel.y * ROTATE_SPEED, PITCH_MIN, PITCH_MAX)
 			_apply()
 		elif _panning:
