@@ -107,7 +107,7 @@ var _mouse_in_window := true
 var _hover_pin := Vector2.INF  # hover= option: readout at this canvas point, not the mouse
 var _hover_off := false  # hover=0: no readout (Xvfb leaves the pointer mid-screen)
 var _readout_key: Array = []  # inputs of the readout on screen, see _update_readout
-var _tracks: RotationTracks  # while the rotation tracks are on screen
+var _tracks := RotationTracks.Loops.new()  # while the rotation tracks are on screen
 
 @onready var view_2d: PpiView = $View2D
 @onready var view_3d: VolumeView3D = $View3D
@@ -412,17 +412,6 @@ func _sweep_field() -> String:
 	return RotationTracks.FIELD if field_name == RotationTracks.VIEW_FIELD else field_name
 
 
-## Rotation tracks of the current loop, rebuilt when the loop's volumes change.
-func _update_tracks() -> RotationTracks:
-	var vols := _loop_volumes()
-	var names: Array[String] = []
-	for v in vols:
-		names.append(v.name)
-	if _tracks == null or _tracks.names != names:
-		_tracks = RotationTracks.build(vols)
-	return _tracks
-
-
 ## Volumes of the loop around the current frame, oldest first.
 func _loop_volumes() -> Array[RadarVolume]:
 	var out: Array[RadarVolume] = []
@@ -616,11 +605,13 @@ func _refresh() -> void:
 	view_3d.storm_motion = storm
 	hud.section.storm_motion = storm
 	if not (field_name == RotationTracks.VIEW_FIELD and not view_is_3d):
-		_tracks = null
+		_tracks.clear()
 	if view_is_3d:
 		view_3d.show_volume(volume, _volume_field(), target_elev, _neighbors, _others)
 	elif field_name == RotationTracks.VIEW_FIELD:
-		view_2d.show_tracks(_update_tracks(), frame - _sequence().x + 1)
+		var loop := _loop_volumes()
+		_tracks.add_to_neighbors(_neighbors, library, loop)
+		view_2d.show_tracks(_tracks.of(loop), frame - _sequence().x + 1, _neighbors, _others)
 	else:
 		view_2d.show_sweep(volume, sweep_index, field_name, _neighbors, _others)
 	hud.set_mosaic(mosaic, library.sites().size() > 1)

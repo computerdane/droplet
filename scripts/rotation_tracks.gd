@@ -62,3 +62,54 @@ static func value_at(vols: Array[RadarVolume], n: int, az_deg: float, r_km: floa
 		if i >= 0:
 			best = maxf(best, vols[k].value_at(i, FIELD, az_deg, r_km))
 	return best if best >= MIN_VALUE else RadarVolume.MISSING
+
+
+## The tracks on screen, rebuilt only when a loop's volumes change: the selected site's loop
+## (of()) and each mosaic neighbour's volumes over the same span (add_to_neighbors()).
+class Loops:
+	extends RefCounted
+	var _own: RotationTracks
+	var _neighbors := {}  # site -> {names, vols, tracks}
+
+	func clear() -> void:
+		_own = null
+		_neighbors.clear()
+
+	## Tracks of `loop` (oldest first).
+	func of(loop: Array[RadarVolume]) -> RotationTracks:
+		var names: Array[String] = []
+		for v in loop:
+			names.append(v.name)
+		if _own == null or _own.names != names:
+			_own = RotationTracks.build(loop)
+		return _own
+
+	## Gives each of `neighbors` (Mosaic.neighbors entries) the tracks of its site's volumes
+	## over `loop`'s span ("tracks", "tracks_vols") and how many of its frames reach the one it
+	## shows ("n_tracks").
+	func add_to_neighbors(
+		neighbors: Array, library: RadarLibrary, loop: Array[RadarVolume]
+	) -> void:
+		if loop.is_empty():
+			return
+		var t0 := RadarLibrary.unix_of(loop[0].name) - Mosaic.MAX_SKEW_SEC
+		var t1 := RadarLibrary.unix_of(loop[-1].name) + Mosaic.MAX_SKEW_SEC
+		for n: Dictionary in neighbors:
+			var site: String = n["site"]
+			var names: Array[String] = []
+			for name in library.for_site(site):
+				var t := RadarLibrary.unix_of(name)
+				if t >= t0 and t <= t1:
+					names.append(name)
+			var memo: Dictionary = _neighbors.get(site, {})
+			if memo.get("names", []) != names:
+				var vols: Array[RadarVolume] = []
+				for name in names:
+					var v := RadarVolume.open(library.source, name)
+					if v != null:
+						vols.append(v)
+				memo = {"names": names, "vols": vols, "tracks": RotationTracks.build(vols)}
+				_neighbors[site] = memo
+			n["tracks"] = memo["tracks"]
+			n["tracks_vols"] = memo["vols"]
+			n["n_tracks"] = names.find((n["volume"] as RadarVolume).name) + 1

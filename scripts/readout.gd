@@ -7,7 +7,8 @@ extends RefCounted
 ## radar that draws that pixel: the nearest one, as in the mosaic shaders. `ctx` holds what is
 ## on screen: volume, sweep, field, neighbors (Mosaic.neighbors), storm (m/s in the selected
 ## site's frame, zero = ground-relative), site_lonlat, tracks (loop volumes while the rotation
-## tracks are shown, else empty) with n_tracks frames, overlays (warnings and cells).
+## tracks are shown, else empty) with n_tracks frames (neighbours: their own "tracks_vols" and
+## "n_tracks"), overlays (warnings and cells).
 static func plan_view(p: Vector2, ctx: Dictionary) -> String:
 	var vol: RadarVolume = ctx["volume"]
 	var i: int = ctx["sweep"]
@@ -15,8 +16,11 @@ static func plan_view(p: Vector2, ctx: Dictionary) -> String:
 	var base_storm: Vector2 = ctx["storm"]
 	var storm := base_storm
 	var tracks: Array[RadarVolume] = ctx["tracks"]
+	var n_tracks: int = ctx["n_tracks"]
 	var local := p
-	for n in [] if not tracks.is_empty() else ctx["neighbors"]:  # tracks: selected site only
+	for n in ctx["neighbors"]:
+		if not tracks.is_empty() and not n.has("tracks_vols"):
+			continue
 		var off: Vector2 = n["offset_km"]
 		var q := (p - Vector2(off.x, -off.y)).rotated(-float(n["rotation"]))
 		if q.length() < local.length():
@@ -24,6 +28,9 @@ static func plan_view(p: Vector2, ctx: Dictionary) -> String:
 			i = n["sweep"]
 			local = q
 			storm = base_storm.rotated(n["rotation"])
+			if not tracks.is_empty():
+				tracks = n["tracks_vols"]
+				n_tracks = n["n_tracks"]
 	var r := local.length()
 	var az := fposmod(rad_to_deg(atan2(local.x, -local.y)), 360.0)
 	var lines := PackedStringArray()
@@ -31,7 +38,7 @@ static func plan_view(p: Vector2, ctx: Dictionary) -> String:
 		var elev := vol.elevation(i)
 		var v := vol.value_at(i, field_name, az, r)
 		if not tracks.is_empty():
-			v = RotationTracks.value_at(tracks, ctx["n_tracks"], az, r)
+			v = RotationTracks.value_at(tracks, n_tracks, az, r)
 		v = RadarVolume.storm_relative(v, storm, az, elev)
 		var srm := "  storm-rel." if storm != Vector2.ZERO and v > -900.0 else ""
 		lines.append("%s  %s%s" % [field_name, Colormaps.format_value(field_name, v), srm])

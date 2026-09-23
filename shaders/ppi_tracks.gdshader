@@ -13,10 +13,18 @@ uniform int n_gates = 1832;
 uniform float cmap_min = -10.0;
 uniform float cmap_max = 20.0;
 uniform float min_value = 0.0;  // weaker (and anticyclonic) rotation is left out
+// Mosaic: other radars in this quad's local frame, as in ppi.gdshader (nearest radar wins).
+uniform vec2 other_sites[16];
+uniform int n_other_sites = 0;
 
 void fragment() {
 	vec2 p = (UV - 0.5) * 2.0 * half_size;
 	float r = length(p);
+	for (int i = 0; i < n_other_sites; i++) {
+		if (distance(p, other_sites[i]) < r) {
+			discard;
+		}
+	}
 	float az = degrees(atan(p.x, -p.y));
 	if (az < 0.0) {
 		az += 360.0;

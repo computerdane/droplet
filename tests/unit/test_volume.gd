@@ -177,3 +177,25 @@ func test_hca() -> void:
 					check(v == roundf(v) and v >= 1.0 and v <= n, "class code %s" % v)
 					seen[int(v)] = true
 	check(seen.has(8) or seen.has(9), "rain in the fixture storm: %s" % [seen.keys()])
+
+
+## Mosaic rotation tracks: the neighbour KTSU gets tracks of its own volumes over the loop's span,
+## reaching the frame it shows.
+func test_neighbor_tracks() -> void:
+	if not fixtures:
+		return
+	var loop: Array[RadarVolume] = []
+	for name in lib.for_site("KTST"):
+		loop.append(lib.open(name))
+	var cache: VolumeCache = VolumeCacheScript.new(lib.source)
+	var neighbors := Mosaic.neighbors(lib, cache, loop[-1], "ROT", 0.0)
+	if not check_eq(neighbors.size(), 1, "KTSU is a neighbour"):
+		return
+	var loops := RotationTracks.Loops.new()
+	loops.add_to_neighbors(neighbors, lib, loop)
+	var n: Dictionary = neighbors[0]
+	check(n["tracks"] != null, "KTSU tracks built")
+	check_eq((n["tracks_vols"] as Array).size(), 1, "KTSU's one volume")
+	check_eq(n["n_tracks"], 1, "up to the frame shown")
+	var own := loops.of(loop)
+	check(own != null and loops.of(loop) == own, "own tracks kept while the loop is unchanged")

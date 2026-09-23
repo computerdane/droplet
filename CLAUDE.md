@@ -134,7 +134,8 @@ gdformat scripts tests && gdlint scripts tests
   `RadarVolume.tilts()`; `beam_at_ground()` inverts the 4/3-earth beam model), ~0.1 s/volume.
 - `scripts/rotation_tracks.gd` + `shaders/ppi_tracks.gdshader` – rotation tracks (the `TRACKS` button, 9 cycles to it): every
   loop volume's ROT grid as one Texture2DArray, the shader takes the max over the frames up to the playhead (≥ 5 × 10⁻³ s⁻¹);
-  `value_at()` is its CPU twin for the readout. Selected site only (neighbours hidden). Rebuilt when the loop changes.
+  `value_at()` is its CPU twin for the readout. `RotationTracks.Loops` rebuilds them when the loop changes; with mosaic on,
+  each neighbour gets tracks of its own volumes over the loop's span (nearest-radar discard in the shader, readout too).
 - `nexrad/src/cells.rs` – storm cells per volume (SCIT-style): CREF regions ≥ 40 dBZ split at 50/60 dBZ while a region holds
   ≥ 2 cores of ≥ 8 km²; Z-weighted centroid, area, max CREF/VIL/ET, max ROT within 8 km, and a TDS flag (≥ 6 gates of
   REF ≥ 40, RHO ≤ 0.80, ZDR ≤ 0.5 on the lowest dual-pol tilt within 3 km of the rotation maximum, ROT ≥ 10).
@@ -316,4 +317,3 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Mosaic uses whatever is on disk; `nexrad live` takes several sites (a thread each; the fetch panel starts one job per site
   for a live mosaic). Fetching from the UI needs the `nexrad` binary (PATH or `DROPLET_NEXRAD`) and a source checkout (not an export).
 - The 3D ground disk/rings are centred on the selected site only.
-- Rotation tracks are the selected site's only (cells come from every mosaic site, see `Overlays._mosaic_cells`).

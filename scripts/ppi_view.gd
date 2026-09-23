@@ -145,23 +145,46 @@ func set_zoom(z: float) -> void:
 	overlay.queue_redraw()
 
 
-## Rotation tracks instead of a sweep: the maximum of the first `n_layers` layers of `tracks`
-## (selected site only; mosaic neighbours are hidden). null blanks the display.
-func show_tracks(tracks: RotationTracks, n_layers: int) -> void:
-	for rect in _neighbor_rects:
-		rect.get_parent().visible = false
-	if tracks == null:
-		ppi.visible = false
-		return
+## Rotation tracks instead of a sweep: the maximum of the first `n_layers` layers of `tracks`.
+## Mosaic `neighbors` (as show_sweep takes them) show theirs where they carry "tracks" and
+## "n_tracks" (main._update_neighbor_tracks); null blanks the display.
+func show_tracks(
+	tracks: RotationTracks, n_layers: int, neighbors: Array = [], others := PackedVector2Array()
+) -> void:
 	if _tracks_material == null:
-		_tracks_material = ShaderMaterial.new()
-		_tracks_material.shader = TRACKS_SHADER
-	var mat := _tracks_material
-	ppi.material = mat
-	ppi.visible = true
+		_tracks_material = _new_tracks_material()
+	ppi.material = _tracks_material
+	_apply_tracks(ppi, tracks, n_layers, others)
+	_ensure_neighbor_rects(neighbors.size())
+	for k in _neighbor_rects.size():
+		var rect := _neighbor_rects[k]
+		var holder := rect.get_parent() as Node2D
+		var n: Dictionary = neighbors[k] if k < neighbors.size() else {}
+		if n.get("tracks") == null:
+			holder.visible = false
+			continue
+		_place(holder, n)
+		rect.material = rect.get_meta("tracks")
+		_apply_tracks(rect, n["tracks"], n["n_tracks"], n["others"])
+
+
+static func _new_tracks_material() -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	mat.shader = TRACKS_SHADER
+	return mat
+
+
+static func _apply_tracks(
+	rect: ColorRect, tracks: RotationTracks, n_layers: int, others: PackedVector2Array
+) -> void:
+	if tracks == null:
+		rect.visible = false
+		return
+	rect.visible = true
+	var mat := rect.material as ShaderMaterial
 	mat.set_shader_parameter("layers", tracks.texture)
 	mat.set_shader_parameter("n_layers", clampi(n_layers, 0, tracks.names.size()))
-	mat.set_shader_parameter("half_size", ppi.size.x / 2.0)
+	mat.set_shader_parameter("half_size", rect.size.x / 2.0)
 	mat.set_shader_parameter("first_gate_km", tracks.first_gate_km)
 	mat.set_shader_parameter("gate_spacing_km", tracks.gate_spacing_km)
 	mat.set_shader_parameter("n_gates", tracks.width)
@@ -170,6 +193,33 @@ func show_tracks(tracks: RotationTracks, n_layers: int) -> void:
 	mat.set_shader_parameter("cmap_min", rng[0])
 	mat.set_shader_parameter("cmap_max", rng[1])
 	mat.set_shader_parameter("min_value", RotationTracks.MIN_VALUE)
+	mat.set_shader_parameter("other_sites", others)
+	mat.set_shader_parameter("n_other_sites", others.size())
+
+
+## One ColorRect (in a Node2D holder placed at the site) per mosaic neighbour, each with a
+## sweep material and a rotation tracks one (metadata "ppi" / "tracks").
+func _ensure_neighbor_rects(n: int) -> void:
+	while _neighbor_rects.size() < n:
+		var holder := Node2D.new()
+		neighbors_root.add_child(holder)
+		var rect := ColorRect.new()
+		rect.position = ppi.position
+		rect.size = ppi.size
+		rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var mat := ShaderMaterial.new()
+		mat.shader = PPI_SHADER
+		rect.set_meta("ppi", mat)
+		rect.set_meta("tracks", _new_tracks_material())
+		holder.add_child(rect)
+		_neighbor_rects.append(rect)
+
+
+static func _place(holder: Node2D, n: Dictionary) -> void:
+	var off: Vector2 = n["offset_km"]
+	holder.position = Vector2(off.x, -off.y)
+	holder.rotation = n["rotation"]
+	holder.visible = true
 
 
 ## Show sweep `i` of `vol` for `field_name`; pass i < 0 to blank the display.
@@ -185,17 +235,7 @@ func show_sweep(
 ) -> void:
 	ppi.material = _ppi_material
 	_apply_sweep(ppi, vol, i, field_name, others, storm_motion)
-	while _neighbor_rects.size() < neighbors.size():
-		var holder := Node2D.new()
-		neighbors_root.add_child(holder)
-		var rect := ColorRect.new()
-		rect.position = ppi.position
-		rect.size = ppi.size
-		rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		rect.material = ShaderMaterial.new()
-		(rect.material as ShaderMaterial).shader = PPI_SHADER
-		holder.add_child(rect)
-		_neighbor_rects.append(rect)
+	_ensure_neighbor_rects(neighbors.size())
 	for k in _neighbor_rects.size():
 		var rect := _neighbor_rects[k]
 		var holder := rect.get_parent() as Node2D
@@ -203,10 +243,8 @@ func show_sweep(
 			holder.visible = false
 			continue
 		var n: Dictionary = neighbors[k]
-		var off: Vector2 = n["offset_km"]
-		holder.position = Vector2(off.x, -off.y)
-		holder.rotation = n["rotation"]
-		holder.visible = true
+		_place(holder, n)
+		rect.material = rect.get_meta("ppi")
 		var storm := storm_motion.rotated(n["rotation"])  # into the neighbour's frame
 		_apply_sweep(rect, n["volume"], n["sweep"], field_name, n["others"], storm)
 
