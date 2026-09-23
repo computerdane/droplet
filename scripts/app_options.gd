@@ -25,9 +25,10 @@ static func parse() -> Dictionary:
 
 
 ## fetch=latest|live|<ISO time>|<ISO from>/<ISO to> starts that job for site= (default
-## DEFAULT_FETCH_SITE). On web, where nothing is stored between visits, no fetch= means the
-## volume at time= if given, else live (the newest volume if the page cannot follow live), so
-## every URL is a permalink. event=<id> (see Events) fetches that event's loop instead.
+## DEFAULT_FETCH_SITE). Main only calls this on startup for an explicit site, time, event or
+## fetch; an unqualified URL opens the national composite instead. On web, a permalink with
+## time= fetches that scan, and site= alone starts live (latest if isolation is unavailable).
+## event=<id> (see Events) fetches that event's loop instead.
 static func start_fetch(opts: Dictionary, fetcher: Fetcher) -> void:
 	if opts.has("event") and not opts.has("fetch") and not Events.find(opts["event"]).is_empty():
 		Events.start(Events.find(opts["event"]), fetcher)

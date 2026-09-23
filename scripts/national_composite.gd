@@ -25,6 +25,8 @@ var _timer: Timer
 
 
 func _ready() -> void:
+	# An untextured MeshInstance2D renders solid white; keep it invisible until PNG arrives.
+	self_modulate.a = 0.0
 	mesh = _build_mesh()
 	_request = HTTPRequest.new()
 	add_child(_request)
@@ -61,6 +63,8 @@ func _load() -> void:
 
 
 func _on_image(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	if not visible:
+		return
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
 		push_warning("NOAA composite unavailable (result %d, HTTP %d)" % [result, code])
 		return
@@ -70,6 +74,7 @@ func _on_image(result: int, code: int, _headers: PackedStringArray, body: Packed
 		push_warning("NOAA composite was not a PNG: %s" % error_string(err))
 		return
 	texture = ImageTexture.create_from_image(image)
+	self_modulate.a = 1.0
 
 
 static func _build_mesh() -> ArrayMesh:

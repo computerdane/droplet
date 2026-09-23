@@ -799,6 +799,10 @@ func _update_readout() -> void:
 	var marker := Vector2.INF
 	if _hover_off or (not _mouse_in_window and _hover_pin == Vector2.INF):
 		pass
+	elif overview and hovered == null:
+		var station := view_2d.station_at(mouse)
+		if not station.is_empty():
+			text = "%s\nClick for recent scans" % station
 	elif hovered == hud.section:
 		var s := hud.section.sample_at(hud.section.get_global_transform().affine_inverse() * mouse)
 		if not s.is_empty():

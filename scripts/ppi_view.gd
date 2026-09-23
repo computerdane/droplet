@@ -542,9 +542,9 @@ func _to_world(screen_pos: Vector2) -> Vector2:
 	return cam.position + (screen_pos - get_viewport_rect().size / 2.0) / cam.zoom.x
 
 
-## Hit-tests a screen click against the station markers (SITE_HIT_RADIUS_PX, constant on
-## screen); the nearest one within range emits site_clicked. No-op if none are close enough.
-func _try_click_site(screen_pos: Vector2) -> void:
+## The nearest station within a constant screen-space radius, or an empty code. Shared by
+## hover feedback and click selection so they always agree at dense national zoom.
+func station_at(screen_pos: Vector2) -> String:
 	var world := _to_world(screen_pos)
 	var hit_r := SITE_HIT_RADIUS_PX / cam.zoom.x
 	var best_code := ""
@@ -554,8 +554,13 @@ func _try_click_site(screen_pos: Vector2) -> void:
 		if d <= hit_r and d < best_dist:
 			best_dist = d
 			best_code = code
-	if best_code != "":
-		site_clicked.emit(best_code)
+	return best_code
+
+
+func _try_click_site(screen_pos: Vector2) -> void:
+	var code := station_at(screen_pos)
+	if not code.is_empty():
+		site_clicked.emit(code)
 
 
 func _zoom_at(screen_pos: Vector2, factor: float) -> void:
