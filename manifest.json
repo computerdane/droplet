@@ -3,5 +3,10 @@
     "sha": "7aa8c3dcbada7d9a92a34003bbe60342d54a64e0",
     "run_id": 35919595406,
     "artifact_id": 10775989568
+  },
+  "pr-25": {
+    "sha": "13a9105b2a0068511380eeb7480d2b1fd6c1c9ba",
+    "run_id": 35919709450,
+    "artifact_id": 10776423005
   }
 }
