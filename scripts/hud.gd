@@ -13,6 +13,7 @@ extends Control
 
 signal play_toggled
 signal step_requested(delta: int)
+signal tilt_step_requested(delta: int)
 signal scrubbed(frame_in_sequence: int)
 signal speed_selected(fps: float)
 signal live_toggled
@@ -58,7 +59,11 @@ const VWP_WIDTH_SHARE := 0.4
 const VWP_ASPECT := 0.45
 const READOUT_OFFSET := Vector2(18, 18)
 const COLUMN_MIN_WIDTH := 300.0
+const INFO_TOP := 10.0
 const HINT_MIN_WIDTH := 240.0
+## Below this canvas width the playback bar takes two rows and the key hint is hidden (touch
+## screens have no keys, and a phone has no room).
+const NARROW_WIDTH := 720.0
 
 var info: Label
 var hint: Label
@@ -94,6 +99,8 @@ var live_button: Button
 var _top_box: VBoxContainer
 var _top_rows: Array[HFlowContainer] = []
 var _bar: PanelContainer
+var _bar_row2: HBoxContainer  # the bar's second row, used when narrow
+var _bar_tail: Array[Control] = []  # what moves to it: time, tilt and speed
 var _layout_queued := false
 var _sites: Array[String] = []
 var _setting_slider := false
@@ -122,7 +129,7 @@ func _ready() -> void:
 
 func _build_info() -> void:
 	info = _label(14)
-	info.position = Vector2(12, 10)
+	info.position = Vector2(12, INFO_TOP)
 	add_child(info)
 	hint = _label(12)
 	hint.modulate = Color(1, 1, 1, 0.55)
@@ -281,8 +288,13 @@ func _build_bottom_bar() -> void:
 	add_child(panel)
 	_bar = panel
 
+	var rows := VBoxContainer.new()
+	panel.add_child(rows)
 	var row := _hbox()
-	panel.add_child(row)
+	rows.add_child(row)
+	_bar_row2 = _hbox()
+	_bar_row2.visible = false
+	rows.add_child(_bar_row2)
 	var prev := _button("<", "Previous volume in this loop (Left; Shift+Left: previous loop)")
 	prev.pressed.connect(func() -> void: step_requested.emit(-1))
 	row.add_child(prev)
@@ -306,6 +318,13 @@ func _build_bottom_bar() -> void:
 	time_label = _label(14)
 	time_label.custom_minimum_size.x = 220
 	row.add_child(time_label)
+	_bar_tail = [time_label]
+
+	for step in [-1, 1]:  # for touch screens (keys: Down, Up)
+		var tilt := _button("Tilt " + ("-" if step < 0 else "+"), "Lower / higher tilt (Down / Up)")
+		tilt.pressed.connect(func() -> void: tilt_step_requested.emit(step))
+		row.add_child(tilt)
+		_bar_tail.append(tilt)
 
 	speed_option = OptionButton.new()
 	speed_option.focus_mode = Control.FOCUS_NONE
@@ -320,6 +339,7 @@ func _build_bottom_bar() -> void:
 	live_button.toggle_mode = true
 	live_button.pressed.connect(live_toggled.emit)
 	row.add_child(live_button)
+	_bar_tail.append(speed_option)
 
 
 ## Cross-section panel (bottom right) and VWP (bottom left) above the playback bar;
@@ -359,23 +379,28 @@ func _queue_layout() -> void:
 func _layout() -> void:
 	_layout_queued = false
 	var view := size
+	_wrap_bar(view.x < NARROW_WIDTH)
 	var bar_top := view.y - _bar.size.y
-	var info_bottom := info.position.y + info.get_combined_minimum_size().y
 
 	# Top-right column: as wide as its rows want, but leave the info text its room (the rows
-	# wrap then). Only below COLUMN_MIN_WIDTH does it give up and overlap the info text.
+	# wrap then). When that would leave it under COLUMN_MIN_WIDTH (a phone) it spans the top
+	# and the info text goes under it.
 	var natural := LEGEND_WIDTH * 1.0
 	for r in _top_rows:
 		if r.visible:
 			natural = maxf(natural, _natural_width(r))
 	var room := view.x - info.position.x - info.get_combined_minimum_size().x - 3 * MARGIN
-	var col_w := minf(natural, maxf(room, COLUMN_MIN_WIDTH))
-	col_w = minf(col_w, view.x - 2 * MARGIN)
+	var stacked := room < COLUMN_MIN_WIDTH
+	var col_w := minf(natural, view.x - 2 * MARGIN if stacked else room)
+	info.position.y = _top_box.get_rect().end.y + GAP if stacked else INFO_TOP
+	var info_bottom := info.position.y + info.get_combined_minimum_size().y
 	_top_box.custom_minimum_size.x = col_w
 	var legend_w := minf(LEGEND_WIDTH, col_w)
 	legend_tex.custom_minimum_size.x = legend_w
 	legend_lo.get_parent().custom_minimum_size.x = legend_w
 	var top := _top_box.position.y + _top_box.get_combined_minimum_size().y + GAP
+	if stacked:
+		top = info_bottom + GAP
 	var bottom := bar_top - GAP
 	var right := view.x - MARGIN
 
@@ -433,7 +458,9 @@ func _layout() -> void:
 	hint.offset_bottom = -(view.y - hint_bottom)
 	hint.offset_top = hint.offset_bottom
 	hint.visible = (
-		hint_w >= HINT_MIN_WIDTH and hint_bottom - _hint_height(hint_w) > info_bottom + GAP
+		view.x >= NARROW_WIDTH
+		and hint_w >= HINT_MIN_WIDTH
+		and hint_bottom - _hint_height(hint_w) > info_bottom + GAP
 	)
 
 	fetch_panel.custom_minimum_size.x = minf(480.0, view.x - 2 * MARGIN)
@@ -617,3 +644,18 @@ func _hbox() -> HBoxContainer:
 	var h := HBoxContainer.new()
 	h.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return h
+
+
+## Moves the time, tilt and speed controls to the bar's second row (narrow) or back.
+func _wrap_bar(narrow: bool) -> void:
+	if _bar_row2.visible == narrow:
+		return
+	_bar_row2.visible = narrow
+	var target: HBoxContainer = _bar_row2 if narrow else _bar_row2.get_parent().get_child(0)
+	for c in _bar_tail:
+		c.reparent(target, false)
+	# LIVE stays on the first row, after the slider.
+	live_button.get_parent().move_child(live_button, slider.get_index() + 1 if narrow else -1)
+	time_label.custom_minimum_size.x = 0.0 if narrow else 220.0
+	time_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL if narrow else Control.SIZE_FILL
+	time_label.add_theme_font_size_override("font_size", 12 if narrow else 14)

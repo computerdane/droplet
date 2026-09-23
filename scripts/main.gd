@@ -194,6 +194,7 @@ func _process(_delta: float) -> void:
 func _connect_hud() -> void:
 	hud.play_toggled.connect(func() -> void: _set_playing(not playing))
 	hud.step_requested.connect(_step)
+	hud.tilt_step_requested.connect(_step_tilt)
 	hud.scrubbed.connect(
 		func(i: int) -> void:
 			_set_live(false)

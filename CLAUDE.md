@@ -168,6 +168,11 @@ gdformat scripts tests && gdlint scripts tests
   Responsive: stretch `canvas_items` + aspect `expand` from 1280x800; `main._fit_ui_scale()` keeps the scale
   ≥ the screen scale (× `ui_scale=`) so small windows reflow instead of shrinking; `Hud._layout()` wraps the
   top-right rows, sizes/places hodograph + section (side by side when they don't stack) and wraps/hides the hint.
+  Below `NARROW_WIDTH` (720, phones) the playback bar takes two rows, the hint is hidden, and when the top-right
+  column cannot fit beside the info text it spans the top with the info under it. Tilt -/+ buttons stand in for Up/Down.
+- `scripts/touch_gestures.gd` – `TouchGestures`: two-finger pinch/pan from ScreenTouch/ScreenDrag for PpiView and
+  OrbitCamera (one finger arrives as the emulated left mouse button; ignored while two are down). Trackpad
+  `InputEventMagnifyGesture` zooms too. Tested in tests/unit/test_touch.gd.
 - `scripts/ppi_view.gd` + `shaders/ppi.gdshader` – 2D plan view, basemap, rings, decluttered city labels.
 - `scripts/volume_view_3d.gd`, `scripts/cone_set.gd` + `shaders/cone.gdshader` – 3D: each tilt is a shared
   unit grid bent along the beam in the vertex shader (4/3 earth radius, vertical exaggeration); per-field

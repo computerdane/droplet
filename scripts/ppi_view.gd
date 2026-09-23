@@ -33,6 +33,7 @@ var section_a := Vector2.ZERO  # km, +x east, +y south (world = radar-local fram
 var section_b := Vector2.ZERO
 var hover_marker := Vector2.INF  # point on the section line under the mouse in the panel
 var _dragging := false
+var _touch := TouchGestures.new()
 var _drawing_section := false
 var _cities: Array = []  # from Basemap.cities_near, most populous first
 var _basemap_mats: Array[ShaderMaterial] = []
@@ -376,7 +377,15 @@ func _draw_cities() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if not visible:
 		return
-	if event is InputEventMouseButton:
+	var g := _touch.feed(event)
+	if not g.is_empty():
+		_zoom_at(g["center"], g["zoom"])
+		_pan_by(g["pan"])
+	elif event is InputEventMagnifyGesture:  # trackpad pinch
+		_zoom_at(event.position, (event as InputEventMagnifyGesture).factor)
+	elif _touch.active() and (event is InputEventMouseMotion or event is InputEventMouseButton):
+		pass  # the first finger of a pinch, as emulated mouse
+	elif event is InputEventMouseButton:
 		var e := event as InputEventMouseButton
 		match e.button_index:
 			MOUSE_BUTTON_WHEEL_UP:
@@ -394,9 +403,13 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion and _drawing_section:
 		set_section(section_a, _to_world((event as InputEventMouseMotion).position))
 	elif event is InputEventMouseMotion and _dragging:
-		cam.position -= (event as InputEventMouseMotion).relative / cam.zoom
-		overlay.queue_redraw()
-		view_changed.emit()
+		_pan_by((event as InputEventMouseMotion).relative)
+
+
+func _pan_by(screen_delta: Vector2) -> void:
+	cam.position -= screen_delta / cam.zoom
+	overlay.queue_redraw()
+	view_changed.emit()
 
 
 func _to_world(screen_pos: Vector2) -> Vector2:

@@ -1,7 +1,8 @@
 class_name OrbitCamera
 extends Camera3D
 ## Orbits a target point on the ground. Left drag rotates, right/middle drag pans along the
-## ground, wheel zooms. Yaw 0 looks north; pitch is the angle above the horizon.
+## ground, wheel zooms; on touch screens one finger rotates and two pinch and pan. Yaw 0 looks
+## north; pitch is the angle above the horizon.
 
 signal moved
 
@@ -22,6 +23,7 @@ var pitch := DEFAULT_PITCH
 var distance := DEFAULT_DIST
 var _rotating := false
 var _panning := false
+var _touch := TouchGestures.new()
 
 
 func _ready() -> void:
@@ -58,7 +60,17 @@ func _apply() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if not current or not is_visible_in_tree():
 		return
-	if event is InputEventMouseButton:
+	var g := _touch.feed(event)
+	if not g.is_empty():  # two fingers: pinch zooms, moving both pans
+		distance = clampf(distance / g["zoom"], DIST_MIN, DIST_MAX)
+		_pan(g["pan"])
+		_apply()
+	elif event is InputEventMagnifyGesture:  # trackpad pinch
+		distance = clampf(distance / (event as InputEventMagnifyGesture).factor, DIST_MIN, DIST_MAX)
+		_apply()
+	elif _touch.active() and (event is InputEventMouseMotion or event is InputEventMouseButton):
+		pass  # the first finger of a pinch, as emulated mouse
+	elif event is InputEventMouseButton:
 		var e := event as InputEventMouseButton
 		match e.button_index:
 			MOUSE_BUTTON_WHEEL_UP:
@@ -80,8 +92,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			pitch = clampf(pitch + rel.y * ROTATE_SPEED, PITCH_MIN, PITCH_MAX)
 			_apply()
 		elif _panning:
-			var y := deg_to_rad(yaw)
-			var right := Vector3(cos(y), 0, sin(y))
-			var forward := Vector3(sin(y), 0, -cos(y))
-			target += (-right * rel.x + forward * rel.y) * distance * PAN_SPEED
+			_pan(rel)
 			_apply()
+
+
+## Moves the target along the ground by a screen drag of `rel` pixels.
+func _pan(rel: Vector2) -> void:
+	var y := deg_to_rad(yaw)
+	var right := Vector3(cos(y), 0, sin(y))
+	var forward := Vector3(sin(y), 0, -cos(y))
+	target += (-right * rel.x + forward * rel.y) * distance * PAN_SPEED
