@@ -3,9 +3,18 @@
 A weather radar visualizer built with Godot. Live NEXRAD data seconds behind real time,
 plus history browsing back to the early 1990s.
 
+## Try Droplet
+
+[Open the live web app](https://computerdane.github.io/droplet/) in your browser, or run the
+Linux desktop app directly from GitHub with Nix:
+
+```sh
+nix run github:computerdane/droplet
+```
+
 ## Desktop package (NixOS / Linux)
 
-From this checkout, run `nix run`. Nix builds the app and decoder and bundles the
+From a checkout, run `nix run`. Nix builds the app and decoder and bundles the
 basemap; no dev shell or manual data setup is needed. Click a radar to follow it live.
 
 ```sh
