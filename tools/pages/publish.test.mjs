@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { deflateRawSync } from 'node:zlib';
 import { crc32, limits, safeExtract } from './zip.mjs';
-import { eligiblePr, GitHub, nativeStackMembers, previewCandidates, reconcile, stateCheckout, successfulBuild } from './publish.mjs';
+import { comment, eligiblePr, GitHub, MARKER, nativeStackMembers, previewCandidates, reconcile, stateCheckout, successfulBuild } from './publish.mjs';
 
 function archive(entries, { deflate = false, mode = 0o100644 } = {}) {
   const local = [];
@@ -51,6 +51,60 @@ function temporary(t) {
   return path;
 }
 const build = (sha, id = 1) => ({ sha, run_id: id, artifact_id: id });
+
+test('preview comment runs the deployed desktop commit and is idempotent', async t => {
+  const state = temporary(t);
+  writeFileSync(join(state, 'manifest.json'), JSON.stringify({ 'pr-14': build('tested-sha', 32) }));
+  let head = 'tested-sha';
+  let existing;
+  const writes = [];
+  const api = {
+    repository: 'computerdane/droplet',
+    async request(path, options) {
+      if (path === '/pulls/14') return { state: 'open', head: { sha: head } };
+      writes.push({ path, ...options });
+      if (options.method === 'POST') {
+        assert.equal(path, '/issues/14/comments');
+        existing = { id: 71, user: { login: 'github-actions[bot]' }, body: options.data.body };
+      } else {
+        assert.equal(path, '/issues/comments/71');
+        existing.body = options.data.body;
+      }
+    },
+    async *pages(path) {
+      assert.equal(path, '/issues/14/comments');
+      if (existing) yield existing;
+    },
+  };
+  await comment(api, state, 'https://example.test/');
+  assert.equal(writes.length, 1);
+  assert.ok(existing.body.includes(MARKER));
+  assert.match(existing.body, /\[Open live preview\]\(https:\/\/example\.test\/previews\/pr-14\/\)/);
+  assert.match(existing.body, /Deployed commit: `tested-sha`\. \[Tested CI build\]\(https:\/\/github\.com\/computerdane\/droplet\/actions\/runs\/32\)/);
+  assert.match(existing.body, /```sh\nnix run github:computerdane\/droplet\/tested-sha#droplet\n```/);
+  assert.doesNotMatch(existing.body, /newer commit/);
+
+  await comment(api, state, 'https://example.test/');
+  assert.equal(writes.length, 1);
+
+  head = 'newer-sha';
+  await comment(api, state, 'https://example.test/');
+  assert.equal(writes.length, 2);
+  assert.equal(writes[1].method, 'PATCH');
+  assert.match(existing.body, /A newer commit is awaiting a successful build/);
+  assert.match(existing.body, /nix run github:computerdane\/droplet\/tested-sha#droplet/);
+  assert.doesNotMatch(existing.body, /nix run github:computerdane\/droplet\/newer-sha#droplet/);
+
+  await comment(api, state, 'https://example.test/');
+  assert.equal(writes.length, 2);
+
+  writeFileSync(join(state, 'manifest.json'), JSON.stringify({ 'pr-14': build('newer-sha', 33) }));
+  await comment(api, state, 'https://example.test/');
+  assert.equal(writes.length, 3);
+  assert.equal(writes[2].method, 'PATCH');
+  assert.match(existing.body, /nix run github:computerdane\/droplet\/newer-sha#droplet/);
+  assert.doesNotMatch(existing.body, /A newer commit is awaiting a successful build/);
+});
 
 test('extracts stored and deflated exports', t => {
   for (const deflate of [false, true]) {

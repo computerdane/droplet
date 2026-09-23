@@ -236,7 +236,7 @@ export async function comment(api, state, url) {
     const pr = await api.request(`/pulls/${number}`);
     if (pr.state !== 'open') continue;
     const stale = pr.head.sha !== build.sha ? '\n\nA newer commit is awaiting a successful build.' : '';
-    const body = `${MARKER}\n[Open live preview](${url.replace(/\/$/, '')}/previews/${key}/)\n\nDeployed commit: \`${build.sha}\`. [Tested CI build](https://github.com/${api.repository}/actions/runs/${build.run_id}).${stale}\n\nPublic preview; removed after this PR closes.`;
+    const body = `${MARKER}\n[Open live preview](${url.replace(/\/$/, '')}/previews/${key}/)\n\nDeployed commit: \`${build.sha}\`. [Tested CI build](https://github.com/${api.repository}/actions/runs/${build.run_id}).${stale}\n\nRun this tested commit in the desktop app:\n\n\`\`\`sh\nnix run github:${api.repository}/${build.sha}#droplet\n\`\`\`\n\nPublic preview; removed after this PR closes.`;
     let existing;
     for await (const item of api.pages(`/issues/${number}/comments`)) {
       if (item.user.login === 'github-actions[bot]' && item.body.includes(MARKER)) { existing = item; break; }
