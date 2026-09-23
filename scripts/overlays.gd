@@ -17,7 +17,7 @@ const MOSAIC_TWIN_KM := 6.0
 
 var warnings := Warnings.new()
 var outlooks := Outlooks.new()
-var cells_on := true
+var cells_on := false
 var active_warnings: Array = []  # Warnings.active_at() the volume's time
 var active_outlook: Array = []  # Outlooks.active_at() the volume's time
 var cells: Array = []  # this frame's tracked cells (StormCells.track())
@@ -38,7 +38,7 @@ func _ready() -> void:
 func setup(hud: Hud, opts: Dictionary) -> void:
 	_hud = hud
 	warnings.enabled = opts.get("warnings", "1") == "1"
-	cells_on = opts.get("cells", "1") == "1"
+	cells_on = opts.get("cells", "0") == "1"
 	outlooks.enabled = opts.get("outlook", "0") == "1"
 	hud.warnings_toggled.connect(toggle.bind("warnings"))
 	hud.cells_toggled.connect(toggle.bind("cells"))
