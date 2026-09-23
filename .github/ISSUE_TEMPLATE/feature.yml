@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose a capability or user-facing improvement
+title: "feature: "
+labels: [needs-approval, enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every issue needs a human `/approve` comment before work begins. Describe the need and the result you want.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or need
+      description: What are you trying to accomplish, and what is difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the outcome or an example workflow.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional approaches or tradeoffs.
+    validations:
+      required: false

@@ -1,46 +1,58 @@
-# Builds the web app (web/build.sh in the Nix dev shell) and publishes it to GitHub Pages.
-# Pages cannot send COOP/COEP; the export's PWA service worker supplies them (see
-# web/export_presets.template.cfg), so the first visit reloads once.
+# Publish only artifacts from successful CI; never execute code from a PR here.
 name: Pages
 
 on:
-  push:
-    branches: [main]
+  workflow_run:
+    workflows: [CI, Preview lifecycle]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
+# Pending runs can be coalesced safely: each run reconciles ALL current PRs/main.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  build:
+  publish:
+    if: >-
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') &&
+      (github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
-      - uses: actions/cache@v4
-        with:
-          path: data/raw/basemap
-          key: basemap-sources-cb2023  # the downloaded Census + Natural Earth files
-      - name: Basemap
-        run: nix develop -c bash -c 'cargo build --release && nexrad basemap'
-      - name: Build
-        run: nix develop -c web/build.sh _site
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: write
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # workflow_run always executes the trusted default-branch publisher.
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Reconcile tested builds and remove closed previews
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: node tools/pages/publish.mjs prepare --state "$RUNNER_TEMP/pages-state" --output "$RUNNER_TEMP/pages-site"
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: ${{ runner.temp }}/pages-site
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+      - name: Update preview links
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          PAGES_URL: ${{ steps.deployment.outputs.page_url }}
+        run: node tools/pages/publish.mjs comment --state "$RUNNER_TEMP/pages-state"

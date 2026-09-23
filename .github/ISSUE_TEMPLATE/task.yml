@@ -1,0 +1,30 @@
+name: Task
+description: Track a concrete maintenance or engineering task
+title: "task: "
+labels: [needs-approval]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every issue needs a human `/approve` comment before work begins. Keep the task outcome clear and verifiable.
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: What should be done, and why?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Completion criteria
+      description: How will we know this task is complete?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and dependencies
+      description: Relevant files, links, or prerequisites.
+    validations:
+      required: false

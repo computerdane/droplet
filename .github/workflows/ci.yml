@@ -1,20 +1,31 @@
-# Lint, Rust tests, Godot unit tests on the synthetic fixtures and golden screenshots, all in
-# the flake's dev shell (so the same Godot, Mesa and toolchain as a local `nix develop`).
+# Required checks use the locked Nix toolchain locally and in Actions.
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
-      - uses: actions/cache@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -25,6 +36,10 @@ jobs:
         run: nix develop -c true
       - name: Lint
         run: nix develop -c bash -c 'cargo fmt --check && cargo clippy --all-targets -- -D warnings && gdformat --check scripts tests && gdlint scripts tests'
+      - name: Workflow and shell lint
+        run: nix develop -c bash -c 'actionlint && shellcheck tools/automation/start web/build.sh nexrad-wasm/build.sh tests/golden.sh tests/perf.sh'
+      - name: Automation and export tests
+        run: nix develop -c node --test tools/automation/*.test.mjs tools/pages/*.test.mjs web/*.test.mjs
       - name: Rust tests
         run: nix develop -c cargo test --release
       - name: Fixtures
@@ -36,8 +51,60 @@ jobs:
       - name: Golden screenshots
         run: GOLDEN_OUT=golden-out nix develop -c tests/golden.sh
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: golden-out
           path: golden-out
           if-no-files-found: ignore
+
+  desktop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - name: Build desktop package
+        run: nix build .#droplet --print-build-logs
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The trusted publisher checks this exact SHA against the current PR head.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: data/raw/basemap
+          key: basemap-sources-cb2023
+      - name: Basemap
+        run: nix develop -c bash -c 'cargo build --release && nexrad basemap'
+      - name: Web export
+        run: nix develop -c web/build.sh _site
+      - name: Raw Archive2 fixture
+        run: nix develop -c cargo run --release -p nexrad --example web_fixture -- "$RUNNER_TEMP/smoke.ar2"
+      - name: Offline browser smoke on two Pages preview paths
+        env:
+          SMOKE_FIXTURE: ${{ runner.temp }}/smoke.ar2
+          SMOKE_PAGES: '1'
+        run: nix develop -c node web/smoke.mjs _site export/smoke.png
+      - name: Browser screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-smoke
+          path: export/smoke*.png
+          if-no-files-found: ignore
+      - name: Tested static site for the trusted Pages publisher
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-site
+          path: _site
+          if-no-files-found: error
+          retention-days: 14

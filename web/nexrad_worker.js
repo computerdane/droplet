@@ -29,7 +29,8 @@ import init, { decode, live, redealias, resolve_keys, recent_keys } from "./nexr
 
 const ARCHIVE = "https://unidata-nexrad-level2.s3.amazonaws.com";
 const CHUNKS = "https://unidata-nexrad-level2-chunks.s3.amazonaws.com";
-const RAW_CACHE = "droplet-raw-v1";
+// Cache API storage is origin-wide; keep preview eviction separate from production.
+const RAW_CACHE = `droplet-raw-v1-${encodeURIComponent(new URL("./", import.meta.url).href)}`;
 const RAW_CACHE_FILES = 300; // 7 to 11 MB each
 // Decoders per update job; Godot's renderer and its worker threads need cores too.
 const POOL_SIZE = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 2));

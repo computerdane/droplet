@@ -28,3 +28,7 @@ nexrad/target/
 # wasm-bindgen output (nexrad-wasm/build.sh)
 nexrad-wasm/pkg/
 _site/
+
+# Local coordinator checkpoints and isolated issue checkouts.
+.automation/
+.worktrees/

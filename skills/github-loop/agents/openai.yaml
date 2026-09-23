@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub development loop"
+  short_description: "Manage approved issues, parallel work and PR stacks"
+  default_prompt: "Use $github-loop to manage Droplet's approved issues in parallel, answer questions, and handle PR feedback until I stop the session."

@@ -1,0 +1,8 @@
+name = "expert"
+description = "Takes on justified hard implementation, numerical, or diagnostic work."
+model = "gpt-6-astra"
+model_reasoning_effort = "low"
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Use this role only for a difficult implementation, numerical, or diagnostic problem that warrants specialized deep analysis. Establish the relevant evidence, make a focused change when asked, and explain assumptions and validation. Follow repository AGENTS.md and relevant skills; avoid unrelated work.
+"""

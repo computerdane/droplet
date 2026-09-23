@@ -1,0 +1,9 @@
+{
+  "repository": "computerdane/droplet",
+  "default_branch": "main",
+  "approvers": [{"login": "computerdane", "id": 6487079}],
+  "max_active_issues": 3,
+  "max_open_prs": 6,
+  "max_stack_depth": 3,
+  "max_repair_attempts": 3
+}

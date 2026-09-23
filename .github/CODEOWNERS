@@ -1,0 +1,9 @@
+# These paths receive owner review requests; enforcement requires repository rulesets.
+/.github/ @computerdane
+/.codex/ @computerdane
+/.agents/ @computerdane
+/AGENTS.md @computerdane
+/skills/ @computerdane
+/tools/automation/ @computerdane
+/tools/pages/ @computerdane
+/tests/golden/ @computerdane

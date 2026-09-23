@@ -54,7 +54,17 @@ The buttons at the top right and the playback bar do the same with the mouse.
 
 DVEL is VEL dealiased at decode time; storm motion for storm-relative velocity is set with the
 row under the field buttons. For real-time data, run `nexrad live KTLX` in another
-terminal (or use F → Live); the app follows it. See `CLAUDE.md` for architecture and data format.
+terminal (or use F → Live); the app follows it. See [the architecture guide](docs/architecture.md) for architecture and data format.
+
+## AI development workflow
+
+Start an interactive coordinator with `bash tools/automation/start`. It watches GitHub,
+answers questions, and delegates approved work in parallel. Approve an issue with
+an unedited `/approve` comment; use `/hold` to stop it. Changes arrive in PRs with CI
+and Pages previews, with native GitHub stacks for dependent changes. You control merging.
+
+See [setup and operation](docs/development-loop.md) for bot authentication, approval,
+recovery, and model routing, and [Pages previews](docs/pages-previews.md) for deployment.
 
 ## Web
 

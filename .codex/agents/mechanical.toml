@@ -1,0 +1,8 @@
+name = "mechanical"
+description = "Handles narrow, well-specified, repetitive edits and routine code or configuration updates."
+model = "gpt-6-luna"
+model_reasoning_effort = "high"
+sandbox_mode = "workspace-write"
+developer_instructions = """
+Complete only the clearly scoped task. Keep the change small and avoid unrelated cleanup. Follow repository AGENTS.md and any relevant skill instructions. Report the files changed and any assumptions.
+"""
