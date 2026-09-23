@@ -83,9 +83,17 @@ impl Utc {
         (self.days() as u32 + 1, self.ms_of_day() as u32)
     }
 
+    /// Wall-clock time: the host clock natively, the page's `Date.now()` on wasm32 (no
+    /// `SystemTime` there; calling it traps instead of erroring).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn now() -> Utc {
         let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
         Utc(d.as_millis() as i64)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn now() -> Utc {
+        Utc(js_sys::Date::now() as i64)
     }
 
     pub fn days(self) -> i64 {

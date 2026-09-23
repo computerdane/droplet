@@ -92,6 +92,33 @@ pub fn keys_between(bucket: &dyn Bucket, site: &str, start: Utc, end: Utc) -> Re
     Ok(out)
 }
 
+/// Volumes to backfill before following live chunks: enough to give history without a slow
+/// startup (`nexrad live`, `nexrad-wasm::live`).
+pub const BACKFILL_COUNT: usize = 10;
+
+/// The most recent `n` complete archive volumes for `site`, oldest first. The archive mirror
+/// only ever holds finished uploads, so this never returns an in-progress scan (unlike the
+/// chunks bucket). Volumes run every 4-10 min, so `n` usually needs only today's keys; scans
+/// back a further week at most (VCPs with long clear-air volumes, or just after midnight UTC).
+pub fn recent_keys(bucket: &dyn Bucket, site: &str, n: usize) -> Result<Vec<String>> {
+    let mut day = Utc::now().date();
+    let mut keys: Vec<String> = Vec::new();
+    for _ in 0..8 {
+        let mut day_keys = list_keys(bucket, site, day)?;
+        day_keys.extend(keys);
+        keys = day_keys;
+        if keys.len() >= n {
+            break;
+        }
+        day = day.add_days(-1);
+    }
+    if keys.is_empty() {
+        return Err(format!("no volumes found for {site} in the last 8 days").into());
+    }
+    let start = keys.len().saturating_sub(n);
+    Ok(keys[start..].to_vec())
+}
+
 /// Which keys a fetch/update asks for.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Selection {
@@ -210,6 +237,31 @@ mod tests {
         assert!(resolve_keys(&b, "KTST", &sel).unwrap_err().to_string().contains("--from and --to"));
         let sel = Selection { at: Some(Utc::from_ymd_hms(2024, 5, 1, 0, 5, 0)), ..Default::default() };
         assert_eq!(resolve_keys(&b, "KTST", &sel).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn recent_keys_spans_days_oldest_first() {
+        let b = FakeBucket::default();
+        let today = Utc::now().date();
+        let yesterday = today.add_days(-1);
+        b.put_day(&yesterday.slashed(), &["KTST20240430_235500_V06", "KTST20240430_235900_V06"]);
+        b.put_day(&today.slashed(), &["KTST20240501_000400_V06"]);
+        let keys = recent_keys(&b, "ktst", 3).unwrap();
+        assert_eq!(
+            keys.iter().map(|k| file_name(k)).collect::<Vec<_>>(),
+            ["KTST20240430_235500_V06", "KTST20240430_235900_V06", "KTST20240501_000400_V06"]
+        );
+        // Fewer volumes exist than asked for: returns what it found, still oldest first.
+        assert_eq!(recent_keys(&b, "ktst", 10).unwrap().len(), 3);
+        // More volumes exist than asked for: keeps only the newest n.
+        let newest_only = recent_keys(&b, "ktst", 1).unwrap();
+        assert_eq!(file_name(&newest_only[0]), "KTST20240501_000400_V06");
+    }
+
+    #[test]
+    fn recent_keys_errors_when_nothing_found() {
+        let b = FakeBucket::default();
+        assert!(recent_keys(&b, "KTST", 5).unwrap_err().to_string().contains("no volumes"));
     }
 
     #[test]

@@ -5,7 +5,7 @@ extends VolumeSource
 ## it (a live volume that grew) and bumps its version. Thread-safe.
 ##
 ## With a budget, adding a volume evicts the oldest others (by scan time) until the sweep bytes
-## held fit; the web build's 2 GB heap cannot keep an hour of live volumes (~80 MB each).
+## fit; the web build's 2 GB heap cannot keep unlimited live volumes (often >100 MiB each).
 
 var budget_bytes := 0  # 0 = unlimited
 var _volumes: Dictionary = {}  # name -> {meta: String, version: int, files: Dictionary, bytes: int}

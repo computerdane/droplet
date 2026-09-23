@@ -130,11 +130,23 @@ pub fn resolve_keys(site: &str, at: &str, from: &str, to: &str, bucket: &JsValue
     Ok(keys.iter().map(|k| JsValue::from(k.as_str())).collect())
 }
 
+/// The most recent `n` complete archive volumes for `site`, oldest first (see
+/// `archive::recent_keys`): what `live()` backfills before following the chunks bucket, so a
+/// partial scan never shows up as if it were the history.
+#[wasm_bindgen]
+pub fn recent_keys(site: &str, n: usize, bucket: &JsValue) -> Result<Array, JsError> {
+    let keys = archive::recent_keys(&JsBucket::new(bucket)?, &site.to_uppercase(), n).map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(keys.iter().map(|k| JsValue::from(k.as_str())).collect())
+}
+
 /// `nexrad live SITE` against the chunks bucket: each time the in-progress volume grows,
 /// `emit({name, volume_json, files, complete})` is called; `log(line)` gets the CLI's status
 /// lines. `sleep()` runs between polls and returns false to stop. Blocks until then.
 /// `hint_volume` / `hint_time_ms` = where the ring was last time (see `chunks::Start::Newest`),
 /// and `remember(volume, time_ms)` is told each volume as it begins, for the next run's hint.
+/// `prior_json` / `prior_files` (DVEL files suffice, as `redealias()` takes them) seed the
+/// temporal dealiasing reference from a volume decoded outside this call (a backfilled archive
+/// volume, typically), so the first followed volume dealiases against it too, not from scratch.
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn live(
@@ -146,13 +158,30 @@ pub fn live(
     hint_volume: Option<u32>,
     hint_time_ms: Option<f64>,
     remember: &Function,
+    prior_json: Option<String>,
+    prior_files: Option<Map>,
 ) -> Result<(), JsError> {
     let bucket = JsBucket::new(bucket)?;
     // The last complete volume's DVEL, the temporal dealiasing reference of the next one (as
-    // `nexrad live` finds it on disk).
+    // `nexrad live` finds it on disk); seeded from `prior_json`/`prior_files` when given.
     let mut prior: Vec<volume::PriorTilt> = Vec::new();
     let mut prior_time: Option<Utc> = None;
+    if let (Some(json), Some(files)) = (prior_json, prior_files) {
+        let meta = volume::parse_meta(&json).map_err(|e| JsError::new(&e.to_string()))?;
+        if meta.complete {
+            let get = |name: &str| files.get(&name.into()).dyn_into::<Uint8Array>().ok().map(|a| a.to_vec());
+            prior = volume::prior_tilts(&meta, get);
+            prior_time = Some(Utc::parse_iso(&meta.time).map_err(|e| JsError::new(&e.to_string()))?);
+        }
+    }
+    // Guards against reporting the exact volume the seed already covers a second time (the
+    // archive mirror caught up to the chunk before live started).
+    let seed_time = prior_time;
     let mut sink = |vol: &Volume| -> nexrad::Result<String> {
+        let name = volume::volume_dir_name(&vol.icao, vol.time);
+        if vol.complete && seed_time == Some(vol.time) {
+            return Ok(name);
+        }
         let fresh = prior_time.is_some_and(|t| volume::is_prior(&vol.icao, vol.time, &vol.icao, t));
         let (out, enc) = encode(vol, if fresh { &prior } else { &[] }).map_err(|e| format!("{:?}", JsValue::from(e)))?;
         if vol.complete {
@@ -161,7 +190,7 @@ pub fn live(
         }
         Reflect::set(&out, &"complete".into(), &vol.complete.into()).map_err(js_error)?;
         emit.call1(&JsValue::NULL, &out).map_err(js_error)?;
-        Ok(volume::volume_dir_name(&vol.icao, vol.time))
+        Ok(name)
     };
     let sleep = || sleep.call0(&JsValue::NULL).map(|v| v.is_truthy()).unwrap_or(false);
     let mut log = LineWriter { log, buf: Vec::new() };

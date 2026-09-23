@@ -45,11 +45,10 @@ const AUTO_STORM_MAX_SEC := 60 * 60
 const VELOCITY_FIELDS := ["VEL", "DVEL"]
 ## Share of the cache budget that loop frames ahead of the playhead may fill.
 const PRELOAD_BUDGET_FRACTION := 0.8
-## Web: texture cache budget (the desktop's 1 GiB would not fit next to the in-memory volumes
-## in a 32-bit wasm heap).
-const WEB_CACHE_BUDGET_BYTES := 384 << 20
-## Web: sweep bytes of decoded volumes held in memory (MemorySource evicts the oldest).
-const WEB_MEMORY_BUDGET_BYTES := 900 << 20
+## Web: reserve most of the 2 GB wasm heap for ten recent full scans plus the growing
+## partial (KTLX VCP 35 is ~120 MiB/scan), leaving room for textures and decode buffers.
+const WEB_CACHE_BUDGET_BYTES := 192 << 20
+const WEB_MEMORY_BUDGET_BYTES := 1400 << 20
 const FIELD_KEYS := {
 	KEY_1: "REF",
 	KEY_2: "VEL",
@@ -297,6 +296,7 @@ func _select_site(s: String) -> void:
 	hud.set_sites(library.sites(), site)
 	if was_overview:
 		view_2d.reset_camera()
+		_update_hint()
 	# Keep roughly the same moment in time when switching sites.
 	_go_to(RadarLibrary.nearest_in_time(frames, t) if t > 0 else frames.size() - 1)
 	if volume == null:

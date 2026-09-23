@@ -192,13 +192,15 @@ gdformat scripts tests && gdlint scripts tests
   for the loop frames after the playhead (+ mosaic neighbours) up to 80 % of
   the budget, so loops bigger than the cache still stream as a rolling window. `prefetch=0` disables it.
 - `scripts/main.gd` – controller: site, frame, field, *target elevation* (kept across frames), playback,
-  live, mosaic neighbours. Parses `key=value` user args (see its header) – screenshot.gd passes them through.
+  live, mosaic neighbours. With no site/time/fetch, starts on the live US composite; clicking a radar
+  selects it and fetches its recent live loop. Parses `key=value` user args (see its header) – screenshot.gd passes them through.
 - `scripts/hud.gd` – code-built UI (no keyboard focus except the fetch panel's text fields, so shortcuts work).
   Responsive: stretch `canvas_items` + aspect `expand` from 1280x800; `main._fit_ui_scale()` keeps the scale
   ≥ the screen scale (× `ui_scale=`) so small windows reflow instead of shrinking; `Hud._layout()` wraps the
   top-right rows, sizes/places hodograph + section (side by side when they don't stack) and wraps/hides the hint.
   Below `NARROW_WIDTH` (720, phones) the playback bar takes two rows, the hint is hidden, and when the top-right
   column cannot fit beside the info text it spans the top with the info under it. Tilt -/+ buttons stand in for Up/Down.
+  The field/product buttons are one dropdown; the national view hides per-site playback and field controls.
 - `scripts/loop_export.gd` – `LoopExport` (E, the Export button, `export=<path>` at startup then quit): steps main through the
   current sequence, captures the viewport after each volume is drawn (waiting for warnings fetches), and writes an APNG
   (`encode()`: IHDR, acTL, fcTL + IDAT/fdAT per frame, CRC-32 in GDScript) at the loop speed to `data/exports/` (web:
@@ -206,7 +208,9 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/touch_gestures.gd` – `TouchGestures`: two-finger pinch/pan from ScreenTouch/ScreenDrag for PpiView and
   OrbitCamera (one finger arrives as the emulated left mouse button; ignored while two are down). Trackpad
   `InputEventMagnifyGesture` zooms too. Tested in tests/unit/test_touch.gd.
-- `scripts/ppi_view.gd` + `shaders/ppi.gdshader` – 2D plan view, basemap, rings, decluttered city labels.
+- `scripts/ppi_view.gd` + `shaders/ppi.gdshader` – 2D plan view, basemap, rings, decluttered city labels
+  and clickable stations from `scripts/radar_sites.gd` (NCEI site coordinates). `scripts/national_composite.gd`
+  projects NOAA's live CONUS MRMS reflectivity WMS image onto the same map; the US Map button returns to it.
 - `scripts/volume_view_3d.gd`, `scripts/cone_set.gd` + `shaders/cone.gdshader` – 3D: each tilt is a shared
   unit grid bent along the beam in the vertex shader (4/3 earth radius, vertical exaggeration); per-field
   display threshold; `scripts/orbit_camera.gd`.
@@ -239,9 +243,11 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/events.gd` – `Events.LIST`: notable events (site, UTC from/to/peak, note; tornadoes and hurricanes 1997–2023,
   times checked against the archive listing). The fetch panel's "Notable events" list and `event=<id>` fetch the loop
   (`Events.start()`) and the finished job jumps to the peak (`jump_to` meta); `event=` also defaults `site=` and `time=`.
-- `scripts/app_options.gd` – `key=value` options from the command line, or the query string on web;
-  `fetch=` (and on web, any URL without it: the volume at `time=`, else live) starts a job at startup.
-  On web main.gd uses a MemorySource (900 MB budget, oldest evicted; the heap caps at 2 GB) and a 384 MB texture cache.
+- `scripts/app_options.gd` – `key=value` options from the command line, or the query string on web.
+  With no site/time/fetch/event the web app opens the national composite without starting a site job;
+  an explicit web URL without `fetch=` fetches the volume at `time=`, else starts live for `site=`.
+  On web main.gd uses a MemorySource (1400 MiB budget, oldest evicted, enough for roughly ten
+  full recent scans plus a partial) and a 192 MiB texture cache within the 2 GB wasm heap.
 - `scripts/basemap.gd` + `shaders/basemap*.gdshader*` – lon/lat line meshes projected on the GPU
   (azimuthal equidistant around the site, haversine form for float32); `Basemap.project()` is the CPU twin.
 - `scripts/hodograph.gd` – HUD hodograph (W): VAD profile coloured 0–1/1–3/3–6/6+ km, RM/LM, mean wind,
@@ -305,10 +311,13 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 
 - Decoder reads both archive layouts: bzip2 LDM records (current) and the older gzip-wrapped uncompressed stream (~pre-2016, `.gz` keys), and both radial formats: Message 31 (Build 10+, ~mid-2008 onward) and legacy Message 1 (8-bit REF on 1 km gates to 460 km, VEL/SW on 250 m gates, 1° radials, no dual-pol). Message 1 files carry no site location (`nexrad/src/sites.rs`, the NCEI station list) and the oldest (`ARCHIVE2.nnn` headers) not even the ICAO (`level2::with_site()` takes it from the file name or key). Checked on KTLX 1995, 1999-05-03 (Bridge Creek-Moore), 2005, 2007.
 - Verified against KTLX 2026-09-22 (VCP 212, bz2) and KTLX 2013-05-20 20:03Z (VCP 12, gz, the Moore tornado).
-- `live` starts on the in-progress volume (skipping it if joined after its first chunk), then follows each new one. It
-  remembers the ring position in `data/live_ring.json` (`chunks::Start::Newest` hint: a binary search over the numbers the
-  ring can have moved since, a few listings) and falls back to the ~20-listing search. On web the worker posts `ring` messages and
-  `Fetcher` keeps them in localStorage (`droplet.live_ring.<SITE>`), passed back as the next live job's `hint`.
+- `live` backfills up to 10 complete scans from the archive mirror (chronologically) before following
+  the in-progress volume (skipping that partial if joined after its first chunk), then follows each new one.
+  If the archive is unavailable it still follows live chunks. It remembers the ring position in
+  `data/live_ring.json` (`chunks::Start::Newest` hint: a binary search over the numbers the ring can
+  have moved since, a few listings) and falls back to the ~20-listing search. On web the worker posts
+  `ring` messages and `Fetcher` keeps them in localStorage (`droplet.live_ring.<SITE>`), passed back as
+  the next live job's `hint`.
 - Done: time animation + live following, column products (CREF, ET, VIL), azimuthal shear, KDP and rotation tracks, 3D cones, basemap, site picker, multi-site mosaic,
   background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
   storm-relative velocity, fetching from the UI, translucent volume rendering, VAD wind profile +

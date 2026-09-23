@@ -7,19 +7,25 @@
 // ArrayBuffers, transferred), and finally {type: "done"} or {type: "error", message}. Live also
 // sends {type: "ring", volume, time_ms} as each volume begins: where the chunks ring was, which
 // the page keeps (localStorage) and passes back as `hint` so the next visit skips the search.
+// Before following the chunks bucket, live() first backfills ~10 recent complete archive
+// volumes (recent_keys(), the archive mirror, never an in-progress scan) in chronological order
+// through the same "volume"/"line" protocol, one decode+download failure logged and skipped
+// rather than aborting the backfill (an unreachable mirror does not block live following either).
 //
 // An update of several volumes fans the decoding out to a pool of nested workers running this
 // same script ({"cmd": "decode", key, index} -> {type: "decoded", index, ...volume}) and still
 // hands the volumes on in key order, so progress and "jump to the last one" read as they do
 // from the CLI. Terminating the job's worker terminates its pool with it. Decoded apart, the
 // volumes lack the CLI's temporal dealiasing reference (the previous volume); in key order each
-// is dealiased again against the one before (redealias(), a no-op unless its DVEL changes).
+// is dealiased again against the one before (redealias(), a no-op unless its DVEL changes). Live
+// following seeds this same reference from the backfill's last complete volume, so the first
+// followed chunk volume dealiases against it too instead of starting cold.
 //
 // Both Unidata buckets allow anonymous CORS reads and listings. Listings go through synchronous
 // XHR, which workers may use, because the key selection and live loop in nexrad-wasm are blocking
 // Rust. Raw archive files are immutable and kept in the Cache API (the newest RAW_CACHE_FILES),
 // so revisiting an event costs only the decode.
-import init, { decode, live, redealias, resolve_keys } from "./nexrad_wasm.js";
+import init, { decode, live, redealias, resolve_keys, recent_keys } from "./nexrad_wasm.js";
 
 const ARCHIVE = "https://unidata-nexrad-level2.s3.amazonaws.com";
 const CHUNKS = "https://unidata-nexrad-level2-chunks.s3.amazonaws.com";
@@ -27,6 +33,8 @@ const RAW_CACHE = "droplet-raw-v1";
 const RAW_CACHE_FILES = 300; // 7 to 11 MB each
 // Decoders per update job; Godot's renderer and its worker threads need cores too.
 const POOL_SIZE = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 2));
+// Recent complete archive volumes live() backfills before following the chunks bucket.
+const BACKFILL_COUNT = 10;
 
 const line = (text) => postMessage({ type: "line", line: text });
 const fileName = (key) => key.split("/").pop();
@@ -157,17 +165,56 @@ async function update({ site, at = "", from = "", to = "", workers = POOL_SIZE }
   }
 }
 
-function follow({ site, interval = 5, hint = null }) {
+// Recent complete archive volumes (the archive mirror never holds an in-progress scan), oldest
+// first, through the same "volume"/"line" protocol as update() - what live() sends before it
+// starts following the chunks bucket. One key's download/decode failure is logged and skipped
+// rather than aborting the rest; an unreachable mirror altogether is logged, not thrown, so it
+// cannot permanently block live following. Leaves `prior` set to the last one that decoded, the
+// temporal dealiasing reference the first followed chunk volume seeds live() with.
+async function backfill(site) {
+  let keys;
+  try {
+    keys = recent_keys(site, BACKFILL_COUNT, bucket(ARCHIVE));
+  } catch (e) {
+    line(`${site}: backfill unavailable: ${e?.message ?? e}`);
+    return;
+  }
+  for (const [i, key] of keys.entries()) {
+    line(`[${i + 1}/${keys.length}] ${fileName(key)}`);
+    try {
+      const [msg] = volumeMessage(decode(await fetchRaw(key), key));
+      withPrior(msg);
+      postMessage(msg, msg.buffers);
+      line(msg.name);
+    } catch (e) {
+      line(`${site}: backfill ${fileName(key)}: ${e?.message ?? e}`);
+    }
+  }
+}
+
+async function follow({ site, interval = 5, hint = null }) {
   if (typeof SharedArrayBuffer === "undefined") {
     throw new Error("live needs a cross-origin isolated page (COOP/COEP headers)");
   }
+  await backfill(site);
   const nap = new Int32Array(new SharedArrayBuffer(4));
   const sleep = () => {
     Atomics.wait(nap, 0, 0, interval * 1000);
     return true;
   };
   const remember = (volume, time_ms) => postMessage({ type: "ring", volume, time_ms });
-  live(site, bucket(CHUNKS), sleep, postVolume, line, hint?.volume ?? null, hint?.time_ms ?? null, remember);
+  live(
+    site,
+    bucket(CHUNKS),
+    sleep,
+    postVolume,
+    line,
+    hint?.volume ?? null,
+    hint?.time_ms ?? null,
+    remember,
+    prior?.volume_json ?? null,
+    prior?.files ?? null
+  );
 }
 
 onmessage = async ({ data }) => {
@@ -179,7 +226,7 @@ onmessage = async ({ data }) => {
       return postMessage(...volumeMessage(decode(await fetchRaw(req.key), req.key), { type: "decoded", index: req.index }));
     }
     if (req.cmd === "update") await update(req);
-    else if (req.cmd === "live") follow(req);
+    else if (req.cmd === "live") await follow(req);
     else throw new Error(`unknown command ${req.cmd}`);
     postMessage({ type: "done" });
   } catch (e) {

@@ -29,3 +29,7 @@ ureq = { version = "3", optional = true }
 # Record decompression runs in parallel natively; wasm32-unknown-unknown has no threads.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1"
+
+# Wall-clock time on wasm32-unknown-unknown has no host clock; Utc::now() reads the page's Date.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"

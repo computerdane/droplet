@@ -142,12 +142,56 @@ fn run(args: &[String]) -> Result<()> {
                 std::fs::read_to_string(&ring_file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
             let ring = std::sync::Mutex::new(ring);
             let follow = |site: &str| -> Result<()> {
+                // Whole lines (one write() call each), so several sites' output does not
+                // interleave mid-line and the fetch panel (scripts/fetcher.gd) can regex-match
+                // volume names out of either pipe.
+                let mut out = std::io::LineWriter::new(std::io::stdout());
+                let mut log = std::io::LineWriter::new(std::io::stderr());
+
+                // Backfill ~10 recent complete archive volumes, oldest first, before following
+                // the chunks bucket: the archive mirror never holds an in-progress scan, so this
+                // cannot show a partial volume as if it were done. Reuses the same
+                // download+decode path as `update` (and its temporal dealiasing reference: each
+                // decode finds the previous one just written on disk). A temporarily unreachable
+                // mirror is logged and skipped, not fatal - live following still starts.
+                let mut last_backfilled: Option<String> = None;
+                let archive_bucket = HttpBucket::new(archive::BUCKET);
+                match archive::recent_keys(&archive_bucket, site, archive::BACKFILL_COUNT) {
+                    Ok(keys) => {
+                        for (i, k) in keys.iter().enumerate() {
+                            let _ = writeln!(log, "[{}/{}] {}", i + 1, keys.len(), archive::file_name(k));
+                            match archive::download(&archive_bucket, k, &raw_dir, &mut log).and_then(|p| decode(&p, &volumes_dir)) {
+                                Ok(path) => {
+                                    let _ = writeln!(out, "{}", path.display());
+                                    last_backfilled = path.file_name().and_then(|n| n.to_str()).map(str::to_owned);
+                                }
+                                Err(e) => {
+                                    let _ = writeln!(log, "{site}: backfill {}: {e}", archive::file_name(k));
+                                }
+                            }
+                        }
+                        if !keys.is_empty() {
+                            enforce_quota(&root);
+                        }
+                    }
+                    Err(e) => {
+                        let _ = writeln!(log, "{site}: backfill unavailable: {e}");
+                    }
+                }
+
                 let bucket = HttpBucket::new(chunks::BUCKET);
                 let sleep = || {
                     std::thread::sleep(std::time::Duration::from_secs_f64(interval.max(0.0)));
                     true
                 };
                 let mut sink = |v: &level2::Volume| -> Result<String> {
+                    let name = volume::volume_dir_name(&v.icao, v.time);
+                    if v.complete && last_backfilled.as_deref() == Some(name.as_str()) {
+                        // Exact duplicate of the backfill's last volume (the archive mirror
+                        // caught up to it before live started): already on disk, skip the
+                        // redundant decode + write instead of reporting it a second time.
+                        return Ok(name);
+                    }
                     let dir = volume::write_volume(v, &volumes_dir)?;
                     if v.complete {
                         enforce_quota(&root);
@@ -167,8 +211,6 @@ fn run(args: &[String]) -> Result<()> {
                         let _ = volume::write_atomic(&ring_file, text.as_bytes());
                     }
                 };
-                // Whole lines, so several sites' logs do not interleave mid-line.
-                let mut log = std::io::LineWriter::new(std::io::stderr());
                 chunks::live(&bucket, site, &mut sink, start, &mut remember, sleep, &mut log)
             };
             let results: Vec<Result<()>> = std::thread::scope(|s| {
