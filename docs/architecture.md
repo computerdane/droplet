@@ -147,7 +147,7 @@ gdformat scripts tests && gdlint scripts tests
   (`StormCells.from_neighbor` turns them into the selected frame; twins within 6 km across a boundary keep the nearer radar's).
   `scripts/overlays.gd` (`Overlays`, owned by main) holds Warnings, Outlooks + the tracked cells of the frame on screen and
   feeds PpiView (`set_warnings`, `set_cells`), the info text and the readout. It owns the toggles: A / C / O keys, the
-  Warnings / Cells / SPC buttons, `warnings=` `cells=` `outlook=` (default 1, 1, 0); a toggle emits `changed`.
+  Warnings / Cells / SPC buttons, `warnings=` `cells=` `outlook=` (default 1, 0, 0); a toggle emits `changed`.
 - `scripts/outlooks.gd` – SPC day 1 categorical outlook (TSTM..HIGH) from the IEM API
   (`api/1/nws/spc_outlook.geojson?day=1&valid=&cycle=`, back to 2002): `issued_by(t)` = the convective day (12Z-12Z)
   and its cycles (06, 13, 1630, 20, 01Z) out by then, latest first; `active_at(t)` = the latest with categorical areas.

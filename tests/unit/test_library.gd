@@ -87,6 +87,35 @@ func test_option_times() -> void:
 	check_eq(AppOptions.iso_of_name_time("20130520_200359"), "2013-05-20T20:03:59Z", "time= as ISO")
 
 
+func test_cells_overlay_option_and_toggles() -> void:
+	var hud := Hud.new()
+	hud.warnings_button = Button.new()
+	hud.cells_button = Button.new()
+	hud.outlook_button = Button.new()
+	hud.cells_button.toggle_mode = true
+	var ov := Overlays.new()
+	check(not ov.cells_on, "cells start off before setup")
+	ov.setup(hud, {})
+	check(not ov.cells_on and not hud.cells_button.button_pressed, "cells default off in HUD")
+	hud.cells_toggled.emit()
+	check(ov.cells_on and hud.cells_button.button_pressed, "HUD enables cells")
+	ov.toggle("cells")
+	check(not ov.cells_on and not hud.cells_button.button_pressed, "toggle disables cells")
+	ov.warnings.free()
+	ov.outlooks.free()
+	ov.free()
+	var explicit := Overlays.new()
+	explicit.setup(hud, {"cells": "1"})
+	check(explicit.cells_on and hud.cells_button.button_pressed, "cells=1 enables cells")
+	explicit.warnings.free()
+	explicit.outlooks.free()
+	explicit.free()
+	hud.warnings_button.free()
+	hud.cells_button.free()
+	hud.outlook_button.free()
+	hud.free()
+
+
 ## Storm cells: the fixture storm is one cell in each KTST volume, linked into one track whose
 ## motion is the scene's storm motion (10 m/s east, 6 m/s north).
 func test_cell_tracking() -> void:
