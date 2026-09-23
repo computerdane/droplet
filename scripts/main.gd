@@ -141,8 +141,12 @@ func _ready() -> void:
 
 	var opts := AppOptions.parse()
 	overview = not (
-		opts.has("site") or opts.has("time") or opts.has("event") or opts.has("fetch")
-		or opts.has("view") or opts.has("volumes")
+		opts.has("site")
+		or opts.has("time")
+		or opts.has("event")
+		or opts.has("fetch")
+		or opts.has("view")
+		or opts.has("volumes")
 	)
 	national = NationalComposite.new()
 	national.visible = overview
@@ -332,6 +336,7 @@ func _show_overview() -> void:
 	_set_view_3d(false)
 	hud.set_sites(library.sites(), "")
 
+
 func _go_to(i: int) -> void:
 	if frames.is_empty():
 		frame = -1
@@ -376,6 +381,9 @@ func _set_view_3d(on: bool) -> void:
 
 
 func _update_hint() -> void:
+	if overview:
+		hud.set_hint("Click a radar marker to see its latest scans   wheel zoom   drag pan")
+		return
 	var extra := HINT_3D if view_is_3d else (HINT_SECTION if section_on else HINT_2D)
 	hud.set_hint(HINT_COMMON + extra)
 
@@ -885,8 +893,10 @@ func _update_playback() -> void:
 func _update_info() -> void:
 	if overview:
 		hud.set_info(
-			"United States  ·  NOAA MRMS composite reflectivity\n"
-			+ "Select a radar marker to view its recent scans and follow live updates"
+			(
+				"United States  ·  NOAA MRMS composite reflectivity\n"
+				+ "Select a radar marker to view its recent scans and follow live updates"
+			)
 		)
 		return
 	if volume == null:

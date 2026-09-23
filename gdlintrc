@@ -1,0 +1,3 @@
+# main.gd owns view, playback, input and fetching; keep a near-term size gate
+# without splitting tightly coupled state across artificial controllers.
+max-file-lines: 1100

@@ -53,7 +53,9 @@ func set_overview(on: bool) -> void:
 func _load() -> void:
 	if _request.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED:
 		return
-	var err := _request.request(WMS_URL + "&t=" + str(int(Time.get_unix_time_from_system() / REFRESH_SEC)))
+	var err := _request.request(
+		WMS_URL + "&t=" + str(int(Time.get_unix_time_from_system() / REFRESH_SEC))
+	)
 	if err != OK:
 		push_warning("NOAA composite request failed: %s" % error_string(err))
 

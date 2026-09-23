@@ -347,7 +347,14 @@ func _draw_site_markers() -> void:
 		if show_labels:
 			overlay.draw_set_transform(p, 0.0, Vector2.ONE / z)
 			overlay.draw_string_outline(
-				font, Vector2(6, -4), code, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, 3, Color(0, 0, 0, 0.7)
+				font,
+				Vector2(6, -4),
+				code,
+				HORIZONTAL_ALIGNMENT_LEFT,
+				-1,
+				12,
+				3,
+				Color(0, 0, 0, 0.7)
 			)
 			overlay.draw_string(
 				font, Vector2(6, -4), code, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, color

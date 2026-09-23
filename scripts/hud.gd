@@ -72,6 +72,7 @@ const NARROW_WIDTH := 720.0
 var info: Label
 var hint: Label
 var site_option: OptionButton
+var overview_button: Button
 var view_button: Button
 var mosaic_button: Button
 var warnings_button: Button
@@ -81,8 +82,6 @@ var section_button: Button
 var section: SectionView
 var fetch_panel: FetchPanel
 var field_option: OptionButton
-var _field_row: HFlowContainer
-var _field_names: Array = []
 var srm_row: HFlowContainer
 var srm_button: Button
 var srm_auto_button: Button
@@ -104,6 +103,8 @@ var slider: HSlider
 var time_label: Label
 var speed_option: OptionButton
 var live_button: Button
+var _field_row: HFlowContainer
+var _field_names: Array = []
 var _top_box: VBoxContainer
 var _top_rows: Array[HFlowContainer] = []
 var _bar: PanelContainer
@@ -166,9 +167,9 @@ func _build_top_right() -> void:
 	site_option.tooltip_text = "Radar site (sites with decoded volumes)"
 	site_option.item_selected.connect(func(i: int) -> void: site_selected.emit(_sites[i]))
 	row.add_child(site_option)
-	var national := _button("US Map", "Live national composite and radar stations")
-	national.pressed.connect(overview_requested.emit)
-	row.add_child(national)
+	overview_button = _button("US Map", "Live national composite and radar stations")
+	overview_button.pressed.connect(overview_requested.emit)
+	row.add_child(overview_button)
 	var fetch := _button("Fetch", "Download a site / time range, or follow a site live (F)")
 	fetch.pressed.connect(fetch_toggled.emit)
 	row.add_child(fetch)
@@ -414,7 +415,7 @@ func _layout() -> void:
 	_layout_queued = false
 	var view := size
 	_wrap_bar(view.x < NARROW_WIDTH)
-	var bar_top := view.y - _bar.size.y
+	var bar_top := view.y - (_bar.size.y if _bar.visible else 0.0)
 
 	# Top-right column: as wide as its rows want, but leave the info text its room (the rows
 	# wrap then). When that would leave it under COLUMN_MIN_WIDTH (a phone) it spans the top
@@ -635,13 +636,17 @@ func set_field(field_name: String, available: Array, storm_relative := false) ->
 ## The MRMS national image has no per-site sweep or field legend.
 func set_overview(on: bool) -> void:
 	_field_row.visible = not on
+	overview_button.visible = not on
+	site_option.visible = not on
+	_bar.visible = not on
 	legend_tex.visible = not on
 	var categorical := Colormaps.is_categorical(
 		_field_names[field_option.selected] if field_option.selected >= 0 else "REF"
 	)
 	legend_lo.get_parent().visible = not on and not categorical
 	legend_classes.visible = not on and categorical
-	view_button.disabled = on
+	view_button.visible = not on
+	_queue_layout()
 
 
 ## `frame` and `count` describe the position within the current sequence.
