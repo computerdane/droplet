@@ -23,15 +23,16 @@ pub fn decode(raw: &[u8], key: Option<String>) -> Result<Object, JsError> {
         return Err(JsError::new("no site id in the header or the key"));
     }
     let t1 = Date::now();
-    let out = encode(&vol)?;
+    let (out, _) = encode(&vol, &[])?;
     Reflect::set(&out, &"read_ms".into(), &(t1 - t0).into()).map_err(err)?;
     Reflect::set(&out, &"encode_ms".into(), &(Date::now() - t1).into()).map_err(err)?;
     Ok(out)
 }
 
-/// `{ name, volume_json, files }` for a decoded volume, as `decode` returns it.
-fn encode(vol: &Volume) -> Result<Object, JsError> {
-    let enc = volume::encode_volume(vol);
+/// `{ name, volume_json, files }` for a decoded volume, as `decode` returns it, and the volume
+/// itself (for `Encoded::prior`). `prior` = the previous volume's DVEL (see `volume::add_dealiased`).
+fn encode(vol: &Volume, prior: &[volume::PriorTilt]) -> Result<(Object, volume::Encoded), JsError> {
+    let enc = volume::encode_volume_with(vol, prior);
     let text = volume::meta_json(&enc.meta).map_err(|e| JsError::new(&e.to_string()))?;
     let files = Map::new();
     for (name, bytes) in &enc.files {
@@ -42,7 +43,7 @@ fn encode(vol: &Volume) -> Result<Object, JsError> {
     set("name", volume::volume_dir_name(&vol.icao, vol.time).into()).map_err(err)?;
     set("volume_json", text.into()).map_err(err)?;
     set("files", files.into()).map_err(err)?;
-    Ok(out)
+    Ok((out, enc))
 }
 
 /// A bucket whose HTTP lives in JavaScript: `list(prefix)` returns the ListObjectsV2 XML and
@@ -99,8 +100,20 @@ pub fn resolve_keys(site: &str, at: &str, from: &str, to: &str, bucket: &JsValue
 #[wasm_bindgen]
 pub fn live(site: &str, bucket: &JsValue, sleep: &Function, emit: &Function, log: &Function) -> Result<(), JsError> {
     let bucket = JsBucket::new(bucket)?;
+    // The last complete volume's DVEL, the temporal dealiasing reference of the next one (as
+    // `nexrad live` finds it on disk).
+    let mut prior: Vec<volume::PriorTilt> = Vec::new();
+    let mut prior_time: Option<Utc> = None;
     let mut sink = |vol: &Volume| -> nexrad::Result<String> {
-        let out = encode(vol).map_err(|e| format!("{:?}", JsValue::from(e)))?;
+        let fresh = prior_time.is_some_and(|t| {
+            let age = vol.time.secs_since(t);
+            age > 0.0 && age <= volume::PRIOR_MAX_AGE_S
+        });
+        let (out, enc) = encode(vol, if fresh { &prior } else { &[] }).map_err(|e| format!("{:?}", JsValue::from(e)))?;
+        if vol.complete {
+            prior = enc.prior();
+            prior_time = Some(vol.time);
+        }
         Reflect::set(&out, &"complete".into(), &vol.complete.into()).map_err(js_error)?;
         emit.call1(&JsValue::NULL, &out).map_err(js_error)?;
         Ok(volume::volume_dir_name(&vol.icao, vol.time))

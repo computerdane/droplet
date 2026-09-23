@@ -126,10 +126,39 @@ pub fn rasterise(vol: &Volume) -> Decoded {
     Decoded { sweeps, grids }
 }
 
+/// One tilt of the previous volume's dealiased velocity: a temporal dealiasing reference.
+pub struct PriorTilt {
+    pub elevation_deg: f64,
+    pub first_gate_m: f64,
+    pub gate_spacing_m: f64,
+    pub dvel: Grid,
+}
+
+/// A prior volume is used only if it started at most this long before (VCP 31/32 take 10 min).
+pub const PRIOR_MAX_AGE_S: f64 = 900.0;
+/// A prior tilt stands in for a tilt within this much elevation.
+pub const PRIOR_MAX_ELEVATION_DIFF_DEG: f64 = 0.25;
+
+/// The prior tilt nearest in elevation to `sw`, resampled onto its grid (NaN where it has no data).
+fn prior_reference(sw: &dealias::SweepIn, prior: &[PriorTilt]) -> Option<Vec<f64>> {
+    let diff = |p: &PriorTilt| (p.elevation_deg - sw.elevation_deg).abs();
+    let p = prior.iter().filter(|p| diff(p) <= PRIOR_MAX_ELEVATION_DIFF_DEG).min_by(|a, b| diff(a).total_cmp(&diff(b)))?;
+    let pin = dealias::SweepIn {
+        vel: &p.dvel,
+        nyquist: 0.0,
+        elevation_deg: p.elevation_deg,
+        first_gate_m: p.first_gate_m,
+        gate_spacing_m: p.gate_spacing_m,
+    };
+    Some(dealias::resample(sw, &pin, &p.dvel))
+}
+
 /// Adds a DVEL field (dealiased VEL, same geometry) to every sweep that has VEL. Two passes:
 /// the second gives components the tilt below cannot place (isolated echoes, often aloft in
-/// strong winds) the fold the first pass's VAD profile predicts, when that is decisive.
-pub fn add_dealiased(d: &mut Decoded) {
+/// strong winds) the fold the first pass's VAD profile predicts, when that is decisive. Before
+/// the VAD, such components take the fold of the `prior` volume's DVEL on the same tilt (a few
+/// minutes earlier) when that is decisive: far echoes on the lowest tilt, beyond the profile.
+pub fn add_dealiased(d: &mut Decoded, prior: &[PriorTilt]) {
     let have: Vec<usize> =
         (0..d.grids.len()).filter(|&i| d.grids[i].contains_key("VEL") && d.sweeps[i].nyquist_ms.is_some_and(|n| n != 0.0)).collect();
     let inputs: Vec<dealias::SweepIn> = have
@@ -145,7 +174,8 @@ pub fn add_dealiased(d: &mut Decoded) {
             }
         })
         .collect();
-    let mut out = dealias::dealias_volume(&inputs);
+    let temporal: Vec<Vec<Vec<f64>>> = inputs.iter().map(|s| prior_reference(s, prior).into_iter().collect()).collect();
+    let mut out = dealias::dealias_volume_with(&inputs, &temporal);
     let first: Vec<vad::SweepIn> = inputs
         .iter()
         .zip(&out)
@@ -159,14 +189,64 @@ pub fn add_dealiased(d: &mut Decoded) {
         })
         .collect();
     if let Some(profile) = vad::wind_profile(&first) {
-        let fallbacks: Vec<Vec<f64>> = inputs.iter().map(|s| vad::radial_reference(&profile, s)).collect();
-        out = dealias::dealias_volume_with(&inputs, Some(&fallbacks));
+        let fallbacks: Vec<Vec<Vec<f64>>> = inputs
+            .iter()
+            .zip(temporal)
+            .map(|(s, mut t)| {
+                t.push(vad::radial_reference(&profile, s));
+                t
+            })
+            .collect();
+        out = dealias::dealias_volume_with(&inputs, &fallbacks);
     }
     for (&i, dvel) in have.iter().zip(out) {
         let mut meta = d.sweeps[i].fields["VEL"].clone();
         meta.file = format!("s{i:02}_DVEL.bin");
         d.sweeps[i].fields.insert("DVEL".into(), meta);
         d.grids[i].insert("DVEL".into(), dvel);
+    }
+}
+
+/// The DVEL tilts of a decoded volume's metadata, each read by `read(file)` (float16 bytes), as
+/// a prior for the next volume; empty unless the volume is complete.
+pub fn prior_tilts(meta: &VolumeMeta, mut read: impl FnMut(&str) -> Option<Vec<u8>>) -> Vec<PriorTilt> {
+    if !meta.complete {
+        return Vec::new();
+    }
+    products::tilts(&meta.sweeps, "DVEL")
+        .into_iter()
+        .filter_map(|i| {
+            let sw = &meta.sweeps[i];
+            let f = &sw.fields["DVEL"];
+            let dvel = Grid::from_f16_le(sw.n_azimuth_bins, f.n_gates, &read(&f.file)?)?;
+            Some(PriorTilt {
+                elevation_deg: sw.elevation_deg,
+                first_gate_m: f.first_gate_m as f64,
+                gate_spacing_m: f.gate_spacing_m as f64,
+                dvel,
+            })
+        })
+        .collect()
+}
+
+/// The prior for a volume of `icao` at `time` written under `root`: the latest complete volume
+/// of the site that started less than PRIOR_MAX_AGE_S before it (none if there is none).
+pub fn find_prior(root: &Path, icao: &str, time: Utc) -> Vec<PriorTilt> {
+    let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
+    let prefix = format!("{icao}_");
+    let best = entries
+        .filter_map(|e| {
+            let name = e.ok()?.file_name().into_string().ok()?;
+            let t = Utc::parse_compact(name.strip_prefix(&prefix)?)?;
+            let age = time.secs_since(t);
+            (age > 0.0 && age <= PRIOR_MAX_AGE_S).then_some((t, name))
+        })
+        .max();
+    let Some((_, name)) = best else { return Vec::new() };
+    let dir = root.join(name);
+    match read_meta(&dir) {
+        Ok(meta) => prior_tilts(&meta, |file| std::fs::read(dir.join(file)).ok()),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -304,8 +384,14 @@ pub struct Encoded {
 /// Rasterises, dealiases and computes VAD winds: everything `write_volume` does short of
 /// touching the disk (the wasm build returns this to the browser).
 pub fn encode_volume(vol: &Volume) -> Encoded {
+    encode_volume_with(vol, &[])
+}
+
+/// `encode_volume` with the previous volume's DVEL as a temporal dealiasing reference (see
+/// `add_dealiased`, `find_prior`, `Encoded::prior`).
+pub fn encode_volume_with(vol: &Volume, prior: &[PriorTilt]) -> Encoded {
     let mut d = rasterise(vol);
-    add_dealiased(&mut d);
+    add_dealiased(&mut d, prior);
     add_derived_fields(&mut d);
     let melting_layer = add_hca(&mut d, vol.latitude, vol.height_m, vol.time);
     let profile = wind_profile(&d.sweeps, &d.grids);
@@ -346,12 +432,20 @@ pub fn encode_volume(vol: &Volume) -> Encoded {
     Encoded { meta, files }
 }
 
+impl Encoded {
+    /// This volume as the prior of the next one (empty unless complete).
+    pub fn prior(&self) -> Vec<PriorTilt> {
+        prior_tilts(&self.meta, |file| self.files.iter().find(|(n, _)| n == file).map(|(_, b)| b.clone()))
+    }
+}
+
 /// Writes a decoded volume to `<root>/<ICAO>_<time>/` in the Godot-facing layout,
-/// returning that directory.
+/// returning that directory. The site's previous volume there, if recent, is the temporal
+/// dealiasing reference.
 pub fn write_volume(vol: &Volume, root: &Path) -> Result<PathBuf> {
     let out = root.join(volume_dir_name(&vol.icao, vol.time));
     std::fs::create_dir_all(&out).map_err(|e| Error::from(format!("{}: {e}", out.display())))?;
-    let enc = encode_volume(vol);
+    let enc = encode_volume_with(vol, &find_prior(root, &vol.icao, vol.time));
     for (name, bytes) in &enc.files {
         write_atomic(&out.join(name), bytes)?;
     }
@@ -448,6 +542,32 @@ mod tests {
     use super::*;
     use crate::level2::read_volume;
     use crate::synth::{self, Layout};
+
+    #[test]
+    fn prior_from_the_previous_volume() {
+        // The site's latest complete volume up to PRIOR_MAX_AGE_S earlier is the prior, the same
+        // tilts `Encoded::prior` gives in memory; later, older, other sites and partial volumes are not.
+        let vol = &synth::fixture_volumes()[0];
+        let dir = tempdir::Dir::new("prior");
+        let out = write_volume(vol, dir.path()).unwrap();
+        let t = vol.time;
+        let on_disk = find_prior(dir.path(), "KTST", t.add_secs(300.0));
+        let meta = read_meta(&out).unwrap();
+        assert_eq!(on_disk.len(), products::tilts(&meta.sweeps, "DVEL").len());
+        let in_memory = encode_volume(vol).prior();
+        assert_eq!(in_memory.len(), on_disk.len());
+        for (a, b) in on_disk.iter().zip(&in_memory) {
+            assert_eq!((a.elevation_deg, a.first_gate_m, &a.dvel), (b.elevation_deg, b.first_gate_m, &b.dvel));
+        }
+        assert!(find_prior(dir.path(), "KTST", t).is_empty(), "itself");
+        assert!(find_prior(dir.path(), "KTST", t.add_secs(-60.0)).is_empty(), "a later volume");
+        assert!(find_prior(dir.path(), "KTST", t.add_secs(PRIOR_MAX_AGE_S + 1.0)).is_empty(), "too old");
+        assert!(find_prior(dir.path(), "KTSU", t.add_secs(300.0)).is_empty(), "another site");
+        let mut partial = meta.clone();
+        partial.complete = false;
+        write_meta(&out, &partial).unwrap();
+        assert!(find_prior(dir.path(), "KTST", t.add_secs(300.0)).is_empty(), "partial");
+    }
 
     fn written() -> (Volume, tempdir::Dir, PathBuf) {
         let vol = read_volume(&synth::encode_archive(&synth::small_volume(), Layout::Bz2)).unwrap();

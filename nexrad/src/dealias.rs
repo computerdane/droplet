@@ -32,6 +32,19 @@ pub const AMBIGUOUS: f64 = 0.4;
 pub const MIN_REFERENCE_GATES: usize = 20;
 /// A fallback reference decides a component's fold only if this share of its gates agree.
 pub const FALLBACK_MIN_SHARE: f64 = 0.7;
+/// A region (not its whole component) takes the reference's fold when it overlaps the reference on
+/// this many gates and this share of them agree on a different fold than its component got.
+pub const MIN_REGION_REFERENCE_GATES: usize = 100;
+pub const REGION_OVERRIDE_SHARE: f64 = 0.8;
+/// Island clean-up (`fix_islands`): passes, the smallest boundary and the share of it that must
+/// agree, and how far from a whole number of periods a boundary's mean jump may be to count.
+pub const ISLAND_PASSES: usize = 3;
+pub const ISLAND_MIN_BOUNDARY: usize = 8;
+pub const ISLAND_SHARE: f64 = 0.8;
+pub const ISLAND_MAX_RESIDUAL: f64 = 0.3;
+
+/// Two touching regions (lower id first) and their boundary: gates and summed jump (hi - lo).
+type Boundary = ((u32, u32), (usize, f64));
 
 /// One sweep to unfold, with the geometry needed to resample it onto another tilt.
 pub struct SweepIn<'a> {
@@ -46,12 +59,13 @@ pub struct SweepIn<'a> {
 /// closest sweep at or below its elevation that is already done. Results come back in
 /// the input order.
 pub fn dealias_volume(sweeps: &[SweepIn]) -> Vec<Grid> {
-    dealias_volume_with(sweeps, None)
+    dealias_volume_with(sweeps, &[])
 }
 
-/// `dealias_volume` with a fallback reference per sweep (same order as `sweeps`; see
-/// `dealias_sweep_with`), e.g. the radial wind a VAD profile predicts.
-pub fn dealias_volume_with(sweeps: &[SweepIn], fallbacks: Option<&[Vec<f64>]>) -> Vec<Grid> {
+/// `dealias_volume` with fallback references per sweep (same order as `sweeps`, each sweep's in
+/// order of trust, see `dealias_sweep_with`; empty for none), e.g. the previous volume's DVEL
+/// on the same tilt and the radial wind a VAD profile predicts.
+pub fn dealias_volume_with(sweeps: &[SweepIn], fallbacks: &[Vec<Vec<f64>>]) -> Vec<Grid> {
     let mut order: Vec<usize> = (0..sweeps.len()).collect();
     order.sort_by(|&a, &b| sweeps[a].elevation_deg.total_cmp(&sweeps[b].elevation_deg));
     let mut out: Vec<Option<Grid>> = (0..sweeps.len()).map(|_| None).collect();
@@ -59,8 +73,8 @@ pub fn dealias_volume_with(sweeps: &[SweepIn], fallbacks: Option<&[Vec<f64>]>) -
     for i in order {
         let sw = &sweeps[i];
         let reference = below.as_ref().map(|(j, grid)| resample(sw, &sweeps[*j], grid));
-        let fallback = fallbacks.map(|f| f[i].as_slice());
-        let unfolded = dealias_sweep_with(sw.vel, sw.nyquist, reference.as_deref(), fallback);
+        let fallback: Vec<&[f64]> = fallbacks.get(i).map_or(Vec::new(), |f| f.iter().map(Vec::as_slice).collect());
+        let unfolded = dealias_sweep_with(sw.vel, sw.nyquist, reference.as_deref(), &fallback);
         below = Some((i, unfolded.clone()));
         out[i] = Some(unfolded);
     }
@@ -71,13 +85,14 @@ pub fn dealias_volume_with(sweeps: &[SweepIn], fallbacks: Option<&[Vec<f64>]>) -
 /// unfolded estimate on the same grid (NaN where unknown) used to pick each component's
 /// absolute fold.
 pub fn dealias_sweep(vel: &Grid, nyquist: f64, reference: Option<&[f64]>) -> Grid {
-    dealias_sweep_with(vel, nyquist, reference, None)
+    dealias_sweep_with(vel, nyquist, reference, &[])
 }
 
-/// `dealias_sweep` with a `fallback` estimate (same layout as `reference`) for components the
-/// reference does not cover: used when at least FALLBACK_MIN_SHARE of its gates agree on the
-/// fold, so a storm-scale circulation that departs from it by about a fold keeps its own.
-pub fn dealias_sweep_with(vel: &Grid, nyquist: f64, reference: Option<&[f64]>, fallback: Option<&[f64]>) -> Grid {
+/// `dealias_sweep` with `fallbacks`, estimates (same layout as `reference`) for components the
+/// reference does not cover, most trusted first: the first that covers a component and has at
+/// least FALLBACK_MIN_SHARE of its gates agree on the fold decides it, so a storm-scale
+/// circulation that departs from an estimate by about a fold keeps its own.
+pub fn dealias_sweep_with(vel: &Grid, nyquist: f64, reference: Option<&[f64]>, fallbacks: &[&[f64]]) -> Grid {
     let mut out = vel.clone();
     if nyquist.is_nan() || nyquist <= 0.0 {
         return out;
@@ -158,6 +173,8 @@ pub fn dealias_sweep_with(vel: &Grid, nyquist: f64, reference: Option<&[f64]>, f
         e.1 += jump;
     }
 
+    let mut boundaries: Vec<Boundary> = edges.iter().map(|(k, v)| (*k, *v)).collect();
+    boundaries.sort_unstable_by_key(|b| b.0);
     let (fold, top) = merge(n_regions, &size, edges, period);
 
     // Per valid gate, the extra fold that would bring it closest to the reference.
@@ -176,9 +193,10 @@ pub fn dealias_sweep_with(vel: &Grid, nyquist: f64, reference: Option<&[f64]>, f
             .collect()
     };
     let ref_k = reference.map(votes_for);
-    let fallback_k = fallback.map(votes_for);
+    let fallback_k: Vec<Vec<Option<i64>>> = fallbacks.iter().map(|f| votes_for(f)).collect();
     let gate_regions: Vec<u32> = (0..n).filter(|&i| valid[i]).map(|i| region[i]).collect();
-    let fold = recentre(&fold, &top, &size, &gate_regions, ref_k.as_deref(), fallback_k.as_deref());
+    let fold = recentre(&fold, &top, &size, &gate_regions, ref_k.as_deref(), &fallback_k);
+    let fold = fix_islands(fold, &size, &boundaries, period);
 
     for i in 0..n {
         if valid[i] {
@@ -302,7 +320,7 @@ fn merge(n: usize, size: &[usize], edges: HashMap<(u32, u32), (usize, f64)>, per
 /// Shifts each component (regions sharing a `top`) as a whole. `ref_k` is, per valid gate,
 /// the extra fold that would bring it closest to the reference (None where unknown); a
 /// component with enough such gates takes their most common vote; failing that, the
-/// `fallback_k` vote if it is decisive. Otherwise it takes the shift that keeps most of its
+/// first `fallback_k` vote that is decisive. Otherwise it takes the shift that keeps most of its
 /// gates at their measured value (fold 0).
 fn recentre(
     fold: &[i64],
@@ -310,7 +328,7 @@ fn recentre(
     size: &[usize],
     gate_regions: &[u32],
     ref_k: Option<&[Option<i64>]>,
-    fallback_k: Option<&[Option<i64>]>,
+    fallback_k: &[Vec<Option<i64>>],
 ) -> Vec<i64> {
     let n = top.len();
     // Ascending fold order and first-maximum wins, as numpy's argmax did.
@@ -329,21 +347,98 @@ fn recentre(
         out
     };
     let ref_votes = ref_k.map(tally);
-    let fallback_votes = fallback_k.map(tally);
+    let fallback_votes: Vec<_> = fallback_k.iter().map(|k| tally(k)).collect();
     for t in 0..n {
         if let Some(v) = ref_votes.as_ref().map(|r| &r[t])
             && v.values().sum::<usize>() >= MIN_REFERENCE_GATES
         {
             shift[t] = argmax(v);
-        } else if let Some(v) = fallback_votes.as_ref().map(|f| &f[t]) {
-            let total = v.values().sum::<usize>();
-            let k = argmax(v);
-            if total >= MIN_REFERENCE_GATES && v[&k] as f64 >= FALLBACK_MIN_SHARE * total as f64 {
-                shift[t] = k;
+        } else {
+            for v in fallback_votes.iter().map(|f| &f[t]) {
+                let total = v.values().sum::<usize>();
+                let k = argmax(v);
+                if total >= MIN_REFERENCE_GATES && v[&k] as f64 >= FALLBACK_MIN_SHARE * total as f64 {
+                    shift[t] = k;
+                    break;
+                }
             }
         }
     }
-    (0..n).map(|i| fold[i] + shift[top[i]]).collect()
+    // A region the reference covers well and overwhelmingly places elsewhere was merged into its
+    // component across a wrong boundary: give it the reference's fold on its own.
+    let mut out: Vec<i64> = (0..n).map(|i| fold[i] + shift[top[i]]).collect();
+    if let Some(k) = ref_k {
+        let mut votes: Vec<BTreeMap<i64, usize>> = vec![BTreeMap::new(); n];
+        for (g, k) in gate_regions.iter().zip(k) {
+            if let Some(k) = k {
+                *votes[*g as usize].entry(*k).or_insert(0) += 1;
+            }
+        }
+        for (r, v) in votes.iter().enumerate() {
+            let total = v.values().sum::<usize>();
+            let k = argmax(v);
+            if total >= MIN_REGION_REFERENCE_GATES && k != shift[top[r]] && v[&k] as f64 >= REGION_OVERRIDE_SHARE * total as f64 {
+                out[r] = fold[r] + k;
+            }
+        }
+    }
+    out
+}
+
+/// Shifts islands: a region whose boundary (at least ISLAND_MIN_BOUNDARY gates, ISLAND_SHARE of
+/// them) says it sits a whole number of periods off its neighbours, and which is smaller than
+/// those neighbours together, joins them. Catches regions left behind by a skipped or wrong merge
+/// that the reference could not place. `boundaries` = ((lo, hi) region, (gates, summed jump hi - lo))
+/// of the unshifted values; a few passes, all decisions of a pass taken before any is applied.
+fn fix_islands(mut fold: Vec<i64>, size: &[usize], boundaries: &[Boundary], period: f64) -> Vec<i64> {
+    let n = fold.len();
+    for _ in 0..ISLAND_PASSES {
+        // Per region and shift: boundary gates voting for it, and the neighbours' total size.
+        let mut votes: Vec<BTreeMap<i64, (usize, usize)>> = vec![BTreeMap::new(); n];
+        for &((lo, hi), (count, jump)) in boundaries {
+            let (lo, hi) = (lo as usize, hi as usize);
+            let mean = jump / count as f64 / period + (fold[hi] - fold[lo]) as f64;
+            let k = mean.round();
+            if (mean - k).abs() > ISLAND_MAX_RESIDUAL {
+                continue; // ambiguous boundary: no opinion
+            }
+            let k = k as i64;
+            let e = votes[lo].entry(k).or_insert((0, 0));
+            (e.0, e.1) = (e.0 + count, e.1 + size[hi]);
+            let e = votes[hi].entry(-k).or_insert((0, 0));
+            (e.0, e.1) = (e.0 + count, e.1 + size[lo]);
+        }
+        let mut changed = false;
+        let shifts: Vec<i64> = votes
+            .iter()
+            .enumerate()
+            .map(|(r, v)| {
+                let total: usize = v.values().map(|c| c.0).sum();
+                let best = v.iter().fold(None, |b: Option<(i64, (usize, usize))>, (&k, &c)| match b {
+                    Some((_, bc)) if bc.0 >= c.0 => b,
+                    _ => Some((k, c)),
+                });
+                match best {
+                    Some((k, (c, mass)))
+                        if k != 0 && total >= ISLAND_MIN_BOUNDARY && c as f64 >= ISLAND_SHARE * total as f64 && size[r] < mass =>
+                    {
+                        k
+                    }
+                    _ => 0,
+                }
+            })
+            .collect();
+        for (f, s) in fold.iter_mut().zip(&shifts) {
+            if *s != 0 {
+                *f += s;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    fold
 }
 
 /// Key of the first largest value (0 for an empty map).
@@ -512,9 +607,9 @@ mod tests {
             }
         }
         let fallback = vec![33.0f64; 360 * 60];
-        let out = dealias_sweep_with(&vel, vn, Some(&reference), Some(&fallback));
+        let out = dealias_sweep_with(&vel, vn, Some(&reference), &[&fallback]);
         assert_eq!((out.at(20, 10), out.at(120, 40)), (35.0, 35.0));
-        let without = dealias_sweep_with(&vel, vn, Some(&reference), None);
+        let without = dealias_sweep_with(&vel, vn, Some(&reference), &[]);
         assert_eq!((without.at(20, 10), without.at(120, 40)), (35.0, -5.0), "no fallback: measured value kept");
         let mut split = fallback.clone();
         for a in 110..130 {
@@ -522,7 +617,7 @@ mod tests {
                 split[a * 60 + g] = -5.0; // half the second echo votes for no fold
             }
         }
-        let out = dealias_sweep_with(&vel, vn, Some(&reference), Some(&split));
+        let out = dealias_sweep_with(&vel, vn, Some(&reference), &[&split]);
         assert_eq!(out.at(120, 40), -5.0, "indecisive fallback ignored");
     }
 
@@ -554,6 +649,67 @@ mod tests {
         assert_eq!(r[10], expect);
         assert_eq!(r[100 * 50 + 10], expect); // azimuth 50 deg -> below bin 50
         assert!(r[49].is_nan() || r[49] >= 0.0);
+    }
+
+    #[test]
+    fn fallbacks_in_order_of_trust() {
+        // One isolated echo folded once (true 35 m/s reads -5 at Vn 20) and no reference. The
+        // first fallback that is decisive places it; an indecisive one is passed over.
+        let vn = 20.0;
+        let mut vel = Grid::filled(360, 60, crate::level2::MISSING);
+        for a in 10..30 {
+            for g in 5..15 {
+                vel.set(a, g, -5.0);
+            }
+        }
+        let prior = vec![34.0f64; 360 * 60];
+        let vad = vec![-4.0f64; 360 * 60];
+        let mut split = prior.clone();
+        for a in 10..20 {
+            for g in 5..15 {
+                split[a * 60 + g] = -4.0;
+            }
+        }
+        assert_eq!(dealias_sweep_with(&vel, vn, None, &[&prior, &vad]).at(20, 10), 35.0);
+        assert_eq!(dealias_sweep_with(&vel, vn, None, &[&vad, &prior]).at(20, 10), -5.0);
+        assert_eq!(dealias_sweep_with(&vel, vn, None, &[&split, &vad]).at(20, 10), -5.0, "split prior passed over");
+        assert_eq!(dealias_sweep_with(&vel, vn, None, &[&split, &prior]).at(20, 10), 35.0);
+    }
+
+    #[test]
+    fn regions_the_reference_overrules() {
+        // One component of three regions (sizes 1000, 300, 150). The reference agrees with
+        // region 0 as merged, but region 1's gates all want one fold more: it was merged
+        // across a wrong boundary. Region 2 is split 60/40, which is not decisive.
+        let (fold, top, size) = (vec![0, 0, 0], vec![0, 0, 0], vec![1000, 300, 150]);
+        let mut regions = Vec::new();
+        let mut k = Vec::new();
+        for (r, n) in [(0u32, 1000), (1, 300), (2, 150)] {
+            for i in 0..n {
+                regions.push(r);
+                k.push(Some(match r {
+                    0 => 0,
+                    1 => 1,
+                    _ => (i % 5 < 3) as i64,
+                }));
+            }
+        }
+        assert_eq!(recentre(&fold, &top, &size, &regions, Some(&k), &[]), [0, 1, 0]);
+    }
+
+    #[test]
+    fn islands_join_their_surroundings() {
+        // A small region (1) whose whole boundary with a big one (0) jumps by one period, and
+        // a big region (2) that does the same with a small one (3): only the small one moves.
+        let period = 40.0;
+        let size = [5000, 40, 5000, 30];
+        let boundaries = [((0, 1), (24, 24.0 * period)), ((2, 3), (20, -20.0 * period))];
+        assert_eq!(fix_islands(vec![0, 0, 0, 0], &size, &boundaries, period), [0, -1, 0, 1]);
+        // Too short a boundary, or an ambiguous jump (half a period): left alone.
+        let short = [((0, 1), (5, 5.0 * period))];
+        assert_eq!(fix_islands(vec![0, 0, 0, 0], &size, &short, period), [0, 0, 0, 0]);
+        let ambiguous = [((0, 1), (24, 24.0 * 0.5 * period))];
+        assert_eq!(fix_islands(vec![0, 0, 0, 0], &size, &ambiguous, period), [0, 0, 0, 0]);
     }
 
     #[test]

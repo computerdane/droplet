@@ -50,10 +50,10 @@ gdformat scripts tests && gdlint scripts tests
 
 - `nexrad/` – Cargo workspace member (`Cargo.toml` at the repo root, build output in `nexrad/target/` via
   `.cargo/config.toml`). Library + `nexrad` binary; the `native` feature (default) holds networking and the CLI
-  so the library also builds for wasm. Unit tests sit next to the code (`#[cfg(test)]`, 63 of them).
+  so the library also builds for wasm. Unit tests sit next to the code (`#[cfg(test)]`, 67 of them).
 - `nexrad-wasm/` – wasm-bindgen wrapper (workspace member, `nexrad` without `native`): `decode(bytes)` →
   `{name, volume_json, files: Map<sNN_FIELD.bin, Uint8Array>}` via `volume::encode_volume()`, byte-identical to
-  `nexrad decode`; `resolve_keys(site, at, from, to, bucket)` and `live(site, bucket, sleep, emit, log)` run the
+  `nexrad decode` without a prior volume on disk (the browser's update has no temporal dealiasing reference; its live does); `resolve_keys(site, at, from, to, bucket)` and `live(site, bucket, sleep, emit, log)` run the
   CLI's key selection and live loop over a `Bucket` whose `list`/`get` are synchronous JS functions. On wasm32 the
   record loop is serial (rayon is a non-wasm dependency). `bench/` = Web Worker page + a Node driver that serves
   it to headless Chromium and writes the results to disk.
@@ -85,7 +85,14 @@ gdformat scripts tests && gdlint scripts tests
   tilt below (`dealias_volume` goes bottom-up; the lowest tilt uses "most gates unchanged").
   `add_dealiased` runs it twice: the second pass gives components the tilt below cannot place (isolated echoes aloft)
   the fold the first pass's VAD profile predicts (`vad::radial_reference`), if ≥ 70 % of their gates agree.
-  Weak spots: violent-storm cores aloft can still come out one fold off.
+  A region that overlaps the reference on ≥ 100 gates, ≥ 80 % of them wanting another fold than its component got, takes
+  that fold alone (a wrong merge); then islands whose boundary (≥ 8 gates, 80 %) sits a whole period off larger
+  neighbours join them (`fix_islands`). Temporal reference: `write_volume` finds the site's latest complete volume
+  ≤ 15 min older in the same root (`find_prior`; the wasm `live` keeps it in memory, `Encoded::prior`) and its DVEL on the
+  same tilt (±0.25°) places components before the VAD does, if ≥ 70 % agree: far echoes on the lowest tilt beyond the
+  profile. `cargo run --release --example fold_check -- data/volumes/KINX_*` scores consistency between consecutive
+  volumes (KINX 2013-05-20: 6–18 % of gates a fold off every other volume before, < 2 % now).
+  Weak spots: violent-storm cores aloft can still come out one fold off; a loop's first volume has no prior.
 - `nexrad/src/vad.rs` – VAD wind profile: per 1 km ring (5–60 km slant range, tilts ≤ 20°) least-squares fit of
   [1, sin, cos] to DVEL, then refit on raw VEL unfolded against that fit (immune to dealias errors); rings
   need 25 % coverage, samples in all 8 sectors, rms ≤ 4.5 m/s; median per 250 m height bin. `bunkers()`
@@ -301,7 +308,6 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
   storm-relative velocity, fetching from the UI, translucent volume rendering, VAD wind profile +
   hodograph + automatic (Bunkers) storm motion, hover readout (2D, 3D, section, VWP), VWP time-height plot, NWS warning polygons, storm cell tracking with TDS flags,
   hydrometeor classification with a melting layer.
-- Next ideas: dealiasing that uses the previous volume as a temporal reference.
 - Web: decoded volumes are not persisted (raw files are, in
   the Cache API; re-decoding costs ~0.5 s/volume against 84 MB stored per decoded volume).
 - Mosaic uses whatever is on disk; `nexrad live` takes several sites (a thread each; the fetch panel starts one job per site

@@ -8,8 +8,8 @@ will be hosted. `CLAUDE.md` describes the architecture; this file is about direc
 **Pipeline (`nexrad/`, Rust).** Level II decoder for both archive layouts
 (bz2 LDM records and the older gzip stream, Message 31 and legacy Message 1 radials), archive fetch of the newest /
 at-a-time / range of volumes, live following of the chunks bucket (several sites per
-process, ring position remembered), region-based velocity dealiasing (DVEL) with the VAD
-profile as a fallback reference, VAD wind profile with Bunkers storm motion and SRH,
+process, ring position remembered), region-based velocity dealiasing (DVEL) with the previous volume and the VAD
+profile as fallback references, VAD wind profile with Bunkers storm motion and SRH,
 per-gate derived fields (azimuthal shear, KDP, hydrometeor class with a melting layer), column products (composite reflectivity,
 echo tops, VIL, low-level rotation), SCIT-style storm cells with a debris-signature flag,
 a disk quota, the basemap build (shared borders once, simplified), and a CLI whose progress
@@ -27,7 +27,7 @@ section and VWP; in-app fetch panel; LRU volume cache with background prefetch; 
 HUD; `key=value` options for scripted runs. The same app runs in the browser
 (https://computerdane.github.io/droplet/), fetching and decoding with nexrad-wasm.
 
-**Tests and tooling.** `cargo test` (63 tests, no network) covers the decoder, dealiasing,
+**Tests and tooling.** `cargo test` (67 tests, no network) covers the decoder, dealiasing,
 VAD, derived fields, products, cells, the chunk ring and `live()`, key selection, the
 basemap, the quota and the volume writer, mostly against the synthetic scene's truth.
 `tests/run.gd` runs the Godot unit tests against the synthetic fixtures (or real data with
@@ -62,9 +62,9 @@ Ordered by what unblocks the most.
 5. **Finishing 3D.** Done: hover readout in 3D (ray pick against the cones, checked against
    the rendered pixels), the A-B section curtain, warnings and cells in 3D, mosaic cross-sections.
 6. **Data quality.** Done: caching the live ring position, a disk quota for `data/`, the VAD
-   profile as a fallback dealiasing reference, multi-site live in one process. Left: temporal
-   dealiasing against the previous volume (the VAD fallback already catches most of what it
-   would).
+   profile as a fallback dealiasing reference, multi-site live in one process, temporal
+   dealiasing against the previous volume (plus region-level reference checks and island
+   clean-up; `examples/fold_check.rs` measures fold consistency between consecutive volumes).
 7. **Reach.** Done: Message 1 parsing for pre-2008 archives (the archive reaches back to the early 1990s),
    a notable-events list (fetch panel, `event=` permalinks), touch controls (pinch/pan in 2D and
    3D, tilt buttons, a two-row bar on phones), loop export (animated PNG of the loop as shown; E).
