@@ -7,8 +7,9 @@ const source = (await readFile(new URL("./nexrad_worker.js", import.meta.url), "
   .replace(/^import .* from "\.\/nexrad_wasm.js";$/m, "")
   .replaceAll("import.meta.url", '"https://example.test/nexrad_worker.js"');
 
-function harness({ keys = ["a", "b", "c"], failed = [], incomplete = [], unavailable = false } = {}) {
+function harness({ keys = ["a", "b", "c"], failed = [], incomplete = [], unavailable = false, failFinal = [], pauseAt = null } = {}) {
   const messages = [], fetched = [], references = [];
+  const decoded = new Map();
   const context = vm.createContext({
     URL, navigator: { hardwareConcurrency: 4 },
     postMessage: (msg) => messages.push(structuredClone(msg)),
@@ -19,14 +20,19 @@ function harness({ keys = ["a", "b", "c"], failed = [], incomplete = [], unavail
     },
     mockFetch: async (key) => {
       fetched.push(key);
+      if (key === pauseAt) return new Promise(() => {});
       if (failed.includes(key)) throw new Error("missing");
       return new Uint8Array([keys.indexOf(key) + 1]);
     },
-    decode: (bytes, key) => ({
+    decode: (bytes, key) => {
+      decoded.set(key, (decoded.get(key) || 0) + 1);
+      if (decoded.get(key) > 1 && failFinal.includes(key)) throw new Error("finalization failed");
+      return {
       name: key,
       volume_json: JSON.stringify({ name: key, complete: !incomplete.includes(key) }),
       files: new Map([["s00_DVEL.bin", new Uint8Array(bytes)]]),
-    }),
+      };
+    },
     redealias: (meta, files, priorMeta, priorFiles) => {
       references.push([JSON.parse(meta).name, JSON.parse(priorMeta).name]);
       return { volume_json: meta, files: new Map([["s00_DVEL.bin", new Uint8Array([
@@ -44,10 +50,30 @@ test("backfill arrives newest first, finalizes chronologically and seeds the new
   const volumes = h.messages.filter((m) => m.type === "volume");
   assert.deepEqual(h.fetched, ["c", "b", "a"]);
   assert.deepEqual(volumes.map((v) => v.name), ["c", "b", "a", "a", "b", "c"]);
+  assert.deepEqual(volumes.map((v) => JSON.parse(v.volume_json).provisional === true), [true, true, true, false, false, false]);
   assert.deepEqual(volumes.map((v) => new Uint8Array(v.buffers[0])[0]), [3, 2, 1, 1, 3, 6]);
   assert.deepEqual(h.references, [["b", "a"], ["c", "b"]]);
   assert.equal(JSON.parse(h.context.seed().volume_json).name, "c");
   assert.equal(h.context.seed().files.get("s00_DVEL.bin")[0], 6);
+});
+
+test("failed finalization leaves a durable provisional marker and never seeds live", async () => {
+  const h = harness({ failFinal: ["c"] });
+  await h.context.run("KTST");
+  const newest = h.messages.filter((m) => m.type === "volume" && m.name === "c");
+  assert.equal(newest.length, 1);
+  assert.equal(JSON.parse(newest[0].volume_json).provisional, true);
+  assert.equal(JSON.parse(h.context.seed().volume_json).name, "b");
+});
+
+test("stopping a worker after preview delivery cannot leave a canonical-looking frame", async () => {
+  const h = harness({ pauseAt: "b" });
+  void h.context.run("KTST");
+  await new Promise(setImmediate); // c published; next raw request is pending when worker is terminated
+  const volumes = h.messages.filter((m) => m.type === "volume");
+  assert.equal(volumes.length, 1);
+  assert.equal(JSON.parse(volumes[0].volume_json).provisional, true);
+  assert.equal(h.context.seed(), null);
 });
 
 test("failed downloads are skipped and finalization keeps the latest successful complete seed", async () => {

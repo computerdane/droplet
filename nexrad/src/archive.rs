@@ -178,7 +178,9 @@ pub fn backfill(
             let raw = download(bucket, key, raw_dir, log)?;
             let vol = level2::read_file(&raw)?;
             excluded.push(volume::volume_dir_name(&vol.icao, vol.time));
-            let path = volume::write_encoded(&volume::encode_volume(&vol), volumes_dir)?;
+            let mut enc = volume::encode_volume(&vol);
+            enc.meta.provisional = true;
+            let path = volume::write_encoded(&enc, volumes_dir)?;
             emit(&path);
             downloaded.push(raw);
             Ok(())
@@ -325,6 +327,8 @@ mod tests {
         .unwrap();
         assert_eq!(seed.name, names[0]);
         assert_eq!(seed.time, vols[0].time);
+        assert!(volume::read_meta(&out.join(&names[1])).unwrap().provisional);
+        assert!(!volume::read_meta(&out.join(&names[0])).unwrap().provisional);
     }
 
     #[test]
@@ -393,6 +397,21 @@ mod tests {
             assert_eq!(bytes, std::fs::read(out.join(&names[1]).join(file)).unwrap());
         }
         assert_eq!(volume::read_meta(&out.join(&names[1])).unwrap(), want.meta);
+        assert!(volume::read_meta(&out.join(&names[0])).unwrap().provisional);
+        // Abrupt cancellation after phase-one publication still leaves a durable marker.
+        let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            backfill(&bucket, &keys, &raw, &out, |_| panic!("simulate process termination"), &mut Vec::new())
+        }));
+        assert!(interrupted.is_err());
+        assert!(volume::read_meta(&out.join(&names[1])).unwrap().provisional);
+        // Both selected outputs are now provisional, so a subsequent live write must find
+        // the older external scan rather than either canceled/failed archive output.
+        let live_prior = volume::find_prior(&out, &vols[1].icao, vols[1].time.add_secs(60.0));
+        let external_prior = external.prior();
+        assert_eq!(live_prior.len(), external_prior.len());
+        for (actual, expected) in live_prior.iter().zip(&external_prior) {
+            assert_eq!(actual.dvel.to_f16_le(), expected.dvel.to_f16_le());
+        }
     }
 
     #[test]
