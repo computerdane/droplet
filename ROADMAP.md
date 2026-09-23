@@ -22,7 +22,8 @@ colormaps; loop playback over sequences with scrubbing and live following; site 
 nearest-radar mosaic; 3D beam-height cones and ray-marched volume rendering with an orbit
 camera; vertical cross-sections (mosaic too); storm-relative velocity (manual or
 automatic); hodograph; VWP time-height barbs; NWS warning polygons and tracked storm cells
-with motion, forecasts and rotation / TDS markers, in 2D and 3D; hover readout in 2D, 3D,
+with motion, forecasts and rotation / TDS markers, in 2D and 3D (cells and rotation tracks
+from every mosaic site); the melting layer in sections; hover readout in 2D, 3D,
 section and VWP; in-app fetch panel; LRU volume cache with background prefetch; responsive
 HUD; `key=value` options for scripted runs. The same app runs in the browser
 (https://computerdane.github.io/droplet/), fetching and decoding with nexrad-wasm.
@@ -70,6 +71,26 @@ Ordered by what unblocks the most.
 7. **Reach.** Done: Message 1 parsing for pre-2008 archives (the archive reaches back to the early 1990s),
    a notable-events list (fetch panel, `event=` permalinks), touch controls (pinch/pan in 2D and
    3D, tilt buttons, a two-row bar on phones), loop export (animated PNG of the loop as shown; E).
+
+## Candidates for next
+
+Every item above is done; these are open for choosing. Roughly by value for the effort.
+
+- **Hail products.** MESH / POSH (the WSR-88D HDA) from the REF tilts and the 0 °C / −20 °C
+  heights. The melting layer the HCA already finds gives the first; the second needs a
+  temperature profile (see the next item) or a lapse-rate assumption.
+- **A real freezing level.** HCA falls back to a climatology in convective volumes (Moore
+  2013 gets 3.2 km ARL; the sounding had ~4 km). A model or sounding freezing level (the IEM
+  RAOB archive back to the 1940s, or RAP/HRRR analyses) would fix that and feed hail products.
+- **Precipitation accumulation.** Storm-total and 1 h rainfall from R(Z), R(KDP) and R(A)
+  blended by the hydrometeor class, over the loop (a product like ROT tracks, on the GPU or
+  in Rust per volume plus a sum).
+- **Mesocyclone / TVS detection** from AZSHR and gate-to-gate shear per tilt, with vertical
+  continuity, as markers alongside the cells (today only ROT and the TDS flag).
+- **Dealiasing in violent cores aloft**, still sometimes a fold off; the fold_check example
+  finds them (KTLX 20:38 and 20:46Z keep ~1–1.5 % disagreement on the 1.8° and 2.4° tilts).
+- **Browser persistence of decoded volumes** (OPFS), if re-decoding ever becomes the
+  bottleneck on phones.
 
 ## Automated testing
 
