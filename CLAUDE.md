@@ -16,7 +16,7 @@ cargo build --release                              # the nexrad CLI -> nexrad/ta
 nexrad update KTLX                                 # newest archive volume -> data/volumes/
 nexrad update KTLX --at 2013-05-20T20:00Z          # historical volume (Moore, OK tornado)
 nexrad update KTLX --from ... --to ...             # a range of volumes
-nexrad live KTLX                                   # poll chunks bucket, rewrite partial volume as it grows
+nexrad live KTLX [KFDR ...]                        # poll chunks bucket, rewrite partial volumes as they grow (a thread per site)
 nexrad basemap                                     # once: Census states/counties + cities -> data/basemap/
 nexrad decode data/raw/*_V06*                      # re-decode everything (e.g. after decoder/dealias changes)
 nexrad derive [data/volumes/...]                   # (re)compute AZSHR/KDP, VAD winds, storm motion, CREF/ET/VIL without re-decoding
@@ -272,7 +272,7 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Next ideas: dealiasing that uses the previous volume as a temporal reference.
 - Web: decoded volumes are not persisted (raw files are, in
   the Cache API; re-decoding costs ~0.5 s/volume against 84 MB stored per decoded volume).
-- Mosaic uses whatever is on disk; `live` follows one site per process (the fetch panel can start several
+- Mosaic uses whatever is on disk; `nexrad live` takes several sites (a thread each; the fetch panel starts one job per site
   for a live mosaic). Fetching from the UI needs the `nexrad` binary (PATH or `DROPLET_NEXRAD`) and a source checkout (not an export).
 - The 3D ground disk/rings are centred on the selected site only.
 - Cells and rotation tracks are the selected site's only.

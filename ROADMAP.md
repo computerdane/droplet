@@ -31,7 +31,6 @@ tests, ~6 s). All green.
 
 **Gaps.**
 
-- Live follows one site per process.
 
 ## Roadmap
 
@@ -53,8 +52,9 @@ Ordered by what unblocks the most.
 5. **Finishing 3D.** Done: hover readout in 3D (ray pick against the cones, checked against
    the rendered pixels), the A-B section curtain, warnings and cells in 3D, mosaic cross-sections.
 6. **Data quality.** Done: caching the live ring position, a disk quota for `data/`, the VAD
-   profile as a fallback dealiasing reference. Left: temporal dealiasing against the previous
-   volume, multi-site live in one process.
+   profile as a fallback dealiasing reference, multi-site live in one process. Left: temporal
+   dealiasing against the previous volume (the VAD fallback already catches most of what it
+   would).
 7. **Reach.** Message 1 parsing for pre-2008 archives, loop export to video, touch
    controls, a bookmark list of notable events.
 

@@ -11,7 +11,8 @@
 //!                                                 # the column products (alias: winds)
 //!
 //! Live (chunks bucket, seconds behind real time):
-//!     nexrad live KTLX [--interval 5]             # poll, decode partial volumes as they grow
+//!     nexrad live KTLX [KFDR ...] [--interval 5]  # poll, decode partial volumes as they grow
+//!                                                 # (several sites: one thread each)
 //!
 //! Disk: update, live and `nexrad prune` keep data/ under $DROPLET_QUOTA_GB (default 20) by
 //! deleting the oldest volumes and raw files (see nexrad::prune).
@@ -49,7 +50,7 @@ fn enforce_quota(root: &Path) {
 fn usage() -> ! {
     eprintln!("usage: nexrad latest|fetch|update SITE [--at T | --from T --to T]");
     eprintln!("       nexrad decode PATH...");
-    eprintln!("       nexrad live SITE [--interval SECONDS]");
+    eprintln!("       nexrad live SITE... [--interval SECONDS]");
     eprintln!("       nexrad derive [VOLUME_DIR...]");
     eprintln!("       nexrad basemap");
     eprintln!("       nexrad prune                  (keep data/ under $DROPLET_QUOTA_GB, default 20)");
@@ -119,9 +120,13 @@ fn run(args: &[String]) -> Result<()> {
             }
         }
         "live" => {
-            let site = rest.first().filter(|a| !a.starts_with("--")).ok_or("missing SITE")?.to_uppercase();
+            // One or more sites, each followed on its own thread.
+            let sites: Vec<String> = rest.iter().take_while(|a| !a.starts_with("--")).map(|s| s.to_uppercase()).collect();
+            if sites.is_empty() {
+                return Err("missing SITE".into());
+            }
             let mut interval = 5.0f64;
-            let mut i = 1;
+            let mut i = sites.len();
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--interval" => {
@@ -131,31 +136,48 @@ fn run(args: &[String]) -> Result<()> {
                     other => return Err(format!("unknown option {other}").into()),
                 }
             }
-            let bucket = HttpBucket::new(chunks::BUCKET);
-            let sleep = || {
-                std::thread::sleep(std::time::Duration::from_secs_f64(interval.max(0.0)));
-                true
-            };
-            let mut sink = |v: &level2::Volume| -> Result<String> {
-                let dir = volume::write_volume(v, &volumes_dir)?;
-                if v.complete {
-                    enforce_quota(&root);
-                }
-                Ok(dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string())
-            };
-            // Remember where the ring was, so the next run needs a few listings, not ~20.
+            // Remember where each ring was, so the next run needs a few listings, not ~20.
             let ring_file = root.join("data").join("live_ring.json");
-            let mut ring: serde_json::Map<String, serde_json::Value> =
+            let ring: serde_json::Map<String, serde_json::Value> =
                 std::fs::read_to_string(&ring_file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-            let hint = ring.get(&site).and_then(|v| Some((v.get(0)?.as_u64()? as u32, Utc::parse_compact(v.get(1)?.as_str()?)?)));
-            let start = chunks::Start::Newest { hint, now: Utc::now() };
-            let mut remember = |v: u32, t: Utc| {
-                ring.insert(site.clone(), serde_json::json!([v, t.compact()]));
-                if let Ok(text) = serde_json::to_string(&ring) {
-                    let _ = volume::write_atomic(&ring_file, text.as_bytes());
-                }
+            let ring = std::sync::Mutex::new(ring);
+            let follow = |site: &str| -> Result<()> {
+                let bucket = HttpBucket::new(chunks::BUCKET);
+                let sleep = || {
+                    std::thread::sleep(std::time::Duration::from_secs_f64(interval.max(0.0)));
+                    true
+                };
+                let mut sink = |v: &level2::Volume| -> Result<String> {
+                    let dir = volume::write_volume(v, &volumes_dir)?;
+                    if v.complete {
+                        enforce_quota(&root);
+                    }
+                    Ok(dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string())
+                };
+                let hint = ring
+                    .lock()
+                    .unwrap()
+                    .get(site)
+                    .and_then(|v| Some((v.get(0)?.as_u64()? as u32, Utc::parse_compact(v.get(1)?.as_str()?)?)));
+                let start = chunks::Start::Newest { hint, now: Utc::now() };
+                let mut remember = |v: u32, t: Utc| {
+                    let mut ring = ring.lock().unwrap();
+                    ring.insert(site.to_string(), serde_json::json!([v, t.compact()]));
+                    if let Ok(text) = serde_json::to_string(&*ring) {
+                        let _ = volume::write_atomic(&ring_file, text.as_bytes());
+                    }
+                };
+                // Whole lines, so several sites' logs do not interleave mid-line.
+                let mut log = std::io::LineWriter::new(std::io::stderr());
+                chunks::live(&bucket, site, &mut sink, start, &mut remember, sleep, &mut log)
             };
-            chunks::live(&bucket, &site, &mut sink, start, &mut remember, sleep, &mut err)?;
+            let results: Vec<Result<()>> = std::thread::scope(|s| {
+                let handles: Vec<_> = sites.iter().map(|site| s.spawn(|| follow(site))).collect();
+                handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("live thread panicked".into()))).collect()
+            });
+            for r in results {
+                r?;
+            }
         }
         "prune" => enforce_quota(&root),
         "derive" | "winds" => {
