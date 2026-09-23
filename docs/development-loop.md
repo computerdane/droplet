@@ -60,6 +60,8 @@ Ask questions and request refinements on issues, including unapproved discoverie
 Codex answers while the loop runs and catches up after restarting. Questions and
 discussion do not authorize implementation. Use the Question issue form for
 codebase questions; asking and answering a question does not need `/approve`.
+Codex posts its own clarifying and follow-up questions on the relevant issue or
+PR and watches for answers there, rather than asking them in the Codex session.
 Requests to change the code still need a human `/approve` comment. To approve an
 issue, post this as an entire, unedited comment:
 
