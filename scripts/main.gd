@@ -904,6 +904,13 @@ func _update_info() -> void:
 		)
 		return
 	if volume == null:
+		var running := fetcher.running_jobs()
+		if not running.is_empty():
+			var lines := PackedStringArray()
+			for job in running:
+				lines.append(job.describe())
+			hud.set_info("%s  waiting for first scan\n%s" % [site, "\n".join(lines)])
+			return
 		var help := "Run:  nexrad update KTLX   (or: nexrad live KTLX)"
 		if fetcher.web:
 			help = "Press F to fetch radar data"
