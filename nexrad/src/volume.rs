@@ -47,6 +47,9 @@ pub struct VolumeMeta {
     pub height_m: Option<f64>,
     pub vcp: Option<u16>,
     pub complete: bool,
+    /// Archive preview awaiting chronological temporal finalization; never a prior.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub provisional: bool,
     pub dtype: String,
     pub layout: String,
     pub missing: f64,
@@ -210,7 +213,7 @@ pub fn add_dealiased(d: &mut Decoded, prior: &[PriorTilt]) {
 /// The DVEL tilts of a decoded volume's metadata, each read by `read(file)` (float16 bytes), as
 /// a prior for the next volume; empty unless the volume is complete.
 pub fn prior_tilts(meta: &VolumeMeta, mut read: impl FnMut(&str) -> Option<Vec<u8>>) -> Vec<PriorTilt> {
-    if !meta.complete {
+    if !meta.complete || meta.provisional {
         return Vec::new();
     }
     products::tilts(&meta.sweeps, "DVEL")
@@ -245,7 +248,7 @@ pub fn find_prior(root: &Path, icao: &str, time: Utc) -> Vec<PriorTilt> {
 pub(crate) fn find_prior_excluding(root: &Path, icao: &str, time: Utc, excluded: &[String]) -> Vec<PriorTilt> {
     let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
     let prefix = format!("{icao}_");
-    let best = entries
+    let mut candidates: Vec<_> = entries
         .filter_map(|e| {
             let name = e.ok()?.file_name().into_string().ok()?;
             if excluded.contains(&name) {
@@ -254,13 +257,17 @@ pub(crate) fn find_prior_excluding(root: &Path, icao: &str, time: Utc, excluded:
             let t = Utc::parse_compact(name.strip_prefix(&prefix)?)?;
             is_prior(icao, time, icao, t).then_some((t, name))
         })
-        .max();
-    let Some((_, name)) = best else { return Vec::new() };
-    let dir = root.join(name);
-    match read_meta(&dir) {
-        Ok(meta) => prior_tilts(&meta, |file| std::fs::read(dir.join(file)).ok()),
-        Err(_) => Vec::new(),
+        .collect();
+    candidates.sort_unstable();
+    for (_, name) in candidates.into_iter().rev() {
+        let dir = root.join(name);
+        match read_meta(&dir) {
+            Ok(meta) if meta.provisional => continue,
+            Ok(meta) => return prior_tilts(&meta, |file| std::fs::read(dir.join(file)).ok()),
+            Err(_) => return Vec::new(),
+        }
     }
+    Vec::new()
 }
 
 /// Adds AZSHR next to every DVEL and KDP next to every PHI that has RHO on the same sweep
@@ -431,6 +438,7 @@ pub fn encode_volume_with(vol: &Volume, prior: &[PriorTilt]) -> Encoded {
         height_m: vol.height_m,
         vcp: vol.vcp,
         complete: vol.complete,
+        provisional: false,
         dtype: "float16-le".into(),
         layout: "row-major [azimuth_bin][gate]; bin b covers [b*step, (b+1)*step) degrees clockwise from north".into(),
         missing: MISSING as f64,
@@ -546,6 +554,14 @@ pub fn write_encoded(enc: &Encoded, root: &Path) -> Result<PathBuf> {
     let time = Utc::parse_iso(&enc.meta.time)?;
     let out = root.join(volume_dir_name(&enc.meta.icao, time));
     std::fs::create_dir_all(&out).map_err(|e| Error::from(format!("{}: {e}", out.display())))?;
+    // A killed preview rewrite must not leave old canonical metadata labeling new files.
+    // New directories remain invisible until the final metadata write below.
+    if enc.meta.provisional
+        && let Ok(mut previous) = read_meta(&out)
+    {
+        previous.provisional = true;
+        write_meta(&out, &previous)?;
+    }
     for (name, bytes) in &enc.files {
         write_atomic(&out.join(name), bytes)?;
     }
@@ -562,6 +578,10 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 /// `volume.json` text, exactly as written to disk.
 pub fn meta_json(meta: &VolumeMeta) -> Result<String> {
     Ok(serde_json::to_string_pretty(meta)?)
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 pub fn write_meta(out: &Path, meta: &VolumeMeta) -> Result<()> {
@@ -647,6 +667,22 @@ mod tests {
     use super::*;
     use crate::level2::read_volume;
     use crate::synth::{self, Layout};
+
+    #[test]
+    fn interrupted_preview_rewrite_cannot_keep_canonical_metadata() {
+        let vol = synth::small_volume();
+        let mut enc = encode_volume(&vol);
+        let root = tempdir::Dir::new("preview-rewrite");
+        let out = write_encoded(&enc, root.path()).unwrap();
+        assert!(!meta_json(&enc.meta).unwrap().contains("provisional"));
+        enc.meta.provisional = true;
+        // Failure at the first sweep write, after the existing metadata was marked.
+        enc.files.insert(0, ("absent-directory/field.bin".into(), vec![0, 0]));
+        assert!(write_encoded(&enc, root.path()).is_err());
+        assert!(read_meta(&out).unwrap().provisional);
+        assert!(enc.prior().is_empty());
+        assert!(find_prior(root.path(), &vol.icao, vol.time.add_secs(300.0)).is_empty());
+    }
 
     #[test]
     fn prior_from_the_previous_volume() {

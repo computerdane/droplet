@@ -37,6 +37,18 @@ func test_fetcher_reports_same_name_writes() -> void:
 	fetcher.free()
 
 
+func test_provisional_quality_survives_reopen() -> void:
+	var source := MemorySourceScript.new()
+	var name: String = lib.volumes[0]
+	var meta: Dictionary = JSON.parse_string(lib.source.read_meta(name))
+	meta["provisional"] = true
+	source.add_volume(name, JSON.stringify(meta), {})
+	check(RadarVolume.open(source, name).provisional, "interrupted preview remains provisional")
+	meta.erase("provisional")
+	source.add_volume(name, JSON.stringify(meta), {})
+	check(not RadarVolume.open(source, name).provisional, "final replacement clears quality flag")
+
+
 func test_memory_matches_dir() -> void:
 	var mem = MemorySourceScript.new()
 	var names: Array[String] = []

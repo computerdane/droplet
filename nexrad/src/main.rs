@@ -178,10 +178,7 @@ fn run(args: &[String]) -> Result<()> {
                     std::thread::sleep(std::time::Duration::from_secs_f64(interval.max(0.0)));
                     true
                 };
-                let (seed_name, mut prior_time, mut prior) = match last_backfilled {
-                    Some(seed) => (Some(seed.name), Some(seed.time), seed.prior),
-                    None => (None, None, Vec::new()),
-                };
+                let seed_name = last_backfilled.map(|seed| seed.name);
                 let mut sink = |v: &level2::Volume| -> Result<String> {
                     let name = volume::volume_dir_name(&v.icao, v.time);
                     if v.complete && seed_name.as_deref() == Some(name.as_str()) {
@@ -190,13 +187,10 @@ fn run(args: &[String]) -> Result<()> {
                         // redundant decode + write instead of reporting it a second time.
                         return Ok(name);
                     }
-                    // Never seed from a provisional volume left on disk by a failed finalization.
-                    let fresh = prior_time.is_some_and(|t| volume::is_prior(&v.icao, v.time, &v.icao, t));
-                    let enc = volume::encode_volume_with(v, if fresh { &prior } else { &[] });
-                    let dir = volume::write_encoded(&enc, &volumes_dir)?;
+                    // Select the latest eligible persisted prior, including earlier sessions.
+                    // Provisional backfill output is explicitly excluded by find_prior().
+                    let dir = volume::write_volume(v, &volumes_dir)?;
                     if v.complete {
-                        prior = enc.prior();
-                        prior_time = Some(v.time);
                         enforce_quota(&root);
                     }
                     Ok(dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string())

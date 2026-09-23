@@ -81,7 +81,8 @@ function withPrior(msg) {
       }
     }
   }
-  if (!JSON.parse(msg.volume_json).complete) return msg;
+  const meta = JSON.parse(msg.volume_json);
+  if (!meta.complete || meta.provisional) return msg;
   const dvel = new Map();
   msg.names.forEach((n, i) => n.endsWith("_DVEL.bin") && dvel.set(n, new Uint8Array(msg.buffers[i].slice(0))));
   prior = { volume_json: msg.volume_json, files: dvel };
@@ -184,6 +185,7 @@ async function backfill(site) {
     try {
       const bytes = await fetchRaw(key);
       const [msg] = volumeMessage(decode(bytes, key));
+      msg.volume_json = JSON.stringify({ ...JSON.parse(msg.volume_json), provisional: true });
       raw.set(key, bytes);
       postMessage(msg, msg.buffers);
       line(msg.name);

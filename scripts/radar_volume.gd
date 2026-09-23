@@ -16,6 +16,10 @@ var name: String  # <ICAO>_<YYYYMMDD_HHMMSS>
 var meta: Dictionary
 var sweeps: Array = []
 var version := 0  # source.version() of volume.json when loaded
+## A complete archive scan awaiting temporal finalization, including after stop/failure.
+var provisional: bool:
+	get:
+		return meta.get("provisional", false)
 var texture_bytes := 0  # GPU bytes of textures loaded so far (for VolumeCache budgeting)
 var tilt_arrays: Dictionary = {}  # field -> TiltArray (volume rendering), see TiltArray
 var _textures: Dictionary = {}
