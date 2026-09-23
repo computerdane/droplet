@@ -2,7 +2,8 @@ class_name VolumeView3D
 extends Node3D
 ## 3D volume view: every tilt of one field as a cone (cone.gdshader), or with
 ## `volume_render` as a translucent ray-marched volume (VolumeRender), over a ground disk
-## with basemap lines, city labels, range rings and a height scale at the radar.
+## with basemap lines, city labels, range rings and a height scale at the radar (and a disk
+## with the site's name under each mosaic neighbour).
 ## Heights are exaggerated for legibility.
 
 const GROUND_RADIUS_KM := 480.0
@@ -50,6 +51,8 @@ var _height_labels: Array[Label3D] = []
 var _basemap_mats: Array[ShaderMaterial] = []
 var _site_latlon := Vector2.INF  # last set_site(), re-applied when the basemap arrives
 var _city_labels: Array[Label3D] = []
+var _ground_disk: MeshInstance3D
+var _neighbor_grounds: Array[Node3D] = []  # a disk, cross and name under each mosaic neighbour
 
 @onready var camera: OrbitCamera = $Camera
 @onready var cones: ConeSet = $Cones
@@ -116,8 +119,7 @@ func show_volume(
 		for cs in _neighbors:
 			cs.visible = false
 		_show_renders(vol, field_name, thr, abs_mode, neighbors, others)
-		for mat in _basemap_mats:
-			mat.set_shader_parameter("fade_km", MOSAIC_FADE_KM if neighbors else GROUND_RADIUS_KM)
+		_show_neighbor_grounds(neighbors)
 		return
 	for vr in _renders:
 		vr.visible = false
@@ -141,6 +143,43 @@ func show_volume(
 		cs.show_volume(
 			n["volume"], field_name, sel_elev, isolate, thr, abs_mode, exaggeration, n["others"]
 		)
+	_show_neighbor_grounds(neighbors)
+
+
+## The ground under the mosaic: a disk like the selected site's under each neighbour, with a
+## cross and its name at the radar; the basemap reaches further while there are neighbours.
+func _show_neighbor_grounds(neighbors: Array) -> void:
+	while _neighbor_grounds.size() < neighbors.size():
+		var g := Node3D.new()
+		var disk := MeshInstance3D.new()
+		disk.mesh = _ground_disk.mesh
+		disk.material_override = _ground_disk.material_override
+		disk.position.y = _ground_disk.position.y
+		g.add_child(disk)
+		var s := 6.0
+		var cross := PackedVector3Array(
+			[Vector3(-s, 0.05, 0), Vector3(s, 0.05, 0), Vector3(0, 0.05, -s), Vector3(0, 0.05, s)]
+		)
+		g.add_child(_line_instance(cross, Color(1, 1, 1, 0.6)))
+		var label := Label3D.new()
+		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		label.fixed_size = true
+		label.pixel_size = 0.0008
+		label.font_size = 22
+		label.outline_size = 6
+		label.modulate = Color(1, 1, 1, 0.85)
+		label.position = Vector3(0, 0.3, 0)
+		label.offset = Vector2(0, 18)
+		g.add_child(label)
+		add_child(g)
+		_neighbor_grounds.append(g)
+	for k in _neighbor_grounds.size():
+		var g := _neighbor_grounds[k]
+		g.visible = k < neighbors.size()
+		if g.visible:
+			var off: Vector2 = neighbors[k]["offset_km"]
+			g.position = Vector3(off.x, 0, -off.y)
+			(g.get_child(2) as Label3D).text = neighbors[k]["site"]
 	for mat in _basemap_mats:
 		mat.set_shader_parameter("fade_km", MOSAIC_FADE_KM if neighbors else GROUND_RADIUS_KM)
 
@@ -216,6 +255,7 @@ func _build_ground() -> void:
 	disk.position.y = -0.1
 	disk.material_override = _flat_material(Color(0.07, 0.08, 0.11))
 	add_child(disk)
+	_ground_disk = disk
 
 	var lines := PackedVector3Array()
 	var r := RING_STEP_KM

@@ -316,4 +316,4 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
   the Cache API; re-decoding costs ~0.5 s/volume against 84 MB stored per decoded volume).
 - Mosaic uses whatever is on disk; `nexrad live` takes several sites (a thread each; the fetch panel starts one job per site
   for a live mosaic). Fetching from the UI needs the `nexrad` binary (PATH or `DROPLET_NEXRAD`) and a source checkout (not an export).
-- The 3D ground disk/rings are centred on the selected site only.
+- 3D range rings and the height scale are the selected site's; mosaic neighbours get a ground disk and their name.
