@@ -139,7 +139,7 @@ func _ready() -> void:
 
 
 func _build_info() -> void:
-	info = _label(13)
+	info = _label(12)
 	info.position = Vector2(12, INFO_TOP)
 	add_child(info)
 	hint = _label(12)
