@@ -36,7 +36,7 @@ godot --headless --path . --import                  # (re)build .godot/ cache af
 godot --headless --path . --script res://tests/run.gd   # Godot unit tests on the fixtures
 godot --headless --path . --script res://tests/run.gd -- volumes=res://data/volumes only=readout
 tests/golden.sh                                     # golden screenshots of the fixtures (flake Mesa + Xvfb); --update to re-render
-tests/perf.sh                                       # frame-time gate on a real loop (Xvfb, fetches data; nightly in CI)
+tests/perf.sh                                       # frame-time + work-per-frame gate on a real loop (Xvfb, fetches data; nightly in CI)
 godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 view=3d mosaic=1
 godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 vwp=1 hover=560,380
 godot --path . --script res://tests/screenshot.gd -- out.png volumes=res://tests/fixtures/volumes site=KTST

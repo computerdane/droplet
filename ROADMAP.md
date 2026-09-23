@@ -37,7 +37,8 @@ runs all of it plus lint on every push. `web/smoke.mjs` drives the web build hea
 
 **Gaps.**
 
-- The performance gate (tests/perf.sh, nightly) measures hitches relative to the median, not absolute GPU cost.
+- The performance gate (tests/perf.sh, nightly) budgets hitches relative to the median and the work per frame
+  (draw calls, primitives, video memory), not GPU time itself: under llvmpipe that is the runner's CPU.
 - The browser keeps no decoded volumes between visits (by design: raw files are cached and re-decode in ~0.5 s),
   and its multi-volume updates decode in parallel, so they get no temporal dealiasing reference (live does).
 
@@ -47,7 +48,8 @@ Ordered by what unblocks the most.
 
 1. **Test fixtures and CI.** Done: synthetic volume generator, `cargo test`, Godot test runner
    on the fixtures, golden screenshots under Xvfb (`tests/golden.sh`), GitHub Actions
-   (`.github/workflows/ci.yml`), the nightly performance gate (`tests/perf.sh`, `perf.yml`).
+   (`.github/workflows/ci.yml`), the nightly performance gate (`tests/perf.sh`, `perf.yml`; hitch
+   ratios plus absolute work budgets).
    Prerequisite for everything below being safe to ship. See "Automated testing".
 2. **Web build and hosting.** See "Web build". Includes URL-state permalinks, which fall
    out of the existing `key=value` options.

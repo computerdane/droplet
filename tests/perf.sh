@@ -2,7 +2,8 @@
 # Performance gate: plays a real loop (KTLX, the Moore tornado, an hour of volumes) with the
 # flake's Mesa (llvmpipe) under Xvfb and fails on hitches: frames far slower than the median
 # (a stall while streaming loop frames or uploading textures). Software rendering makes absolute
-# times depend on the runner's cores, so the budgets are ratios to the median. Fetches the
+# times depend on the runner's cores, so the time budgets are ratios to the median; the absolute
+# cost is budgeted as work per frame (draw calls, primitives, video memory). Fetches the
 # volumes (and builds the basemap) first if data/ lacks them, which needs network.
 #   tests/perf.sh            every case
 #   tests/perf.sh 2d_play    only these cases
@@ -12,13 +13,15 @@ cd "$(dirname "$0")/.."
 
 FROM=2013-05-20T19:30Z
 TO=2013-05-20T20:30Z
-COMMON="site=KTLX time=20130520_193407 basemap=1 warnings=0 live=0 hover=0 fps=15 play=1"
+COMMON="site=KTLX time=20130520_193407 basemap=1 warnings=0 live=0 hover=0 fps=15 play=1 ratio_floor_ms=10"
 # case -> main.gd options and budgets (tests/frametimes.gd): p99 within max_p99_ratio × the
-# median, at most max_spikes frames over 4 × the median. Ratios, so a slow runner still passes.
+# median (at least 10 ms), at most max_spikes frames over 4 × that. Ratios, so a slow runner
+# still passes. The work of the busiest frame is budgeted absolutely (the same on any machine:
+# draw calls, primitives, peak video memory), about 1.3 × what it was when last set.
 declare -A CASES=(
-	[2d_play]="frames=900 field=REF zoom=2 max_p99_ratio=3 max_spikes=10"
-	[2d_dvel_mosaic]="frames=900 field=DVEL srm=auto mosaic=1 zoom=1.5 max_p99_ratio=3 max_spikes=10"
-	[3d_play]="frames=300 view=3d field=REF max_p99_ratio=3 max_spikes=6"
+	[2d_play]="frames=900 field=REF zoom=2 max_p99_ratio=3 max_spikes=10 max_draw_calls=650 max_primitives=33000 max_video_mb=110"
+	[2d_dvel_mosaic]="frames=900 field=DVEL srm=auto mosaic=1 zoom=1.5 max_p99_ratio=3 max_spikes=10 max_draw_calls=920 max_primitives=46000 max_video_mb=170"
+	[3d_play]="frames=300 view=3d field=REF max_p99_ratio=3 max_spikes=6 max_draw_calls=170 max_primitives=850000 max_video_mb=440"
 )
 
 : "${DROPLET_GL_LIBS:?run inside nix develop}"
