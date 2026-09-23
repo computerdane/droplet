@@ -80,7 +80,7 @@ Every item above is done; these are open for choosing. Roughly by value for the 
   heights. The melting layer the HCA already finds gives the first; the second needs a
   temperature profile (see the next item) or a lapse-rate assumption.
 - **A real freezing level.** HCA falls back to a climatology in convective volumes (Moore
-  2013 gets 3.2 km ARL; the sounding had ~4 km). A model or sounding freezing level (the IEM
+  2013 gets 3.2 km ARL from the climatology). A model or sounding freezing level (the IEM
   RAOB archive back to the 1940s, or RAP/HRRR analyses) would fix that and feed hail products.
 - **Precipitation accumulation.** Storm-total and 1 h rainfall from R(Z), R(KDP) and R(A)
   blended by the hydrometeor class, over the loop (a product like ROT tracks, on the GPU or
