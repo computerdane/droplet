@@ -97,8 +97,20 @@ pub fn resolve_keys(site: &str, at: &str, from: &str, to: &str, bucket: &JsValue
 /// `nexrad live SITE` against the chunks bucket: each time the in-progress volume grows,
 /// `emit({name, volume_json, files, complete})` is called; `log(line)` gets the CLI's status
 /// lines. `sleep()` runs between polls and returns false to stop. Blocks until then.
+/// `hint_volume` / `hint_time_ms` = where the ring was last time (see `chunks::Start::Newest`),
+/// and `remember(volume, time_ms)` is told each volume as it begins, for the next run's hint.
 #[wasm_bindgen]
-pub fn live(site: &str, bucket: &JsValue, sleep: &Function, emit: &Function, log: &Function) -> Result<(), JsError> {
+#[allow(clippy::too_many_arguments)]
+pub fn live(
+    site: &str,
+    bucket: &JsValue,
+    sleep: &Function,
+    emit: &Function,
+    log: &Function,
+    hint_volume: Option<u32>,
+    hint_time_ms: Option<f64>,
+    remember: &Function,
+) -> Result<(), JsError> {
     let bucket = JsBucket::new(bucket)?;
     // The last complete volume's DVEL, the temporal dealiasing reference of the next one (as
     // `nexrad live` finds it on disk).
@@ -120,9 +132,12 @@ pub fn live(site: &str, bucket: &JsValue, sleep: &Function, emit: &Function, log
     };
     let sleep = || sleep.call0(&JsValue::NULL).map(|v| v.is_truthy()).unwrap_or(false);
     let mut log = LineWriter { log, buf: Vec::new() };
-    // No ring memory in the browser yet: the worker starts with the full search.
-    let start = chunks::Start::Newest { hint: None, now: nexrad::time::Utc(0) };
-    chunks::live(&bucket, site, &mut sink, start, &mut |_, _| {}, sleep, &mut log).map_err(|e| JsError::new(&e.to_string()))
+    let hint = hint_volume.zip(hint_time_ms).map(|(v, t)| (v, Utc(t as i64)));
+    let start = chunks::Start::Newest { hint, now: Utc(Date::now() as i64) };
+    let mut remember = |v: u32, t: Utc| {
+        let _ = remember.call2(&JsValue::NULL, &v.into(), &(t.0 as f64).into());
+    };
+    chunks::live(&bucket, site, &mut sink, start, &mut remember, sleep, &mut log).map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// Passes each complete line written to it to a JS function.

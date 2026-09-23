@@ -302,7 +302,8 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Verified against KTLX 2026-09-22 (VCP 212, bz2) and KTLX 2013-05-20 20:03Z (VCP 12, gz, the Moore tornado).
 - `live` starts on the in-progress volume (skipping it if joined after its first chunk), then follows each new one. It
   remembers the ring position in `data/live_ring.json` (`chunks::Start::Newest` hint: a binary search over the numbers the
-  ring can have moved since, a few listings) and falls back to the ~20-listing search; the web worker has no memory yet.
+  ring can have moved since, a few listings) and falls back to the ~20-listing search. On web the worker posts `ring` messages and
+  `Fetcher` keeps them in localStorage (`droplet.live_ring.<SITE>`), passed back as the next live job's `hint`.
 - Done: time animation + live following, column products (CREF, ET, VIL), azimuthal shear, KDP and rotation tracks, 3D cones, basemap, site picker, multi-site mosaic,
   background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
   storm-relative velocity, fetching from the UI, translucent volume rendering, VAD wind profile +

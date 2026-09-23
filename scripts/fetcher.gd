@@ -21,6 +21,8 @@ signal volume_received(name: String, volume_json: String, files: Dictionary)
 
 const VOLUME_NAME := "[A-Z0-9]{4}_\\d{8}_\\d{6}"
 const WORKER_URL := "nexrad_worker.js"
+## localStorage key prefix (+ site) of where the chunks ring was, the live worker's start hint.
+const RING_KEY := "droplet.live_ring."
 
 
 class Job:
@@ -80,7 +82,12 @@ func start_update(site: String, at := "", from := "", to := "") -> Job:
 
 func start_live(site: String) -> Job:
 	if web:
-		return _start_worker("live", site, {})
+		var request := {}
+		var stored := _storage_get(RING_KEY + site)
+		var hint = JSON.parse_string(stored) if not stored.is_empty() else null
+		if hint is Dictionary:
+			request["hint"] = hint
+		return _start_worker("live", site, request)
 	return _start("live", site, PackedStringArray(["live", site]))
 
 
@@ -166,6 +173,9 @@ func _on_worker_message(args: Array, job: Job) -> void:
 			volume_received.emit(name, str(data.volume_json), files)
 			if not job.volumes.has(name):
 				job.volumes.append(name)
+		"ring":
+			var ring := {"volume": int(data.volume), "time_ms": float(data.time_ms)}
+			_storage_set(RING_KEY + job.site, JSON.stringify(ring))
 		"done":
 			job.worker.terminate()
 			_finish(job, 0)
@@ -176,6 +186,28 @@ func _on_worker_message(args: Array, job: Job) -> void:
 			_finish(job, 1)
 			return
 	job_updated.emit(job)
+
+
+## localStorage on web ("" when missing or when the page may not use it).
+func _storage_get(key: String) -> String:
+	var v = JavaScriptBridge.eval(
+		(
+			"(() => { try { return localStorage.getItem(%s) || ''; } catch (e) { return ''; } })()"
+			% JSON.stringify(key)
+		),
+		true
+	)
+	return str(v) if v != null else ""
+
+
+func _storage_set(key: String, value: String) -> void:
+	JavaScriptBridge.eval(
+		(
+			"(() => { try { localStorage.setItem(%s, %s); } catch (e) {} })()"
+			% [JSON.stringify(key), JSON.stringify(value)]
+		),
+		true
+	)
 
 
 ## Uncaught worker errors, e.g. nexrad_worker.js or the wasm module failing to load.

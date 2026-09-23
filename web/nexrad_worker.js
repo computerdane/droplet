@@ -1,10 +1,12 @@
 // The web build's stand-in for the `nexrad` CLI (scripts/fetcher.gd starts one module worker per
 // job and terminates it to stop, as it kills a process on the desktop). Posted one JSON request:
 //   {"cmd": "update", "site": "KTLX", "at": "", "from": "", "to": ""}   (ISO times or "")
-//   {"cmd": "live", "site": "KTLX", "interval": 5}
+//   {"cmd": "live", "site": "KTLX", "interval": 5, "hint": {"volume": 417, "time_ms": ...}}
 // Answers with {type: "line", line} (the CLI's output lines, "[i/n] file" progress included),
 // {type: "volume", name, volume_json, names, buffers} (sweep file names and their float16
-// ArrayBuffers, transferred), and finally {type: "done"} or {type: "error", message}.
+// ArrayBuffers, transferred), and finally {type: "done"} or {type: "error", message}. Live also
+// sends {type: "ring", volume, time_ms} as each volume begins: where the chunks ring was, which
+// the page keeps (localStorage) and passes back as `hint` so the next visit skips the search.
 //
 // An update of several volumes fans the decoding out to a pool of nested workers running this
 // same script ({"cmd": "decode", key, index} -> {type: "decoded", index, ...volume}) and still
@@ -128,7 +130,7 @@ async function update({ site, at = "", from = "", to = "", workers = POOL_SIZE }
   }
 }
 
-function follow({ site, interval = 5 }) {
+function follow({ site, interval = 5, hint = null }) {
   if (typeof SharedArrayBuffer === "undefined") {
     throw new Error("live needs a cross-origin isolated page (COOP/COEP headers)");
   }
@@ -137,7 +139,8 @@ function follow({ site, interval = 5 }) {
     Atomics.wait(nap, 0, 0, interval * 1000);
     return true;
   };
-  live(site, bucket(CHUNKS), sleep, postVolume, line);
+  const remember = (volume, time_ms) => postMessage({ type: "ring", volume, time_ms });
+  live(site, bucket(CHUNKS), sleep, postVolume, line, hint?.volume ?? null, hint?.time_ms ?? null, remember);
 }
 
 onmessage = async ({ data }) => {

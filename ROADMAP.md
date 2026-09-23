@@ -38,7 +38,8 @@ runs all of it plus lint on every push. `web/smoke.mjs` drives the web build hea
 **Gaps.**
 
 - The performance gate (tests/perf.sh, nightly) measures hitches relative to the median, not absolute GPU cost.
-- The browser keeps no decoded volumes and no live ring memory between visits.
+- The browser keeps no decoded volumes between visits (by design: raw files are cached and re-decode in ~0.5 s),
+  and its multi-volume updates decode in parallel, so they get no temporal dealiasing reference (live does).
 
 ## Roadmap
 
