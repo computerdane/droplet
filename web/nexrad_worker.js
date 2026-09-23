@@ -81,7 +81,7 @@ async function update({ site, at = "", from = "", to = "", workers = POOL_SIZE }
   if (n <= 1) {
     for (const [i, key] of keys.entries()) {
       line(`[${i + 1}/${keys.length}] ${fileName(key)}`);
-      const vol = decode(await fetchRaw(key));
+      const vol = decode(await fetchRaw(key), key);
       postVolume(vol);
       line(vol.name); // as `nexrad update` prints each decoded volume
     }
@@ -146,7 +146,7 @@ onmessage = async ({ data }) => {
     await init();
     if (req.cmd === "decode") {
       // a pool member: one answer per key, and it stays up for the next
-      return postMessage(...volumeMessage(decode(await fetchRaw(req.key)), { type: "decoded", index: req.index }));
+      return postMessage(...volumeMessage(decode(await fetchRaw(req.key), req.key), { type: "decoded", index: req.index }));
     }
     if (req.cmd === "update") await update(req);
     else if (req.cmd === "live") follow(req);

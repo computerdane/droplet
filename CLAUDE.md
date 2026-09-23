@@ -6,7 +6,7 @@ or direnv). Godot, gdformat/gdlint and the Rust toolchain are all provided; `car
 --release` puts `nexrad` on the shell's PATH (`nix build` packages the same binary).
 
 Goals: **live** view that is never behind (seconds, via the real-time chunks bucket) and
-**history** browsing of any volume back to ~2008 (via the archive mirror), with visualizations
+**history** browsing of any volume back to the early 1990s (via the archive mirror), with visualizations
 that go well beyond a flat reflectivity map.
 
 ## Commands
@@ -48,7 +48,7 @@ gdformat scripts tests && gdlint scripts tests
 
 - `nexrad/` – Cargo workspace member (`Cargo.toml` at the repo root, build output in `nexrad/target/` via
   `.cargo/config.toml`). Library + `nexrad` binary; the `native` feature (default) holds networking and the CLI
-  so the library also builds for wasm. Unit tests sit next to the code (`#[cfg(test)]`, 51 of them).
+  so the library also builds for wasm. Unit tests sit next to the code (`#[cfg(test)]`, 59 of them).
 - `nexrad-wasm/` – wasm-bindgen wrapper (workspace member, `nexrad` without `native`): `decode(bytes)` →
   `{name, volume_json, files: Map<sNN_FIELD.bin, Uint8Array>}` via `volume::encode_volume()`, byte-identical to
   `nexrad decode`; `resolve_keys(site, at, from, to, bucket)` and `live(site, bucket, sleep, emit, log)` run the
@@ -67,7 +67,7 @@ gdformat scripts tests && gdlint scripts tests
   to main). Pages cannot send COOP/COEP, so the preset enables Godot's PWA service worker, which adds them, plus a
   `head_include` that reloads once that worker controls the page (Godot's shell can reload too early). Changes to
   the template reach a local `export_presets.cfg` only if you delete it (build.sh seeds it when missing).
-- `nexrad/src/level2.rs` – Archive2 / Message 31 decoder (bzip2 + flate2 only). LDM records are decompressed
+- `nexrad/src/level2.rs` – Archive2 decoder, Message 31 and legacy Message 1 radials (bzip2 + flate2 only). LDM records are decompressed
   and parsed in parallel (rayon); torn or truncated records yield what decoded cleanly (`live` feeds it
   partial files). Output is float32 computed as `(raw - offset) / scale`, so float16 files match the old
   numpy pipeline bit for bit.
@@ -260,7 +260,7 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 
 ## Known limits / next steps
 
-- Decoder reads both archive layouts: bzip2 LDM records (current) and the older gzip-wrapped uncompressed stream (~pre-2016, `.gz` keys). Only Message 31 radials are parsed (Build 10+, ~mid-2008 onward); pre-2008 files use Message 1 and would need a separate parser.
+- Decoder reads both archive layouts: bzip2 LDM records (current) and the older gzip-wrapped uncompressed stream (~pre-2016, `.gz` keys), and both radial formats: Message 31 (Build 10+, ~mid-2008 onward) and legacy Message 1 (8-bit REF on 1 km gates to 460 km, VEL/SW on 250 m gates, 1° radials, no dual-pol). Message 1 files carry no site location (`nexrad/src/sites.rs`, the NCEI station list) and the oldest (`ARCHIVE2.nnn` headers) not even the ICAO (`level2::with_site()` takes it from the file name or key). Checked on KTLX 1995, 1999-05-03 (Bridge Creek-Moore), 2005, 2007.
 - Verified against KTLX 2026-09-22 (VCP 212, bz2) and KTLX 2013-05-20 20:03Z (VCP 12, gz, the Moore tornado).
 - `live` starts on the in-progress volume (skipping it if joined after its first chunk), then follows each new one. It
   remembers the ring position in `data/live_ring.json` (`chunks::Start::Newest` hint: a binary search over the numbers the

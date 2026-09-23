@@ -15,6 +15,7 @@ pub mod net;
 pub mod products;
 #[cfg(feature = "native")]
 pub mod prune;
+pub mod sites;
 pub mod synth;
 pub mod time;
 pub mod vad;

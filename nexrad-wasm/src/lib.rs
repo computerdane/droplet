@@ -13,10 +13,15 @@ use wasm_bindgen::prelude::*;
 /// Raw archive bytes (bzip2 or gzip layout) → `{ name, volume_json, files, read_ms, encode_ms }`,
 /// where `name` is the volume directory (`ICAO_YYYYMMDD_HHMMSS`), `volume_json` the exact
 /// `volume.json` text and `files` a `Map` of `sNN_<FIELD>.bin` → float16 `Uint8Array`.
+/// `key` (the archive key or file name) supplies the site of pre-2008 files whose header lacks it.
 #[wasm_bindgen]
-pub fn decode(raw: &[u8]) -> Result<Object, JsError> {
+pub fn decode(raw: &[u8], key: Option<String>) -> Result<Object, JsError> {
     let t0 = Date::now();
     let vol = level2::read_volume(raw).map_err(|e| JsError::new(&e.to_string()))?;
+    let vol = level2::with_site(vol, key.as_deref().unwrap_or(""));
+    if vol.icao.is_empty() {
+        return Err(JsError::new("no site id in the header or the key"));
+    }
     let t1 = Date::now();
     let out = encode(&vol)?;
     Reflect::set(&out, &"read_ms".into(), &(t1 - t0).into()).map_err(err)?;

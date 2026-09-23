@@ -1,9 +1,10 @@
-//! Minimal NEXRAD Level II (Archive2, Message 31) decoder.
+//! Minimal NEXRAD Level II (Archive2) decoder: Message 31 radials, and Message 1 before ~2008.
 //!
 //! Handles the modern Build 12+ format: a 24-byte volume header followed by
 //! bzip2-compressed LDM records containing metadata messages (fixed 2432 bytes) and
 //! Message 31 radials (variable size). Older archives (roughly pre-2016, distributed as
-//! `.gz`) hold the message stream uncompressed right after the header, gzip-wrapped.
+//! `.gz`) hold the message stream uncompressed right after the header, gzip-wrapped; before
+//! ~2008 (Build ≤ 9) the radials are legacy Message 1 in the fixed-size slots.
 //!
 //! Reference: NWS ICD 2620010 (RDA/RPG Interface Control Document).
 
@@ -111,9 +112,8 @@ impl Cur<'_> {
 /// Site and scan facts carried by the RVOL block of every radial.
 #[derive(Clone, Copy, Debug)]
 struct VolInfo {
-    latitude: f32,
-    longitude: f32,
-    height_m: i16,
+    /// Latitude, longitude, height m (Message 1 radials carry none).
+    site: Option<(f32, f32, i16)>,
     vcp: u16,
 }
 
@@ -181,7 +181,7 @@ fn parse_msg31(data: &[u8]) -> Option<(Radial, Option<VolInfo>)> {
         match (btype, name.as_str()) {
             (b'R', "VOL") => {
                 if let (Some(lat), Some(lon), Some(h), Some(vcp)) = (cur.f32(p + 8), cur.f32(p + 12), cur.i16(p + 16), cur.u16(p + 40)) {
-                    info = Some(VolInfo { latitude: lat, longitude: lon, height_m: h, vcp });
+                    info = Some(VolInfo { site: Some((lat, lon, h)), vcp });
                 }
             }
             (b'R', "RAD") => {
@@ -222,6 +222,61 @@ fn scale_word(raw: u32, scale: f32, offset: f32) -> f32 {
     }
 }
 
+/// Legacy Message 1 angle code → degrees (16-bit binary angle).
+fn msg1_angle(code: u16) -> f32 {
+    code as f32 * (180.0 / 32768.0)
+}
+
+/// A pre-2008 (Build ≤ 9) digital radar data radial: 8-bit REF on 1 km gates (up to 460) and
+/// VEL/SW on 250 m gates (up to 920), in fixed 2432-byte message slots. Data pointers are
+/// relative to the message body. Doppler gates in front of the antenna are dropped.
+fn parse_msg1(data: &[u8]) -> Option<(Radial, u16)> {
+    let cur = Cur(data);
+    let ms = cur.u32(0)?;
+    let jdate = cur.u16(4)?;
+    let unamb = cur.u16(6)?;
+    let az = msg1_angle(cur.u16(8)?);
+    let elev = msg1_angle(cur.u16(14)?);
+    let elev_num = cur.u16(16)? as u8;
+    let (sur_first, dop_first) = (cur.i16(18)? as i32, cur.i16(20)? as i32);
+    let (sur_step, dop_step) = (cur.u16(22)? as u32, cur.u16(24)? as u32);
+    let (sur_n, dop_n) = (cur.u16(26)? as usize, cur.u16(28)? as usize);
+    let (ref_p, vel_p, sw_p) = (cur.u16(36)? as usize, cur.u16(38)? as usize, cur.u16(40)? as usize);
+    let vel_res = cur.u16(42)?;
+    let vcp = cur.u16(44)?;
+    let nyq = cur.u16(60)?;
+    let mut radial = Radial {
+        azimuth: az,
+        elevation: elev,
+        elevation_number: elev_num,
+        azimuth_resolution: 2,
+        time: Utc::from_nexrad(jdate as u32, ms),
+        nyquist_ms: (nyq > 0).then_some(nyq as f64 * 0.01),
+        unambiguous_range_km: Some(unamb as f64 * 0.1),
+        moments: Vec::new(),
+    };
+    let mut moment = |name: &str, p: usize, n: usize, first: i32, step: u32, scale: f32, offset: f32| {
+        if p == 0 || n == 0 || step == 0 {
+            return;
+        }
+        let Some(words) = cur.bytes(p, n) else { return };
+        // Gates centred behind the antenna (the Doppler cut starts at -375 m) carry nothing.
+        let skip = if first < 0 { ((-first) as u32).div_ceil(step) as usize } else { 0 }.min(n);
+        let values = words[skip..].iter().map(|&w| scale_word(w as u32, scale, offset)).collect();
+        radial.moments.push(Moment {
+            name: name.to_string(),
+            n_gates: n - skip,
+            first_gate_m: first + (skip as u32 * step) as i32,
+            gate_spacing_m: step,
+            values,
+        });
+    };
+    moment("REF", ref_p, sur_n, sur_first, sur_step, 2.0, 66.0);
+    moment("VEL", vel_p, dop_n, dop_first, dop_step, if vel_res == 4 { 1.0 } else { 2.0 }, 129.0);
+    moment("SW", sw_p, dop_n, dop_first, dop_step, 2.0, 129.0);
+    Some((radial, vcp))
+}
+
 /// Every Message 31 radial of one decompressed record, plus the site info if any.
 fn parse_record(rec: &[u8]) -> (Vec<Radial>, Option<VolInfo>) {
     let cur = Cur(rec);
@@ -249,6 +304,13 @@ fn parse_record(rec: &[u8]) -> (Vec<Radial>, Option<VolInfo>) {
             }
             pos = end;
         } else {
+            if mtype == 1 {
+                let end = (pos + FIXED_MSG_SIZE).min(rec.len());
+                if let Some((r, vcp)) = rec.get(h + MSG_HEADER_SIZE..end).and_then(parse_msg1) {
+                    radials.push(r);
+                    info = info.or(Some(VolInfo { site: None, vcp }));
+                }
+            }
             // Fixed-size message, or an empty (type 0) padding slot in the metadata block.
             pos += FIXED_MSG_SIZE;
         }
@@ -267,12 +329,14 @@ pub fn read_volume(raw: &[u8]) -> Result<Volume> {
     } else {
         raw
     };
-    if !raw.starts_with(b"AR2V00") || raw.len() < VOLUME_HEADER_SIZE {
-        return Err("not an Archive2 volume (missing AR2V header)".into());
+    if !(raw.starts_with(b"AR2V00") || raw.starts_with(b"ARCHIVE2")) || raw.len() < VOLUME_HEADER_SIZE {
+        return Err("not an Archive2 volume (missing AR2V / ARCHIVE2 header)".into());
     }
     let cur = Cur(raw);
     let (vol_date, vol_ms) = (cur.u32(12).unwrap_or(1), cur.u32(16).unwrap_or(0));
+    // The oldest (ARCHIVE2.nnn) headers leave the ICAO blank: `with_site()` fills it in.
     let icao = String::from_utf8_lossy(&raw[20..24]).to_string();
+    let icao = if icao.bytes().all(|b| b.is_ascii_alphanumeric()) { icao } else { String::new() };
     let mut volume = Volume { icao, time: Utc::from_nexrad(vol_date, vol_ms), complete: true, ..Default::default() };
 
     let compressed = raw.get(28..31) == Some(b"BZh");
@@ -283,22 +347,47 @@ pub fn read_volume(raw: &[u8]) -> Result<Volume> {
     let parsed: Vec<(Vec<Radial>, Option<VolInfo>)> = records(raw).iter().map(parse).collect();
     for (radials, info) in parsed {
         if let Some(i) = info {
-            volume.latitude = Some(i.latitude as f64);
-            volume.longitude = Some(i.longitude as f64);
-            volume.height_m = Some(i.height_m as f64);
+            if let Some((lat, lon, h)) = i.site {
+                volume.latitude = Some(lat as f64);
+                volume.longitude = Some(lon as f64);
+                volume.height_m = Some(h as f64);
+            }
             volume.vcp = Some(i.vcp);
         }
         volume.radials.extend(radials);
     }
     if volume.radials.is_empty() {
-        return Err("no Message 31 radials found".into());
+        return Err("no Message 31 or Message 1 radials found".into());
     }
-    Ok(volume)
+    Ok(with_site(volume, ""))
+}
+
+/// Fills in what an old archive leaves out: the ICAO from `name` (a file name or archive key,
+/// `.../KTLX19990503_235621.gz`) when the header has none, and the site location from
+/// `sites::SITES` when no RVOL block carried it.
+pub fn with_site(mut vol: Volume, name: &str) -> Volume {
+    if vol.icao.is_empty() {
+        let base = name.rsplit('/').next().unwrap_or(name);
+        if let Some(icao) = base.get(..4).filter(|s| s.bytes().all(|b| b.is_ascii_uppercase())) {
+            vol.icao = icao.to_string();
+        }
+    }
+    if vol.latitude.is_none()
+        && let Some((lat, lon, h)) = crate::sites::location(&vol.icao)
+    {
+        (vol.latitude, vol.longitude, vol.height_m) = (Some(lat), Some(lon), Some(h));
+    }
+    vol
 }
 
 pub fn read_file(path: impl AsRef<std::path::Path>) -> Result<Volume> {
-    let raw = std::fs::read(path.as_ref()).map_err(|e| Error::from(format!("{}: {e}", path.as_ref().display())))?;
-    read_volume(&raw)
+    let path = path.as_ref();
+    let raw = std::fs::read(path).map_err(|e| Error::from(format!("{}: {e}", path.display())))?;
+    let vol = with_site(read_volume(&raw)?, &path.file_name().unwrap_or_default().to_string_lossy());
+    if vol.icao.is_empty() {
+        return Err(format!("{}: no site id in the header or the file name", path.display()).into());
+    }
+    Ok(vol)
 }
 
 #[cfg(test)]
@@ -379,7 +468,7 @@ mod tests {
         assert_eq!(partial.radials.len(), 2 * synth::RADIALS_PER_RECORD);
         assert_eq!(partial.vcp, Some(212));
         let err = read_volume(&parts[..2].concat()).unwrap_err().to_string();
-        assert!(err.contains("no Message 31"), "{err}");
+        assert!(err.contains("no Message 31 or Message 1"), "{err}");
         // A torn last record still yields everything before the tear.
         let mut torn = parts[..4].concat();
         torn.truncate(torn.len() - 200);
@@ -410,5 +499,67 @@ mod tests {
         let got = read_volume(&raw).unwrap(); // uncompressed stream, as in the old layout
         assert_eq!(got.radials.len(), 2);
         assert!((got.radials[1].azimuth - vol.radials[1].azimuth).abs() < 1e-5);
+    }
+
+    /// One legacy Message 1 slot (CTM + header + body, FIXED_MSG_SIZE bytes).
+    fn msg1(az_code: u16, elev_num: u16, vel_res: u16) -> Vec<u8> {
+        let mut m = vec![0u8; FIXED_MSG_SIZE];
+        let put = |m: &mut Vec<u8>, at: usize, v: u16| m[at..at + 2].copy_from_slice(&v.to_be_bytes());
+        let h = CTM_HEADER_SIZE;
+        put(&mut m, h, ((FIXED_MSG_SIZE - CTM_HEADER_SIZE) / 2) as u16);
+        m[h + 3] = 1;
+        let b = h + MSG_HEADER_SIZE;
+        m[b..b + 4].copy_from_slice(&(20 * 3_600_000u32 + 1500).to_be_bytes()); // 20:00:01.5
+        put(&mut m, b + 4, 10715); // 1999-05-03
+        put(&mut m, b + 6, 4660); // 466 km
+        put(&mut m, b + 8, az_code);
+        put(&mut m, b + 14, 88); // 0.483°
+        put(&mut m, b + 16, elev_num);
+        put(&mut m, b + 18, 0);
+        put(&mut m, b + 20, (-375i16) as u16);
+        put(&mut m, b + 22, 1000);
+        put(&mut m, b + 24, 250);
+        put(&mut m, b + 26, 4); // REF gates
+        put(&mut m, b + 28, 6); // Doppler gates
+        put(&mut m, b + 36, 100);
+        put(&mut m, b + 38, 200);
+        put(&mut m, b + 40, 300);
+        put(&mut m, b + 42, vel_res);
+        put(&mut m, b + 44, 11);
+        put(&mut m, b + 60, 2650); // 26.5 m/s
+        m[b + 100..b + 104].copy_from_slice(&[0, 1, 106, 226]); // missing, folded, 20 dBZ, 80 dBZ
+        m[b + 200..b + 206].copy_from_slice(&[9, 9, 139, 129, 1, 0]); // 2 gates behind the antenna
+        m[b + 300..b + 306].copy_from_slice(&[9, 9, 133, 0, 0, 0]);
+        m
+    }
+
+    #[test]
+    fn legacy_message_1() {
+        let mut raw = b"ARCHIVE2.031".to_vec();
+        raw.extend_from_slice(&10715u32.to_be_bytes());
+        raw.extend_from_slice(&(20 * 3_600_000u32).to_be_bytes());
+        raw.extend_from_slice(&[0; 4]); // no ICAO in the oldest headers
+        raw.extend(msg1(16384, 1, 4)); // 90°, 1 m/s velocity resolution
+        raw.extend(msg1(32768, 1, 2)); // 180°, 0.5 m/s
+        let vol = read_volume(&raw).unwrap();
+        assert_eq!((vol.icao.as_str(), vol.vcp, vol.latitude), ("", Some(11), None));
+        let vol = with_site(vol, "1999/05/03/KTLX/KTLX19990503_200000.gz");
+        assert_eq!(vol.icao, "KTLX");
+        assert!((vol.latitude.unwrap() - 35.3334).abs() < 1e-3 && vol.height_m.is_some());
+        assert_eq!(vol.time, Utc::from_ymd_hms(1999, 5, 3, 20, 0, 0));
+        let r = &vol.radials[0];
+        assert_eq!((r.azimuth, r.elevation_number, r.azimuth_resolution), (90.0, 1, 2));
+        assert!((r.elevation - 0.483).abs() < 1e-3);
+        assert_eq!(r.time, Utc::from_nexrad(10715, 20 * 3_600_000 + 1500));
+        assert_eq!((r.nyquist_ms, r.unambiguous_range_km), (Some(26.5), Some(466.0)));
+        let refl = r.moment("REF").unwrap();
+        assert_eq!((refl.n_gates, refl.first_gate_m, refl.gate_spacing_m), (4, 0, 1000));
+        assert_eq!(refl.values, [MISSING, RANGE_FOLDED, 20.0, 80.0]);
+        let vel = r.moment("VEL").unwrap();
+        assert_eq!((vel.n_gates, vel.first_gate_m, vel.gate_spacing_m), (4, 125, 250));
+        assert_eq!(vel.values, [10.0, 0.0, RANGE_FOLDED, MISSING]);
+        assert_eq!(vol.radials[1].moment("VEL").unwrap().values, [5.0, 0.0, RANGE_FOLDED, MISSING]);
+        assert_eq!(r.moment("SW").unwrap().values, [2.0, MISSING, MISSING, MISSING]);
+        assert_eq!(vol.radials[1].azimuth, 180.0);
     }
 }

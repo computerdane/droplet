@@ -27,7 +27,7 @@ section and VWP; in-app fetch panel; LRU volume cache with background prefetch; 
 HUD; `key=value` options for scripted runs. The same app runs in the browser
 (https://computerdane.github.io/droplet/), fetching and decoding with nexrad-wasm.
 
-**Tests and tooling.** `cargo test` (57 tests, no network) covers the decoder, dealiasing,
+**Tests and tooling.** `cargo test` (59 tests, no network) covers the decoder, dealiasing,
 VAD, derived fields, products, cells, the chunk ring and `live()`, key selection, the
 basemap, the quota and the volume writer, mostly against the synthetic scene's truth.
 `tests/run.gd` runs the Godot unit tests against the synthetic fixtures (or real data with
@@ -38,7 +38,7 @@ runs all of it plus lint on every push. `web/smoke.mjs` drives the web build hea
 **Gaps.**
 
 - The performance gate (frame times) is not automated.
-- Hydrometeor classification, SPC outlooks and pre-2008 (Message 1) archives are missing.
+- Hydrometeor classification and SPC outlooks are missing.
 - The browser keeps no decoded volumes and no live ring memory between visits.
 
 ## Roadmap
@@ -64,7 +64,7 @@ Ordered by what unblocks the most.
    profile as a fallback dealiasing reference, multi-site live in one process. Left: temporal
    dealiasing against the previous volume (the VAD fallback already catches most of what it
    would).
-7. **Reach.** Message 1 parsing for pre-2008 archives, loop export to video, touch
+7. **Reach.** Done: Message 1 parsing for pre-2008 archives (the archive reaches back to the early 1990s). Left: loop export to video, touch
    controls, a bookmark list of notable events.
 
 ## Automated testing

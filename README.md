@@ -1,7 +1,7 @@
 # droplet
 
 A weather radar visualizer built with Godot. Live NEXRAD data seconds behind real time,
-plus history browsing back to 2008.
+plus history browsing back to the early 1990s.
 
 ## Development
 
