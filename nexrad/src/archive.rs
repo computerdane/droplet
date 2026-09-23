@@ -170,14 +170,11 @@ pub fn backfill(
 ) -> Option<BackfillSeed> {
     use crate::{level2, volume};
     let mut downloaded = Vec::new();
-    let mut excluded: Vec<String> =
-        keys.iter().filter_map(|key| Some(volume::volume_dir_name(file_name(key).get(..4)?, key_time(key)?))).collect();
     for (i, key) in keys.iter().rev().enumerate() {
         let _ = writeln!(log, "[{}/{}] {}", i + 1, keys.len(), file_name(key));
         let result = (|| -> Result<()> {
             let raw = download(bucket, key, raw_dir, log)?;
             let vol = level2::read_file(&raw)?;
-            excluded.push(volume::volume_dir_name(&vol.icao, vol.time));
             let mut enc = volume::encode_volume(&vol);
             enc.meta.provisional = true;
             let path = volume::write_encoded(&enc, volumes_dir)?;
@@ -189,24 +186,17 @@ pub fn backfill(
             let _ = writeln!(log, "backfill {}: {e}", file_name(key));
         }
     }
-    let mut prior = Vec::new();
-    let mut previous: Option<(String, Utc)> = None;
     let mut newest = None;
     for raw in downloaded.iter().rev() {
         let result = (|| -> Result<()> {
             let vol = level2::read_file(raw)?;
-            let valid = previous.as_ref().is_some_and(|(site, time)| volume::is_prior(&vol.icao, vol.time, site, *time));
-            // Preserve update's starting reference on populated roots. Selected names may
-            // still be provisional after failures and must never supply this reference.
-            let initial =
-                if previous.is_none() { volume::find_prior_excluding(volumes_dir, &vol.icao, vol.time, &excluded) } else { Vec::new() };
-            let enc = volume::encode_volume_with(&vol, if valid { &prior } else { &initial });
+            // Use exactly update's persisted reference at every step. This includes earlier
+            // finalized scans and cached scans whose download failed, but skips previews.
+            let enc = volume::encode_volume_with(&vol, &volume::find_prior(volumes_dir, &vol.icao, vol.time));
             let path = volume::write_encoded(&enc, volumes_dir)?;
             emit(&path);
             if vol.complete {
-                prior = enc.prior();
-                previous = Some((vol.icao.clone(), vol.time));
-                newest = Some(volume::volume_dir_name(&vol.icao, vol.time));
+                newest = Some(BackfillSeed { name: volume::volume_dir_name(&vol.icao, vol.time), time: vol.time, prior: enc.prior() });
             }
             Ok(())
         })();
@@ -214,7 +204,7 @@ pub fn backfill(
             let _ = writeln!(log, "backfill finalize {}: {e}", raw.display());
         }
     }
-    newest.zip(previous).map(|(name, (_, time))| BackfillSeed { name, time, prior })
+    newest
 }
 
 #[cfg(test)]
@@ -412,6 +402,48 @@ mod tests {
         for (actual, expected) in live_prior.iter().zip(&external_prior) {
             assert_eq!(actual.dvel.to_f16_le(), expected.dvel.to_f16_le());
         }
+    }
+
+    #[test]
+    fn backfill_uses_cached_middle_scan_when_its_selected_download_fails() {
+        use crate::{level2, synth, volume};
+        let root = volume::tempdir::Dir::new("backfill-cached-middle");
+        let raw = root.path().join("raw");
+        let out = root.path().join("volumes");
+        let vols = synth::fixture_volumes();
+        let mut middle = volume::encode_volume(&vols[0]);
+        let middle_time = vols[0].time.add_secs(150.0);
+        middle.meta.time = middle_time.isoformat();
+        let period = 2.0 * synth::fixture_scene().nyquist_ms as f32;
+        for (name, bytes) in &mut middle.files {
+            if name.ends_with("_DVEL.bin") {
+                for gate in bytes.as_chunks_mut::<2>().0 {
+                    let value = half::f16::from_le_bytes(*gate).to_f32();
+                    if value > -900.0 {
+                        *gate = half::f16::from_f32(value + period).to_le_bytes();
+                    }
+                }
+            }
+        }
+        let middle_path = volume::write_encoded(&middle, &out).unwrap();
+        let bucket = FakeBucket::default();
+        let mut keys = Vec::new();
+        for vol in &vols[..2] {
+            let key = format!("{}{}_V06", vol.icao, vol.time.compact());
+            bucket.objects.borrow_mut().insert(key.clone(), synth::encode_archive(vol, synth::Layout::Bz2));
+            keys.push(key);
+        }
+        keys.insert(1, format!("{}{}_V06", vols[0].icao, middle_time.compact()));
+        let decoded = level2::read_volume(&bucket.objects.borrow()[&keys[2]]).unwrap();
+        let want = volume::encode_volume_with(&decoded, &middle.prior());
+        let wrong = volume::encode_volume_with(&decoded, &volume::encode_volume(&vols[0]).prior());
+        assert!(want.files.iter().any(|(name, bytes)| name.ends_with("_DVEL.bin") && wrong.file(name) != Some(bytes.as_slice())));
+        let seed = backfill(&bucket, &keys, &raw, &out, |_| {}, &mut Vec::new()).unwrap();
+        for (name, bytes) in &want.files {
+            assert_eq!(*bytes, std::fs::read(out.join(&seed.name).join(name)).unwrap());
+        }
+        assert_eq!(want.meta, volume::read_meta(&out.join(&seed.name)).unwrap());
+        assert_eq!(middle.meta, volume::read_meta(&middle_path).unwrap(), "failed download leaves cached canonical scan intact");
     }
 
     #[test]
