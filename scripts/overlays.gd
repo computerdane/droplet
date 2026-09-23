@@ -75,16 +75,20 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 ## `loop` is the selected site's loop (oldest first), `index` the frame on screen within it,
 ## `neighbors` the mosaic neighbours on screen (Mosaic.neighbors(), may be empty).
+## In overview mode there is no radar volume: use the current UTC time and the national
+## composite's projection center for the SPC outlook.
 func update(
 	view: PpiView,
 	view_3d: VolumeView3D,
 	volume: RadarVolume,
 	loop: Array[RadarVolume],
 	index: int,
-	neighbors: Array = []
+	neighbors: Array = [],
+	overview: bool = false
 ) -> void:
-	var t := RadarLibrary.unix_of(volume.name) if volume != null else 0
-	active_warnings = warnings.active_at(t)
+	var context := context_for(volume, overview, int(Time.get_unix_time_from_system()))
+	var t: int = context.get("time", 0)
+	active_warnings = [] if overview else warnings.active_at(t)
 	active_outlook = outlooks.active_at(t)
 	cells = []
 	if cells_on and volume != null:
@@ -100,14 +104,25 @@ func update(
 			cells = _mosaic_cells(cells, loop, neighbors)
 	var polys := []
 	var outlook_polys := []
-	if volume != null:
-		var lat := float(volume.meta["latitude"])
-		var lon := float(volume.meta["longitude"])
-		polys = Warnings.project(active_warnings, lat, lon)
-		outlook_polys = Warnings.project(active_outlook, lat, lon)
+	if not context.is_empty():
+		var center: Vector2 = context["center"]
+		polys = Warnings.project(active_warnings, center.x, center.y)
+		outlook_polys = Warnings.project(active_outlook, center.x, center.y)
 	view.set_warnings(polys, outlook_polys)
 	view.set_cells(cells)
 	view_3d.overlay.set_overlays(polys, cells)
+
+
+## Context for either a historical site frame or the live national map.
+static func context_for(volume: RadarVolume, overview: bool, now: int) -> Dictionary:
+	if overview:
+		return {"time": now, "center": NationalComposite.CENTER}
+	if volume != null:
+		return {
+			"time": RadarLibrary.unix_of(volume.name),
+			"center": Vector2(float(volume.meta["latitude"]), float(volume.meta["longitude"]))
+		}
+	return {}
 
 
 ## `own` (the selected radar's cells) and every neighbour's cells in the selected radar's frame,
@@ -197,3 +212,15 @@ func readout_lines(lonlat: Vector2, pos: Vector2) -> PackedStringArray:
 	if not area.is_empty():
 		lines.append("SPC day 1: " + area["name"].to_lower())
 	return lines
+
+
+## National map hover: keep the clickable station hint above any SPC category.
+func overview_readout(world: Vector2, station: String) -> String:
+	var lines := PackedStringArray()
+	if not station.is_empty():
+		lines.append("%s\nClick for recent scans" % station)
+	var ll := Basemap.unproject(
+		Vector2(world.x, -world.y), NationalComposite.CENTER.x, NationalComposite.CENTER.y
+	)
+	lines.append_array(readout_lines(Vector2(ll.y, ll.x), Vector2.ZERO))
+	return "\n".join(lines)
