@@ -2,6 +2,7 @@ extends "res://tests/test_case.gd"
 ## RadarLibrary indexing, sequences, tilt selection and storm motion lookup.
 
 const RadarLibraryScript := preload("res://scripts/radar_library.gd")
+const VolumeUpdatePolicyScript := preload("res://scripts/volume_update_policy.gd")
 
 
 func test_fixture_set() -> void:
@@ -15,6 +16,54 @@ func test_fixture_set() -> void:
 		check(vol.is_complete(), "%s complete" % v.get_file())
 		for i in vol.sweep_count():
 			check(vol.has_field(i, "VEL") == vol.has_field(i, "DVEL"), "DVEL next to VEL")
+
+
+func test_volume_quality() -> void:
+	var vol: RadarVolume = lib.open(lib.volumes[0])
+	check_eq(VolumeUpdatePolicyScript.quality(vol), "", "complete scan has no quality warning")
+	vol.meta["provisional"] = true
+	check_eq(
+		VolumeUpdatePolicyScript.quality(vol), "  (provisional)", "unfinalized scan is labeled"
+	)
+	vol.meta["complete"] = false
+	check_eq(
+		VolumeUpdatePolicyScript.quality(vol), "  (partial)", "growing scan is labeled partial"
+	)
+
+
+func test_live_target_and_replaced_loop_frame() -> void:
+	if not fixtures:
+		return
+	var names: Array[String] = lib.for_site("KTST")
+	var source := MemorySource.new()
+	source.add_volume(names[-1], lib.source.read_meta(names[-1]), {})
+	var index := RadarLibraryScript.new(source)
+	var current: RadarVolume = index.open(names[-1])
+	check_eq(
+		VolumeUpdatePolicyScript.live_target(index, "KTST", current, false), "", "newest pinned"
+	)
+	source.add_volume(names[0], lib.source.read_meta(names[0]), {})
+	index.scan()
+	check_eq(
+		VolumeUpdatePolicyScript.live_target(index, "KTST", current, false),
+		"",
+		"older backfill stays"
+	)
+	check(
+		VolumeUpdatePolicyScript.shown_in_loop(names[0], current, index.for_site("KTST"), 1),
+		"older loop frame updates"
+	)
+	source.add_volume(names[-1], lib.source.read_meta(names[-1]), {})
+	check_eq(
+		VolumeUpdatePolicyScript.live_target(index, "KTST", current, false),
+		names[-1],
+		"same name reloads"
+	)
+	check_eq(
+		VolumeUpdatePolicyScript.live_target(index, "KTST", current, true),
+		"",
+		"playback stays on frame"
+	)
 
 
 ## Tilts must be sorted by elevation, unique per angle, and each carry the field.

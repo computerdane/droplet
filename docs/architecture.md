@@ -189,7 +189,8 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/radar_library.gd` – indexes a `VolumeSource`, per-site lists, sequences (split at >30 min gaps); `open(name)`.
 - `scripts/radar_volume.gd` – one volume, lazy float16 textures; `tilts(field)` = one sweep per
   elevation (split cuts / SAILS repeats merged, most gates then latest wins). Use tilts, not raw sweep indices.
-- `scripts/volume_cache.gd` – LRU of volumes by texture bytes (1 GiB), reloads partial volumes when volume.json changes.
+- `scripts/volume_cache.gd` – LRU of volumes by texture bytes (1 GiB), invalidates every completed
+  same-name replacement, including complete volumes finalized with a temporal prior.
   `prefetch()` reads sweep files into Images on WorkerThreadPool; `poll()` (every frame) uploads ≤24 MB of
   textures; `get_volume()` waits for that volume's pending jobs. On-screen volumes are pinned.
   `main._preload_ahead()` prefetches what the active view needs (`Need`: nearest tilt / all tilts / tilt array)
@@ -198,6 +199,8 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/main.gd` – controller: site, frame, field, *target elevation* (kept across frames), playback,
   live, mosaic neighbours. With no site/time/fetch, starts on the live US composite; clicking a radar
   selects it and fetches its recent live loop. Parses `key=value` user args (see its header) – screenshot.gd passes them through.
+- `scripts/volume_update_policy.gd` – picks the live target after new or rewritten volumes arrive,
+  keeps the newest pinned through older backfill, and labels growing versus provisional scans.
 - `scripts/hud.gd` – code-built UI (no keyboard focus except the fetch panel's text fields, so shortcuts work).
   Responsive: stretch `canvas_items` + aspect `expand` from 1280x800; `main._fit_ui_scale()` keeps the scale
   ≥ the screen scale (× `ui_scale=`) so small windows reflow instead of shrinking; `Hud._layout()` wraps the
@@ -241,7 +244,10 @@ gdformat scripts tests && gdlint scripts tests
   project, parses `[i/n]` progress and
   volume names (`ICAO_YYYYMMDD_HHMMSS`) from its output. On web each job is a `web/nexrad_worker.js` Worker
   (JavaScriptBridge; stop = terminate) and decoded volumes arrive through `volume_received` into main's
-  MemorySource. New volumes are rescanned immediately; a finished
+  MemorySource. Native `volume_written` notifications bump `DirSource` revisions, so even same-second
+  rewrites reload. Every native/web replacement invalidates the texture cache and refreshes the current
+  frame when it changed; live following stays on the newest frame while older backfill arrives. New
+  volumes are rescanned immediately; a finished
   update jumps to its last volume, a live job takes over the view on its first volume. Processes are killed
   on exit. The fetch panel's LineEdits are the only focusable controls (focus released on close).
 - `scripts/events.gd` – `Events.LIST`: notable events (site, UTC from/to/peak, note; tornadoes and hurricanes 1997–2023,
@@ -293,7 +299,10 @@ gdformat scripts tests && gdlint scripts tests
   ET = 18 dBZ echo top (km above the radar, interpolated in dBZ between tilts, else the top tilt's beam), VIL (kg/m²,
   REF capped at 56 dBZ), ROT = max AZSHR of beams within 2 km of the radar's height over ≥ 20 dBZ CREF. `RadarVolume` appends it as one extra sweep at 0° (`is_product()`), so `tilts("CREF")` is that
   sweep and 2D, the readout and the mosaic need nothing special; 3D and sections show REF instead (`main._volume_field()`).
-- `complete: false` marks a partial volume still being filled by `live`. Files are written via atomic rename so Godot never reads a torn file; `main.gd` re-scans every 3 s while live.
+- `complete: false` marks a partial volume still being filled by `live`. `provisional: true` marks a
+  complete archive preview published before chronological temporal finalization; it remains marked if
+  the job stops or fails. The HUD shows these as "partial" and "provisional" respectively. Files are
+  written via atomic rename so Godot never reads a torn file; `main.gd` re-scans every 3 s while live.
 
 ## Mosaic
 
@@ -315,8 +324,13 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 
 - Decoder reads both archive layouts: bzip2 LDM records (current) and the older gzip-wrapped uncompressed stream (~pre-2016, `.gz` keys), and both radial formats: Message 31 (Build 10+, ~mid-2008 onward) and legacy Message 1 (8-bit REF on 1 km gates to 460 km, VEL/SW on 250 m gates, 1° radials, no dual-pol). Message 1 files carry no site location (`nexrad/src/sites.rs`, the NCEI station list) and the oldest (`ARCHIVE2.nnn` headers) not even the ICAO (`level2::with_site()` takes it from the file name or key). Checked on KTLX 1995, 1999-05-03 (Bridge Creek-Moore), 2005, 2007.
 - Verified against KTLX 2026-09-22 (VCP 212, bz2) and KTLX 2013-05-20 20:03Z (VCP 12, gz, the Moore tornado).
-- `live` backfills up to 10 complete scans from the archive mirror (chronologically) before following
+- `live` backfills up to 10 complete scans from the archive mirror before following
   the in-progress volume (skipping that partial if joined after its first chunk), then follows each new one.
+  Recent archive scans first appear newest-first as provisional previews so the live view reaches the
+  newest available time promptly. The same raw scans are then finalized oldest-first, replacing their
+  previews under the same names. Temporal dealiasing must use only the latest earlier complete,
+  non-provisional scan from the same site within 15 minutes, and must preserve float arithmetic and
+  native/browser output consistency. Provisional previews never become temporal priors.
   If the archive is unavailable it still follows live chunks. It remembers the ring position in
   `data/live_ring.json` (`chunks::Start::Newest` hint: a binary search over the numbers the ring can
   have moved since, a few listings) and falls back to the ~20-listing search. On web the worker posts

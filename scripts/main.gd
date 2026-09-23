@@ -2,11 +2,8 @@ extends Node
 ## Controller: owns browsing state (site, frame, field, elevation), playback and live
 ## following, and pushes it into the active view and the HUD.
 ##
-## Frames are the volumes of the current site in time order. Playback loops over the
-## sequence (run of volumes without a >30 min gap) containing the current frame. Live mode
-## re-scans the library and jumps to the newest frame; while playing, new frames simply
-## join the loop. The chosen elevation is kept across frames, so VCP changes and split cuts
-## do not make the tilt jump around.
+## Frames are time ordered per site. Playback loops within a sequence (gaps ≤30 min);
+## live follows the newest, even as older backfill arrives. Elevation persists across frames.
 ##
 ## Command-line options (after `--`): site=KTLX time=20130520_200359 field=VEL elev=0.5
 ## live=0|1 play=0|1 fps=8 zoom=2 pan=-15,5 (2D centre, km east,north) view=2d|3d yaw=30
@@ -27,16 +24,8 @@ extends Node
 ## With no explicit site, time or fetch the app opens on NOAA's live US composite;
 ## clicking a station fetches its recent loop and follows live updates.
 ##
-## Hovering the 2D view, the cross-section or the VWP shows a readout of the value under
-## the mouse next to it (see _update_readout); 2D values are read straight from the sweep
-## files, so the readout needs no textures.
-##
-## Upcoming loop frames (and their mosaic neighbours) are read in the background, see
-## _preload_ahead() and VolumeCache.
-##
-## Mosaic mode also draws every other site's volume nearest in time (within
-## Mosaic.MAX_SKEW_SEC), placed at its projected offset from the selected site and rotated
-## for meridian convergence; the selected site draws on top.
+## Hover readouts use sweep files; upcoming frames and mosaic neighbours preload via VolumeCache.
+## Mosaic places nearby sites' closest volumes around the selected site.
 
 const LIVE_RESCAN_SEC := 3.0
 const OVERVIEW_OVERLAY_REFRESH_SEC := 60.0
@@ -138,6 +127,7 @@ func _ready() -> void:
 	fetcher.job_updated.connect(_on_job_updated)
 	fetcher.job_finished.connect(_on_job_finished)
 	fetcher.volume_received.connect(_on_volume_received)
+	fetcher.volume_written.connect(_on_volume_written)
 	_connect_hud()
 	hud.overview_requested.connect(_show_overview)
 	get_window().mouse_entered.connect(func() -> void: _mouse_in_window = true)
@@ -587,6 +577,29 @@ func _on_volume_received(name: String, volume_json: String, files: Dictionary) -
 	var mem := library.source as MemorySource
 	if mem != null:
 		mem.add_volume(name, volume_json, files)
+		_on_volume_changed(name)
+
+
+func _on_volume_written(name: String) -> void:
+	var dir := library.source as DirSource
+	if dir != null:
+		dir.mark_updated(name)
+		_on_volume_changed(name)
+
+
+## Replace cached data and refresh any view that shows this name.
+func _on_volume_changed(name: String) -> void:
+	cache.invalidate(name)
+	_rescan()
+	if volume != null and volume.name == name:
+		_go_to(frame)
+	elif (
+		VolumeUpdatePolicy.shown_in_loop(name, volume, frames, frame)
+		or (volume != null and mosaic and library.site_of(name) != site)
+	):
+		_refresh()
+	if live and not playing:
+		_on_live_tick()
 
 
 ## A finished update jumps to the last volume it fetched (a notable event: to its peak).
@@ -630,8 +643,7 @@ func _on_live_tick() -> void:
 	library.scan()
 	if overview:
 		return
-	var sites := library.sites()
-	if site.is_empty() and not sites.is_empty():
+	if site.is_empty() and not library.volumes.is_empty():
 		_select_site(library.site_of(library.latest()))
 		return
 	frames = library.for_site(site)
@@ -640,11 +652,9 @@ func _on_live_tick() -> void:
 	if playing:
 		_update_playback()  # new frames join the loop on the next pass
 		return
-	var newest := frames.size() - 1
-	var same := volume != null and frames[newest] == volume.name
-	if same and volume.is_complete():
-		return
-	_go_to(newest)  # new volume, or the current partial one grew
+	var target := VolumeUpdatePolicy.live_target(library, site, volume, playing)
+	if not target.is_empty():
+		_go_to(frames.find(target))
 
 
 func _on_play_tick() -> void:
@@ -922,10 +932,10 @@ func _update_info() -> void:
 		hud.set_info("No volumes in %s\n%s" % [library.source.describe(), help])
 		return
 	var lines := PackedStringArray()
-	var partial := "" if volume.is_complete() else "  (partial)"
+	var quality := VolumeUpdatePolicy.quality(volume)
 	var vcp := int(volume.meta.get("vcp", 0))
 	lines.append(
-		"%s  VCP %d%s   frame %d/%d" % [volume.icao(), vcp, partial, frame + 1, frames.size()]
+		"%s  VCP %d%s   frame %d/%d" % [volume.icao(), vcp, quality, frame + 1, frames.size()]
 	)
 	if sweep_index >= 0:
 		var sw := volume.sweep(sweep_index)
