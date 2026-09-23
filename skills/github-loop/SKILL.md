@@ -51,6 +51,8 @@ initial answer to a question in the issue body, or `reply NUMBER --comment ID
 --body-file FILE` to follow up on an existing comment. Reply markers make retries
 safe after restart. Questions and answers need no `/approve`; implementation
 requests remain approval gated.
+Post any clarification or follow-up question from the loop on the relevant GitHub
+issue or PR, then watch for the answer there. Do not ask it in the Codex session.
 Revise proposed scope when asked; editing an approved issue needs a new `/approve`.
 Watch general PR comments, inline comments, and reviews. Checkpoint addressed review
 IDs and commit SHAs so a restart does not repeat responses.
