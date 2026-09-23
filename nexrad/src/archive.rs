@@ -94,7 +94,7 @@ pub fn keys_between(bucket: &dyn Bucket, site: &str, start: Utc, end: Utc) -> Re
 
 /// Volumes to backfill before following live chunks: enough to give history without a slow
 /// startup (`nexrad live`, `nexrad-wasm::live`).
-pub const BACKFILL_COUNT: usize = 10;
+pub const BACKFILL_COUNT: usize = 11; // newest plus latest-1 through latest-10
 
 /// The most recent `n` complete archive volumes for `site`, oldest first. The archive mirror
 /// only ever holds finished uploads, so this never returns an in-progress scan (unlike the
@@ -148,6 +148,64 @@ pub fn download(bucket: &dyn Bucket, key: &str, raw_dir: &Path, log: &mut dyn st
     let bytes = bucket.get(key)?;
     crate::volume::write_atomic(&dest, &bytes)?;
     Ok(dest)
+}
+
+/// The newest successfully finalized complete volume, used to seed live following.
+pub struct BackfillSeed {
+    pub name: String,
+    pub time: Utc,
+    pub prior: Vec<crate::volume::PriorTilt>,
+}
+
+/// Publish recent scans newest first, then replace them with chronological temporal solutions.
+/// `keys` must be oldest first. Only raw file paths and one complete prior are retained; final
+/// decoding never reads provisional volumes as priors. Failed scans are logged and skipped.
+pub fn backfill(
+    bucket: &dyn Bucket,
+    keys: &[String],
+    raw_dir: &Path,
+    volumes_dir: &Path,
+    mut emit: impl FnMut(&Path),
+    log: &mut dyn std::io::Write,
+) -> Option<BackfillSeed> {
+    use crate::{level2, volume};
+    let mut downloaded = Vec::new();
+    for (i, key) in keys.iter().rev().enumerate() {
+        let _ = writeln!(log, "[{}/{}] {}", i + 1, keys.len(), file_name(key));
+        let result = (|| -> Result<()> {
+            let raw = download(bucket, key, raw_dir, log)?;
+            let vol = level2::read_file(&raw)?;
+            let path = volume::write_encoded(&volume::encode_volume(&vol), volumes_dir)?;
+            emit(&path);
+            downloaded.push(raw);
+            Ok(())
+        })();
+        if let Err(e) = result {
+            let _ = writeln!(log, "backfill {}: {e}", file_name(key));
+        }
+    }
+    let mut prior = Vec::new();
+    let mut previous: Option<(String, Utc)> = None;
+    let mut newest = None;
+    for raw in downloaded.iter().rev() {
+        let result = (|| -> Result<()> {
+            let vol = level2::read_file(raw)?;
+            let valid = previous.as_ref().is_some_and(|(site, time)| volume::is_prior(&vol.icao, vol.time, site, *time));
+            let enc = volume::encode_volume_with(&vol, if valid { &prior } else { &[] });
+            let path = volume::write_encoded(&enc, volumes_dir)?;
+            emit(&path);
+            if vol.complete {
+                prior = enc.prior();
+                previous = Some((vol.icao.clone(), vol.time));
+                newest = Some(volume::volume_dir_name(&vol.icao, vol.time));
+            }
+            Ok(())
+        })();
+        if let Err(e) = result {
+            let _ = writeln!(log, "backfill finalize {}: {e}", raw.display());
+        }
+    }
+    newest.zip(previous).map(|(name, (_, time))| BackfillSeed { name, time, prior })
 }
 
 #[cfg(test)]
@@ -204,6 +262,63 @@ pub mod fakes {
 mod tests {
     use super::fakes::*;
     use super::*;
+
+    #[test]
+    fn backfill_publishes_newest_first_then_matches_chronological_decode() {
+        use crate::{level2, synth, volume};
+        let dir = volume::tempdir::Dir::new("backfill");
+        let raw = dir.path().join("raw");
+        let out = dir.path().join("volumes");
+        let expected = dir.path().join("expected");
+        let bucket = FakeBucket::default();
+        let vols = synth::fixture_volumes();
+        let keys: Vec<String> = vols[..2].iter().map(|v| format!("{}{}_V06", v.icao, v.time.compact())).collect();
+        for (key, vol) in keys.iter().zip(&vols) {
+            let bytes = synth::encode_archive(vol, synth::Layout::Bz2);
+            volume::write_volume(&level2::read_volume(&bytes).unwrap(), &expected).unwrap();
+            bucket.objects.borrow_mut().insert(key.clone(), bytes);
+        }
+        // A missing scan does not stop later scans or become a temporal reference.
+        let selected = vec![keys[0].clone(), "missing".into(), keys[1].clone()];
+        let mut emitted = Vec::new();
+        let newest = backfill(
+            &bucket,
+            &selected,
+            &raw,
+            &out,
+            |p| emitted.push(p.file_name().unwrap().to_string_lossy().into_owned()),
+            &mut Vec::new(),
+        );
+        let names: Vec<String> = vols[..2].iter().map(|v| volume::volume_dir_name(&v.icao, v.time)).collect();
+        assert_eq!(emitted, [names[1].clone(), names[0].clone(), names[0].clone(), names[1].clone()]);
+        let seed = newest.unwrap();
+        assert_eq!(seed.name, names[1]);
+        assert_eq!(seed.time, vols[1].time);
+        assert!(!seed.prior.is_empty());
+        for name in &names {
+            for entry in std::fs::read_dir(expected.join(name)).unwrap() {
+                let entry = entry.unwrap();
+                assert_eq!(std::fs::read(entry.path()).unwrap(), std::fs::read(out.join(name).join(entry.file_name())).unwrap());
+            }
+        }
+        // If a cached raw scan disappears between phases, its provisional disk output must
+        // not seed live following. Keep the newest successfully finalized complete scan.
+        let seed = backfill(
+            &bucket,
+            &keys,
+            &raw,
+            &out,
+            |path| {
+                if path.file_name().unwrap().to_string_lossy() == names[1] {
+                    std::fs::remove_file(raw.join(file_name(&keys[1]))).unwrap();
+                }
+            },
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(seed.name, names[0]);
+        assert_eq!(seed.time, vols[0].time);
+    }
 
     #[test]
     fn key_times() {

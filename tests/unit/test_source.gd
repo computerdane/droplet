@@ -5,8 +5,36 @@ extends "res://tests/test_case.gd"
 const MemorySourceScript := preload("res://scripts/memory_source.gd")
 const RadarLibraryScript := preload("res://scripts/radar_library.gd")
 const VolumeCacheScript := preload("res://scripts/volume_cache.gd")
+const FetcherScript := preload("res://scripts/fetcher.gd")
 
 const MAX_VOLUMES := 3
+
+
+func test_dir_same_second_replacement() -> void:
+	var source := DirSource.new(lib.source.describe())
+	var name: String = lib.volumes[0]
+	var before := source.version(name)
+	source.mark_updated(name)
+	check(source.version(name) != before, "same-second completed write changes version")
+	var updated := source.version(name)
+	source.mark_updated(name)
+	check(source.version(name) != updated, "every replacement changes version")
+
+
+func test_fetcher_reports_same_name_writes() -> void:
+	var fetcher := FetcherScript.new()
+	fetcher.web = false
+	var reported: Array[String] = []
+	fetcher.volume_written.connect(func(name: String) -> void: reported.append(name))
+	var job := FetcherScript.Job.new()
+	var name := "KTST_20240501_000000"
+	fetcher._add_line(job, "/data/volumes/" + name)
+	fetcher._add_line(job, "/data/volumes/" + name)
+	fetcher._add_line(job, name + ": 5 sweeps (3 chunks) complete")
+	fetcher._add_line(job, "backfill finalize /data/volumes/" + name + ": failed")
+	check_eq(reported, [name, name, name], "replacements and chunk summaries notify, errors do not")
+	check_eq(job.volumes, [name], "arrival names stay unique")
+	fetcher.free()
 
 
 func test_memory_matches_dir() -> void:

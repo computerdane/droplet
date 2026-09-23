@@ -5,6 +5,8 @@ extends VolumeSource
 const DEFAULT_ROOT := "res://data/volumes"
 
 var root: String
+var _updates := {}
+var _mutex := Mutex.new()
 
 
 func _init(p_root: String = "") -> void:
@@ -26,9 +28,19 @@ func read_meta(name: String) -> String:
 	return FileAccess.get_file_as_string(root.path_join(name).path_join("volume.json"))
 
 
-## volume.json's modification time (`nexrad` writes it by atomic rename).
+## Modification time plus completed-write notifications, including same-second replacements.
 func version(name: String) -> int:
-	return FileAccess.get_modified_time(root.path_join(name).path_join("volume.json"))
+	var stamp := FileAccess.get_modified_time(root.path_join(name).path_join("volume.json"))
+	_mutex.lock()
+	var revision: int = _updates.get(name, 0)
+	_mutex.unlock()
+	return (stamp << 32) + revision
+
+
+func mark_updated(name: String) -> void:
+	_mutex.lock()
+	_updates[name] = int(_updates.get(name, 0)) + 1
+	_mutex.unlock()
 
 
 func read_file(name: String, file: String) -> PackedByteArray:

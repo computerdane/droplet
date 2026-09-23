@@ -18,6 +18,8 @@ signal job_finished(job: Job)
 ## Web only: a decoded volume (`files` = {sNN_FIELD.bin: PackedByteArray}), before the
 ## job_updated that reports its name.
 signal volume_received(name: String, volume_json: String, files: Dictionary)
+## Desktop only: a completed write, including a replacement of the same volume name.
+signal volume_written(name: String)
 
 const VOLUME_NAME := "[A-Z0-9]{4}_\\d{8}_\\d{6}"
 const WORKER_URL := "nexrad_worker.js"
@@ -60,6 +62,9 @@ var web := OS.has_feature("web")
 var can_live := true  # set in _ready
 var _volume_re := RegEx.create_from_string(VOLUME_NAME)
 var _progress_re := RegEx.create_from_string("^\\[\\d+/\\d+\\]")
+var _live_volume_re := RegEx.create_from_string(
+	"^" + VOLUME_NAME + ": \\d+ sweeps \\(\\d+ chunks\\)( complete)?$"
+)
 
 
 func _ready() -> void:
@@ -268,8 +273,15 @@ func _add_line(job: Job, line: String) -> void:
 	if pm != null:
 		job.progress = pm.get_string()
 	var m := _volume_re.search(line)
-	if m != null and not job.volumes.has(m.get_string()):
-		job.volumes.append(m.get_string())
+	if m != null:
+		var name := m.get_string()
+		# Both archive paths and live chunk summaries report successful writes.
+		if not line.ends_with(name) and _live_volume_re.search(line) == null:
+			return
+		if not web:
+			volume_written.emit(name)
+		if not job.volumes.has(name):
+			job.volumes.append(name)
 
 
 func _notification(what: int) -> void:
