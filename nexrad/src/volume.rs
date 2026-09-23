@@ -238,11 +238,19 @@ pub fn is_prior(icao: &str, time: Utc, prior_icao: &str, prior_time: Utc) -> boo
 /// The prior for a volume of `icao` at `time` written under `root`: the latest complete volume
 /// of the site that started less than PRIOR_MAX_AGE_S before it (none if there is none).
 pub fn find_prior(root: &Path, icao: &str, time: Utc) -> Vec<PriorTilt> {
+    find_prior_excluding(root, icao, time, &[])
+}
+
+/// Like `find_prior`, but ignores names currently being published as provisional backfill.
+pub(crate) fn find_prior_excluding(root: &Path, icao: &str, time: Utc, excluded: &[String]) -> Vec<PriorTilt> {
     let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
     let prefix = format!("{icao}_");
     let best = entries
         .filter_map(|e| {
             let name = e.ok()?.file_name().into_string().ok()?;
+            if excluded.contains(&name) {
+                return None;
+            }
             let t = Utc::parse_compact(name.strip_prefix(&prefix)?)?;
             is_prior(icao, time, icao, t).then_some((t, name))
         })
