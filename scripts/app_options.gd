@@ -16,14 +16,22 @@ static func parse() -> Dictionary:
 	for a in args:
 		if "=" in a:
 			out[a.get_slice("=", 0)] = a.get_slice("=", 1)
+	var event := Events.find(out.get("event", ""))
+	if not event.is_empty():  # site= and time= default to the event's
+		out.get_or_add("site", event["site"])
+		var peak := Time.get_datetime_string_from_unix_time(Events.unix(event["peak"]))
+		out.get_or_add("time", peak.replace("-", "").replace(":", "").replace("T", "_"))
 	return out
 
 
 ## fetch=latest|live|<ISO time>|<ISO from>/<ISO to> starts that job for site= (default
 ## DEFAULT_FETCH_SITE). On web, where nothing is stored between visits, no fetch= means the
 ## volume at time= if given, else live (the newest volume if the page cannot follow live), so
-## every URL is a permalink.
+## every URL is a permalink. event=<id> (see Events) fetches that event's loop instead.
 static func start_fetch(opts: Dictionary, fetcher: Fetcher) -> void:
+	if opts.has("event") and not opts.has("fetch") and not Events.find(opts["event"]).is_empty():
+		Events.start(Events.find(opts["event"]), fetcher)
+		return
 	var what: String = opts.get("fetch", "")
 	if what.is_empty() and fetcher.web:
 		what = iso_of_name_time(opts["time"]) if opts.has("time") else "live"

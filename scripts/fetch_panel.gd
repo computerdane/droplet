@@ -1,14 +1,15 @@
 class_name FetchPanel
 extends PanelContainer
 ## Dialog for fetching radar data from the UI (F): a site, and either its newest volume,
-## the volume at a time, every volume in a time range, or live following. main.gd runs
-## the requests through Fetcher and pushes job status back with set_jobs(). The text
-## fields are the only focusable controls in the HUD; closing the panel releases focus so
-## keyboard shortcuts work again.
+## the volume at a time, every volume in a time range, or live following; or one of the
+## notable events (Events). main.gd runs the requests through Fetcher and pushes job status
+## back with set_jobs(). The text fields are the only focusable controls in the HUD; closing
+## the panel releases focus so keyboard shortcuts work again.
 
 signal update_requested(site: String, at: String, from: String, to: String)
 signal live_requested(site: String)
 signal stop_requested
+signal event_requested(id: String)
 
 enum Mode { LATEST, AT, RANGE, LIVE }
 
@@ -38,6 +39,20 @@ func _ready() -> void:
 	title.text = "Fetch radar data"
 	title.add_theme_font_size_override("font_size", 16)
 	box.add_child(title)
+
+	var events := OptionButton.new()
+	events.focus_mode = Control.FOCUS_NONE
+	events.add_item("Notable events...")
+	for e in Events.LIST:
+		events.add_item("%s  (%s)" % [e["name"], e["site"]])
+		events.set_item_tooltip(events.item_count - 1, e["note"])
+	events.item_selected.connect(
+		func(i: int) -> void:
+			events.select(0)
+			if i > 0:
+				_pick_event(Events.LIST[i - 1])
+	)
+	box.add_child(events)
 
 	var row1 := HBoxContainer.new()
 	box.add_child(row1)
@@ -141,6 +156,17 @@ func _submit() -> void:
 			update_requested.emit(site, "", _t1.text.strip_edges(), _t2.text.strip_edges())
 		Mode.LIVE:
 			live_requested.emit(site)
+	get_viewport().gui_release_focus()
+
+
+## Fills the form in with `event`'s loop (so it can be tweaked and re-run) and requests it.
+func _pick_event(event: Dictionary) -> void:
+	_site.text = event["site"]
+	_mode.select(Mode.RANGE)
+	_t1.text = event["from"]
+	_t2.text = event["to"]
+	_update_fields()
+	event_requested.emit(event["id"])
 	get_viewport().gui_release_focus()
 
 

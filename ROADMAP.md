@@ -64,8 +64,9 @@ Ordered by what unblocks the most.
    profile as a fallback dealiasing reference, multi-site live in one process. Left: temporal
    dealiasing against the previous volume (the VAD fallback already catches most of what it
    would).
-7. **Reach.** Done: Message 1 parsing for pre-2008 archives (the archive reaches back to the early 1990s). Left: loop export to video, touch
-   controls, a bookmark list of notable events.
+7. **Reach.** Done: Message 1 parsing for pre-2008 archives (the archive reaches back to the early 1990s),
+   a notable-events list (fetch panel, `event=` permalinks). Left: loop export to video, touch
+   controls.
 
 ## Automated testing
 

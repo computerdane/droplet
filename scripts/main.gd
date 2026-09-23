@@ -20,7 +20,7 @@ extends Node
 ## canvas point, for screenshots; hover=0 turns the readout off) basemap=0 (no basemap; or
 ## basemap=<dir>) volumes=res://tests/fixtures/volumes (DirSource root; default
 ## res://data/volumes) fetch=latest|live|2013-05-20T20:00Z|<from>/<to> (start a fetch job for
-## site=, default KTLX; see AppOptions)
+## site=, default KTLX; see AppOptions) event=moore2013 (a notable event's loop, see Events)
 ##
 ## On web the options come from the page's query string instead (?site=KTLX&time=...), volumes
 ## live in memory (MemorySource, filled by the wasm worker through Fetcher), and a page with no
@@ -220,6 +220,9 @@ func _connect_hud() -> void:
 	)
 	hud.fetch_panel.live_requested.connect(func(s: String) -> void: fetcher.start_live(s))
 	hud.fetch_panel.stop_requested.connect(fetcher.stop_all)
+	hud.fetch_panel.event_requested.connect(
+		func(id: String) -> void: Events.start(Events.find(id), fetcher)
+	)
 	if not fetcher.can_live:
 		hud.fetch_panel.disable_live("Live needs a cross-origin isolated page (COOP/COEP headers)")
 	hud.srm_changed.connect(_adjust_storm)
@@ -527,7 +530,7 @@ func _on_volume_received(name: String, volume_json: String, files: Dictionary) -
 		mem.add_volume(name, volume_json, files)
 
 
-## A finished update jumps to the last volume it fetched.
+## A finished update jumps to the last volume it fetched (a notable event: to its peak).
 func _on_job_finished(job: Fetcher.Job) -> void:
 	print("fetch: ", job.describe())  # the web smoke test waits for this line
 	if job.kind != "update" or job.stopped or job.volumes.is_empty():
@@ -538,6 +541,8 @@ func _on_job_finished(job: Fetcher.Job) -> void:
 	if job.site != site:
 		_select_site(job.site)
 	var i := frames.find(job.volumes[-1])
+	if job.has_meta("jump_to"):
+		i = RadarLibrary.nearest_in_time(frames, job.get_meta("jump_to"))
 	if i >= 0:
 		_go_to(i)
 

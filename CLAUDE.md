@@ -198,6 +198,9 @@ gdformat scripts tests && gdlint scripts tests
   MemorySource. New volumes are rescanned immediately; a finished
   update jumps to its last volume, a live job takes over the view on its first volume. Processes are killed
   on exit. The fetch panel's LineEdits are the only focusable controls (focus released on close).
+- `scripts/events.gd` – `Events.LIST`: notable events (site, UTC from/to/peak, note; tornadoes and hurricanes 1997–2023,
+  times checked against the archive listing). The fetch panel's "Notable events" list and `event=<id>` fetch the loop
+  (`Events.start()`) and the finished job jumps to the peak (`jump_to` meta); `event=` also defaults `site=` and `time=`.
 - `scripts/app_options.gd` – `key=value` options from the command line, or the query string on web;
   `fetch=` (and on web, any URL without it: the volume at `time=`, else live) starts a job at startup.
   On web main.gd uses a MemorySource (900 MB budget, oldest evicted; the heap caps at 2 GB) and a 384 MB texture cache.
