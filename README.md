@@ -6,7 +6,8 @@ plus history browsing back to the early 1990s.
 ## Try Droplet
 
 [Open the live web app](https://computerdane.github.io/droplet/) in your browser, or run the
-Linux desktop app directly from GitHub with Nix:
+Linux desktop app from [this GitHub repository](https://github.com/computerdane/droplet)
+with Nix, without cloning it:
 
 ```sh
 nix run github:computerdane/droplet
