@@ -13,6 +13,22 @@ const SAMPLE := """{"type": "FeatureCollection", "features": [
  [[[-100.0, 33.0], [-95.0, 33.0], [-95.0, 38.0], [-100.0, 38.0], [-100.0, 33.0]]]}}
 ]}"""
 
+const HOLES := """{"type": "FeatureCollection", "features": [
+{"properties": {"threshold": "SLGT", "category": "CATEGORICAL"},
+ "geometry": {"type": "Polygon", "coordinates": [
+ [[0,0], [10,0], [10,10], [0,10], [0,0]]]}},
+{"properties": {"threshold": "MDT", "category": "CATEGORICAL"},
+ "geometry": {"type": "MultiPolygon", "coordinates": [
+ [[[1,1], [4,1], [4,4], [1,4], [1,1]],
+  [[2,2], [3,2], [3,3], [2,3], [2,2]]],
+ [[[11,1], [14,1], [14,4], [11,4], [11,1]],
+  [[12,2], [13,2], [13,3], [12,3], [12,2]]]]}},
+{"properties": {"threshold": "HIGH", "category": "CATEGORICAL"},
+ "geometry": {"type": "Polygon", "coordinates": [
+ [[5,1], [8,1], [8,4], [5,4], [5,1]],
+ [[6,2], [7,2], [7,3], [6,3], [6,2]]]}}
+]}"""
+
 
 func _unix(iso: String) -> int:
 	return Time.get_unix_time_from_datetime_string(iso)
@@ -27,6 +43,23 @@ func test_parse_and_query() -> void:
 	check_eq(Outlooks.at_point(areas, Vector2(-97.5, 35.5))["kind"], "MDT", "inside both: MDT")
 	check_eq(Outlooks.at_point(areas, Vector2(-99.5, 35.5))["kind"], "SLGT", "slight only")
 	check(Outlooks.at_point(areas, Vector2(-90.0, 35.5)).is_empty(), "outside")
+
+
+func test_polygon_holes() -> void:
+	var areas := Outlooks.parse(HOLES)
+	check_eq(areas.size(), 3, "all categorical geometries parse")
+	check_eq(areas[1]["rings"].size(), 4, "all multipolygon rings remain drawable")
+	check_eq(areas[1]["polygons"].size(), 2, "multipolygon boundaries stay grouped")
+	check_eq(Outlooks.at_point(areas, Vector2(1.5, 1.5))["kind"], "MDT", "first outer")
+	check_eq(
+		Outlooks.at_point(areas, Vector2(2.5, 2.5))["kind"], "SLGT", "first hole falls through"
+	)
+	check_eq(Outlooks.at_point(areas, Vector2(11.5, 1.5))["kind"], "MDT", "second outer")
+	check(Outlooks.at_point(areas, Vector2(12.5, 2.5)).is_empty(), "second hole excludes area")
+	check_eq(Outlooks.at_point(areas, Vector2(5.5, 1.5))["kind"], "HIGH", "polygon outer")
+	check_eq(
+		Outlooks.at_point(areas, Vector2(6.5, 2.5))["kind"], "SLGT", "polygon hole falls through"
+	)
 
 
 func test_cycles() -> void:

@@ -34,7 +34,8 @@ var _requests: Dictionary = {}  # key -> HTTPRequest
 
 
 ## The categorical areas of the Day 1 outlook in effect at unix time `t`, lowest risk first:
-## [{kind, name, color, issue: unix, rings: Array[PackedVector2Array] (lon, lat)}]. Starts
+## [{kind, name, color, issue: unix, rings: Array[PackedVector2Array] (lon, lat),
+## polygons: Array of [outer ring, hole rings...]}]. Starts
 ## the fetches it needs; `changed` follows.
 func active_at(t: int) -> Array:
 	if not enabled or t <= 0:
@@ -118,16 +119,21 @@ static func parse(text: String) -> Array:
 		if p.get("category") != "CATEGORICAL" or not KINDS.has(kind):
 			continue
 		var rings: Array[PackedVector2Array] = []
+		var polygons: Array = []
 		var geom: Dictionary = f.get("geometry", {})
 		var polys: Array = geom.get("coordinates", [])
 		if geom.get("type") == "Polygon":
 			polys = [polys]
 		for poly in polys:
+			var polygon: Array[PackedVector2Array] = []
 			for r in poly:  # outer ring and holes
 				var ring := PackedVector2Array()
 				for c in r:
 					ring.append(Vector2(float(c[0]), float(c[1])))
 				rings.append(ring)
+				polygon.append(ring)
+			if not polygon.is_empty():
+				polygons.append(polygon)
 		var issue := str(p.get("issue", "")).trim_suffix("Z")
 		(
 			out
@@ -138,6 +144,7 @@ static func parse(text: String) -> Array:
 					"color": KINDS[kind][1],
 					"issue": Time.get_unix_time_from_datetime_string(issue) if issue != "" else 0,
 					"rings": rings,
+					"polygons": polygons,
 				}
 			)
 		)
@@ -160,7 +167,14 @@ static func summary(areas: Array) -> String:
 ## The highest-risk area among `areas` containing `lonlat`, or {}.
 static func at_point(areas: Array, lonlat: Vector2) -> Dictionary:
 	for i in range(areas.size() - 1, -1, -1):
-		for ring in areas[i]["rings"]:
-			if Geometry2D.is_point_in_polygon(lonlat, ring):
+		for polygon in areas[i]["polygons"]:
+			if not Geometry2D.is_point_in_polygon(lonlat, polygon[0]):
+				continue
+			var in_hole := false
+			for hole in polygon.slice(1):
+				if Geometry2D.is_point_in_polygon(lonlat, hole):
+					in_hole = true
+					break
+			if not in_hole:
 				return areas[i]
 	return {}
