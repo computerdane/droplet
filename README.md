@@ -12,6 +12,13 @@ Linux desktop app directly from GitHub with Nix:
 nix run github:computerdane/droplet
 ```
 
+Explore notable events. Each link loads a radar loop and opens at the event peak:
+
+- [Bridge Creek–Moore F5 (1999)](https://computerdane.github.io/droplet/?event=moore1999)
+- [Moore EF5 (2013)](https://computerdane.github.io/droplet/?event=moore2013)
+- [Joplin EF5 (2011)](https://computerdane.github.io/droplet/?event=joplin2011)
+- [Hurricane Katrina (2005)](https://computerdane.github.io/droplet/?event=katrina2005)
+
 ## Desktop package (NixOS / Linux)
 
 From a checkout, run `nix run`. Nix builds the app and decoder and bundles the
