@@ -85,6 +85,47 @@ func _drain(cache, deadline: int) -> void:
 		OS.delay_msec(2)
 
 
+## Complete scans can be replaced after temporal finalization. Old jobs must not block new
+## reads, upload into the replacement, or erase its pending reservations when they retire.
+func test_complete_replacement_with_pending_reads() -> void:
+	var name: String = lib.latest()
+	var text: String = lib.source.read_meta(name)
+	var files := {}
+	for sw in (JSON.parse_string(text) as Dictionary)["sweeps"]:
+		for field in sw["fields"].values():
+			files[field["file"]] = lib.source.read_file(name, field["file"])
+	var source := MemorySource.new()
+	source.add_volume(name, text, files)
+	var cache := VolumeCacheScript.new(source)
+	var original := cache.get_volume(name)
+	cache.prefetch(name, "REF", 0.5, VolumeCacheScript.Need.ALL_TILTS)
+	var old_job = cache._jobs[0]
+	source.add_volume(name, text, files)
+	var replacement := cache.get_volume(name, true)
+	check(replacement != original, "refresh replaces stale complete scans")
+	var expected := cache.prefetch(name, "REF", 0.5, VolumeCacheScript.Need.ALL_TILTS)
+	check_eq(cache.pending_jobs(), 2, "replacement queues while old read is still pending")
+	# Retire just the older generation, then ask to prefetch again before the new job uploads.
+	cache._retire(old_job)
+	cache.prefetch(name, "REF", 0.5, VolumeCacheScript.Need.ALL_TILTS)
+	check_eq(cache.pending_jobs(), 1, "old retirement preserves replacement reservations")
+	replacement = cache.get_volume(name)
+	check_eq(replacement.texture_bytes, expected, "replacement receives its own loaded textures")
+	check_eq(original.texture_bytes, 0, "obsolete read did not upload")
+	# Public invalidation is also safe with an outstanding array read and a pinned name.
+	cache.pin([name])
+	cache.prefetch(name, "VEL", 0.5, VolumeCacheScript.Need.TILT_ARRAY)
+	cache.invalidate(name)
+	var final_volume := cache.get_volume(name)
+	check(final_volume != replacement, "explicit invalidation replaces pinned complete scan")
+	cache.prefetch(name, "VEL", 0.5, VolumeCacheScript.Need.TILT_ARRAY)
+	check_eq(cache.pending_jobs(), 2, "replacement array queues beside obsolete array")
+	_drain(cache, Time.get_ticks_msec() + 20000)
+	check_eq(cache.pending_jobs(), 0, "all generations finish")
+	check(final_volume.tilt_arrays.has("VEL"), "replacement array uploaded")
+	check(not replacement.tilt_arrays.has("VEL"), "obsolete array discarded")
+
+
 ## Column products (nexrad/src/products.rs) arrive as one extra sweep after the real ones; the
 ## plan view, readout and mosaic treat it as the only "tilt" of CREF / ET / VIL. Over the
 ## lowest tilt's ground point CREF is at least that tilt's REF.

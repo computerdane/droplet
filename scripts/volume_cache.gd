@@ -41,7 +41,7 @@ var _volumes: Dictionary = {}  # name -> RadarVolume
 var _order: Array[String] = []  # least recently used first
 var _pinned: Dictionary = {}  # name -> true
 var _jobs: Array[Job] = []  # queued or running, oldest first
-var _pending: Dictionary = {}  # "name|sweep:field" -> true while a job holds it
+var _pending: Dictionary = {}  # "name|sweep:field" -> RadarVolume whose job holds it
 
 
 func _init(p_source: VolumeSource, p_budget_bytes: int = DEFAULT_BUDGET_BYTES) -> void:
@@ -49,8 +49,8 @@ func _init(p_source: VolumeSource, p_budget_bytes: int = DEFAULT_BUDGET_BYTES) -
 	budget_bytes = p_budget_bytes
 
 
-## Returns the cached volume `name`, loading it if needed. Incomplete (live) volumes are
-## reloaded when `refresh` is set and the sidecar has rewritten them since.
+## Returns the cached volume `name`, loading it if needed. With `refresh`, reloads any
+## rewritten volume, including complete scans whose temporal solution was finalized.
 func get_volume(name: String, refresh := false) -> RadarVolume:
 	var vol := _lookup(name, refresh)
 	if vol == null:
@@ -58,6 +58,12 @@ func get_volume(name: String, refresh := false) -> RadarVolume:
 	_finish_jobs(vol)
 	_touch(name)
 	return vol
+
+
+## Forgets a rewritten volume without waiting for background reads. Existing jobs may finish,
+## but their images cannot enter the replacement volume or block its own prefetch jobs.
+func invalidate(name: String) -> void:
+	_drop(name)
 
 
 ## Volumes currently on screen; they survive eviction until the next call.
@@ -87,16 +93,16 @@ func prefetch(name: String, field_name: String, elev_deg: float, need: Need) -> 
 		total = width * TiltArray.ROWS * tilts.size()
 		var key := _key(name, ARRAY, field_name)
 		var have := vol.tilt_arrays.has(field_name)
-		if vol.is_complete() and not have and not tilts.is_empty() and not _pending.has(key):
-			_pending[key] = true
+		if vol.is_complete() and not have and not tilts.is_empty() and _pending.get(key) != vol:
+			_pending[key] = vol
 			job.specs.append([ARRAY, field_name])
 	else:
 		for i in vol.sweeps_for(field_name, elev_deg, need == Need.ALL_TILTS):
 			total += vol.texture_size(i, field_name)
 			var key := _key(name, i, field_name)
 			var have := vol.has_texture(i, field_name)
-			if vol.is_complete() and not have and not _pending.has(key):
-				_pending[key] = true
+			if vol.is_complete() and not have and _pending.get(key) != vol:
+				_pending[key] = vol
 				job.specs.append([i, field_name])
 	if not job.specs.is_empty():
 		job.task_id = WorkerThreadPool.add_task(job.run, false, "preload " + name)
@@ -131,7 +137,7 @@ func used_bytes() -> int:
 
 func _lookup(name: String, refresh: bool) -> RadarVolume:
 	var vol: RadarVolume = _volumes.get(name)
-	if vol != null and refresh and not vol.is_complete() and vol.is_stale():
+	if vol != null and refresh and vol.is_stale():
 		_drop(name)
 		vol = null
 	if vol == null:
@@ -171,7 +177,9 @@ func _upload(job: Job, budget: int) -> int:
 func _retire(job: Job) -> void:
 	WorkerThreadPool.wait_for_task_completion(job.task_id)
 	for s in job.specs:
-		_pending.erase(_key(job.volume.name, s[0], s[1]))
+		var key := _key(job.volume.name, s[0], s[1])
+		if _pending.get(key) == job.volume:
+			_pending.erase(key)
 	_jobs.erase(job)
 
 
