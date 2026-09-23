@@ -22,6 +22,7 @@ signal view_toggled
 signal mosaic_toggled
 signal warnings_toggled
 signal cells_toggled
+signal outlook_toggled
 signal section_toggled
 signal fetch_toggled
 signal export_requested
@@ -73,6 +74,7 @@ var view_button: Button
 var mosaic_button: Button
 var warnings_button: Button
 var cells_button: Button
+var outlook_button: Button
 var section_button: Button
 var section: SectionView
 var fetch_panel: FetchPanel
@@ -175,6 +177,10 @@ func _build_top_right() -> void:
 	warnings_button.toggle_mode = true
 	warnings_button.pressed.connect(warnings_toggled.emit)
 	row.add_child(warnings_button)
+	outlook_button = _button("SPC", "SPC day 1 convective outlook in effect: risk areas (O)")
+	outlook_button.toggle_mode = true
+	outlook_button.pressed.connect(outlook_toggled.emit)
+	row.add_child(outlook_button)
 	cells_button = _button(
 		"Cells", "Storm cells tracked through the loop, with motion and rotation (C)"
 	)
@@ -524,9 +530,10 @@ func set_sites(sites: Array[String], current: String) -> void:
 	site_option.disabled = _sites.size() < 2
 
 
-func set_overlays_on(warnings_on: bool, cells_on: bool) -> void:
+func set_overlays_on(warnings_on: bool, cells_on: bool, outlook_on: bool) -> void:
 	warnings_button.set_pressed_no_signal(warnings_on)
 	cells_button.set_pressed_no_signal(cells_on)
+	outlook_button.set_pressed_no_signal(outlook_on)
 
 
 func set_mosaic(on: bool, available: bool) -> void:

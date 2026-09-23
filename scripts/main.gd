@@ -15,12 +15,13 @@ extends Node
 ## section=ax,ay,bx,by (cross-section A -> B, km east,north of the radar)
 ## srm=240,10 (storm-relative velocity, storm moving from 240 degrees at 10 m/s) or srm=auto
 ## (storm motion from the VAD profile, see _auto_storm) winds=0|1 (hodograph panel)
-## warnings=0|1 (NWS warning polygons, from the IEM archive) cells=0|1 (storm cells) vwp=0|1
-## (VAD winds over the loop as barbs) hover=x,y (pin the hover readout to that
-## canvas point, for screenshots; hover=0 turns the readout off) basemap=0 (no basemap; or
-## basemap=<dir>) volumes=res://tests/fixtures/volumes (DirSource root; default
-## res://data/volumes) fetch=latest|live|2013-05-20T20:00Z|<from>/<to> (start a fetch job for
-## site=, default KTLX; see AppOptions) event=moore2013 (a notable event's loop, see Events)
+## warnings=0|1 (NWS warning polygons, from the IEM archive) outlook=0|1 (SPC day 1 outlook)
+## cells=0|1 (storm cells) vwp=0|1 (VAD winds over the loop as barbs) hover=x,y (pin the
+## hover readout to that canvas point, for screenshots; hover=0 turns the readout off)
+## basemap=0 (no basemap; or basemap=<dir>) volumes=res://tests/fixtures/volumes (DirSource
+## root; default res://data/volumes) fetch=latest|live|2013-05-20T20:00Z|<from>/<to> (start a
+## fetch job for site=, default KTLX; see AppOptions) event=moore2013 (a notable event's
+## loop, see Events)
 ##
 ## On web the options come from the page's query string instead (?site=KTLX&time=...), volumes
 ## live in memory (MemorySource, filled by the wasm worker through Fetcher), and a page with no
@@ -63,7 +64,7 @@ const HINT_COMMON := (
 	"Space play   Left/Right step   Shift+Left/Right prev/next loop   Home/End first/last\n"
 	+ "[ ] speed   L live   Up/Down tilt   1-8 field   9 products   0 KDP/shear   S site\n"
 	+ "M mosaic   V 2D/3D   R reset view   X section   F fetch   T storm-relative   W hodograph\n"
-	+ "P VWP   A warnings   C cells   E export loop   "
+	+ "P VWP   A warnings   O SPC outlook   C cells   E export loop   "
 )
 const HINT_2D := "wheel zoom   drag pan   hover: value"
 const HINT_SECTION := "wheel zoom   left drag: section A to B   right drag pan   hover: value"
@@ -161,8 +162,7 @@ func _ready() -> void:
 			storm_speed = m[1]
 			srm_on = true
 			srm_auto = false
-	overlays.warnings.enabled = opts.get("warnings", "1") == "1"
-	overlays.cells_on = opts.get("cells", "1") == "1"
+	overlays.setup(hud, opts)
 	winds_shown = opts.get("winds", "0") == "1"
 	vwp_shown = opts.get("vwp", "0") == "1"
 	if opts.get("hover", "") == "0":
@@ -209,8 +209,6 @@ func _connect_hud() -> void:
 	hud.field_selected.connect(_set_field)
 	hud.view_toggled.connect(func() -> void: _set_view_3d(not view_is_3d))
 	hud.mosaic_toggled.connect(_toggle_mosaic)
-	hud.warnings_toggled.connect(_toggle_warnings)
-	hud.cells_toggled.connect(_toggle_cells)
 	hud.section_toggled.connect(func() -> void: _set_section_on(not section_on))
 	hud.srm_toggled.connect(_toggle_srm)
 	hud.srm_auto_toggled.connect(_toggle_srm_auto)
@@ -331,16 +329,6 @@ func _set_section_on(on: bool) -> void:
 
 func _toggle_mosaic() -> void:
 	mosaic = not mosaic
-	_refresh()
-
-
-func _toggle_warnings() -> void:
-	overlays.warnings.enabled = not overlays.warnings.enabled
-	_refresh()
-
-
-func _toggle_cells() -> void:
-	overlays.cells_on = not overlays.cells_on
 	_refresh()
 
 
@@ -667,7 +655,6 @@ func _refresh() -> void:
 
 ## Warnings and tracked cells for the frame on screen (Overlays).
 func _refresh_overlays() -> void:
-	hud.set_overlays_on(overlays.warnings.enabled, overlays.cells_on)
 	overlays.update(view_2d, view_3d, volume, _loop_volumes(), frame - _sequence().x)
 	_readout_key.clear()
 	_update_info()

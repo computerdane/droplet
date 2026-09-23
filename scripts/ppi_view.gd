@@ -42,6 +42,7 @@ var _neighbor_rects: Array[ColorRect] = []
 var _ppi_material: ShaderMaterial  # the sweep material; show_tracks() swaps in another
 var _tracks_material: ShaderMaterial
 var _warnings: Array = []  # Warnings.project() output, drawn by the overlay
+var _outlook: Array = []  # the SPC outlook's areas, the same shape
 var _cells: Array = []  # StormCells.track() entries of the frame on screen
 
 @onready var ppi: ColorRect = $PPI
@@ -319,14 +320,22 @@ func _draw_cells() -> void:
 		overlay.draw_circle(pos, 2.5 / z, Color.WHITE)
 
 
-## Warning polygons (Warnings.project()), outlined at a constant screen width.
-func set_warnings(polys: Array) -> void:
+## Warning polygons and SPC outlook areas (Warnings.project()), outlined at a constant screen
+## width; the outlook dashed and under the warnings.
+func set_warnings(polys: Array, outlook: Array = []) -> void:
 	_warnings = polys
+	_outlook = outlook
 	overlay.queue_redraw()
 
 
 func _draw_warnings() -> void:
 	var z := cam.zoom.x
+	for area in _outlook:
+		var color: Color = area["color"]
+		for ring: PackedVector2Array in area["rings"]:
+			overlay.draw_polyline(ring, Color(0, 0, 0, 0.5), 3.5 / z)
+			for i in ring.size() - 1:
+				overlay.draw_dashed_line(ring[i], ring[i + 1], color, 1.5 / z, 6.0 / z, false)
 	for w in _warnings:
 		for ring: PackedVector2Array in w["rings"]:
 			overlay.draw_polyline(ring, Color(0, 0, 0, 0.7), 4.0 / z)

@@ -122,8 +122,13 @@ gdformat scripts tests && gdlint scripts tests
   REF ≥ 40, RHO ≤ 0.80, ZDR ≤ 0.5 on the lowest dual-pol tilt within 3 km of the rotation maximum, ROT ≥ 10).
 - `scripts/storm_cells.gd` – `StormCells.track()` links a loop's cells frame to frame (greedy, nearest to where each was
   heading, ≤ 10 km; 15 km for a cell seen once), motion from the last 4 positions, 15/30/45 min forecast points.
-  `scripts/overlays.gd` (`Overlays`, owned by main) holds Warnings + the tracked cells of the frame on screen and feeds
-  PpiView (`set_warnings`, `set_cells`), the info text and the readout. C / the Cells button toggles cells (`cells=0`).
+  `scripts/overlays.gd` (`Overlays`, owned by main) holds Warnings, Outlooks + the tracked cells of the frame on screen and
+  feeds PpiView (`set_warnings`, `set_cells`), the info text and the readout. It owns the toggles: A / C / O keys, the
+  Warnings / Cells / SPC buttons, `warnings=` `cells=` `outlook=` (default 1, 1, 0); a toggle emits `changed`.
+- `scripts/outlooks.gd` – SPC day 1 categorical outlook (TSTM..HIGH) from the IEM API
+  (`api/1/nws/spc_outlook.geojson?day=1&valid=&cycle=`, back to 2002): `issued_by(t)` = the convective day (12Z-12Z)
+  and its cycles (06, 13, 1630, 20, 01Z) out by then, latest first; `active_at(t)` = the latest with categorical areas.
+  Dashed outlines under the warnings in 2D, the top category in the info text, the category at the mouse in the readout.
 - `scripts/warnings.gd` – NWS storm-based warnings (TO, SV, FF, MA) from the IEM archive
   (`mesonet.agron.iastate.edu/geojson/sbw.geojson?sts=&ets=`, CORS open, any time since 2002 and live): fetched per hour with
   HTTPRequest (works on web too), cached, the current hour refetched every 60 s; `active_at(t)` = polygons in effect at the

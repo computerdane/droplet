@@ -38,7 +38,7 @@ runs all of it plus lint on every push. `web/smoke.mjs` drives the web build hea
 **Gaps.**
 
 - The performance gate (frame times) is not automated.
-- Hydrometeor classification and SPC outlooks are missing.
+- Hydrometeor classification is missing.
 - The browser keeps no decoded volumes and no live ring memory between visits.
 
 ## Roadmap
@@ -57,7 +57,8 @@ Ordered by what unblocks the most.
    (max ROT over the loop, on the GPU). Left: a hydrometeor classifier.
 4. **Context overlays.** Done: NWS warning polygons (IEM archive, history and live, 2D),
    storm cell identification (nexrad/src/cells.rs) and tracking with motion vectors and
-   forecasts, tornado debris signature flags. Left: SPC outlooks, overlays in 3D.
+   forecasts, tornado debris signature flags, SPC day 1 outlooks (2D). Overlays in 3D are done
+   under "Finishing 3D".
 5. **Finishing 3D.** Done: hover readout in 3D (ray pick against the cones, checked against
    the rendered pixels), the A-B section curtain, warnings and cells in 3D, mosaic cross-sections.
 6. **Data quality.** Done: caching the live ring position, a disk quota for `data/`, the VAD
