@@ -41,6 +41,7 @@ godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_20035
 godot --path . --script res://tests/screenshot.gd -- out.png volumes=res://tests/fixtures/volumes site=KTST
 godot --path . -- site=KTLX fetch=2013-05-20T20:00Z  # start with a fetch (also latest, live, <from>/<to>)
 godot --path . --script res://tests/frametimes.gd -- frames=1500 view=3d mosaic=1 play=1 fps=15 time=20130520_193407
+godot --path . -- time=20130520_200359 fps=8 export=moore.png         # save the loop as an animated PNG and quit
 gdformat scripts tests && gdlint scripts tests
 ```
 
@@ -170,6 +171,10 @@ gdformat scripts tests && gdlint scripts tests
   top-right rows, sizes/places hodograph + section (side by side when they don't stack) and wraps/hides the hint.
   Below `NARROW_WIDTH` (720, phones) the playback bar takes two rows, the hint is hidden, and when the top-right
   column cannot fit beside the info text it spans the top with the info under it. Tilt -/+ buttons stand in for Up/Down.
+- `scripts/loop_export.gd` – `LoopExport` (E, the Export button, `export=<path>` at startup then quit): steps main through the
+  current sequence, captures the viewport after each volume is drawn (waiting for warnings fetches), and writes an APNG
+  (`encode()`: IHDR, acTL, fcTL + IDAT/fdAT per frame, CRC-32 in GDScript) at the loop speed to `data/exports/` (web:
+  a browser download). Viewports over 1600 px are scaled down. Tested in tests/unit/test_export.gd.
 - `scripts/touch_gestures.gd` – `TouchGestures`: two-finger pinch/pan from ScreenTouch/ScreenDrag for PpiView and
   OrbitCamera (one finger arrives as the emulated left mouse button; ignored while two are down). Trackpad
   `InputEventMagnifyGesture` zooms too. Tested in tests/unit/test_touch.gd.

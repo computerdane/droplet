@@ -63,7 +63,7 @@ const HINT_COMMON := (
 	"Space play   Left/Right step   Shift+Left/Right prev/next loop   Home/End first/last\n"
 	+ "[ ] speed   L live   Up/Down tilt   1-8 field   9 products   0 KDP/shear   S site\n"
 	+ "M mosaic   V 2D/3D   R reset view   X section   F fetch   T storm-relative   W hodograph\n"
-	+ "P VWP   A warnings   C cells   "
+	+ "P VWP   A warnings   C cells   E export loop   "
 )
 const HINT_2D := "wheel zoom   drag pan   hover: value"
 const HINT_SECTION := "wheel zoom   left drag: section A to B   right drag pan   hover: value"
@@ -75,6 +75,7 @@ const HINT_3D := (
 var library := RadarLibrary.new()
 var fetcher := Fetcher.new()
 var overlays := Overlays.new()  # warnings and storm cells over the 2D view
+var loop_export := LoopExport.new()
 var cache := VolumeCache.new(library.source)
 var site := ""
 var frames: Array[String] = []  # volume names for `site`, ascending time
@@ -124,6 +125,7 @@ func _ready() -> void:
 	view_3d.camera.moved.connect(_update_info)
 	add_child(fetcher)
 	add_child(overlays)
+	add_child(loop_export)
 	overlays.changed.connect(_refresh_overlays)
 	fetcher.job_updated.connect(_on_job_updated)
 	fetcher.job_finished.connect(_on_job_finished)
@@ -184,6 +186,7 @@ func _ready() -> void:
 	_set_live(opts.get("live", "1" if live else "0") == "1")
 	_set_playing(opts.get("play", "0") == "1")
 	AppOptions.start_fetch(opts, fetcher)
+	loop_export.setup(self, opts)
 
 
 func _process(_delta: float) -> void:

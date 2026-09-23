@@ -27,6 +27,11 @@ var _buckets: Dictionary = {}  # bucket start (unix) -> {fetched: unix, warnings
 var _requests: Dictionary = {}  # bucket start -> HTTPRequest in flight
 
 
+## True while a fetch is in flight (LoopExport waits for it so frames carry their warnings).
+func busy() -> bool:
+	return not _requests.is_empty()
+
+
 ## Warnings in effect at unix time `t`, drawing order (see KINDS):
 ## [{kind, name, color, begin, end, wfo, event, rings: Array[PackedVector2Array] (lon, lat)}].
 ## Starts fetching the hour around `t` if it is not cached (or stale); `changed` follows.

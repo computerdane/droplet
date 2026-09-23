@@ -66,7 +66,7 @@ Ordered by what unblocks the most.
    would).
 7. **Reach.** Done: Message 1 parsing for pre-2008 archives (the archive reaches back to the early 1990s),
    a notable-events list (fetch panel, `event=` permalinks), touch controls (pinch/pan in 2D and
-   3D, tilt buttons, a two-row bar on phones). Left: loop export to video.
+   3D, tilt buttons, a two-row bar on phones), loop export (animated PNG of the loop as shown; E).
 
 ## Automated testing
 

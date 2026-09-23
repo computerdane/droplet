@@ -24,6 +24,7 @@ signal warnings_toggled
 signal cells_toggled
 signal section_toggled
 signal fetch_toggled
+signal export_requested
 signal srm_toggled
 signal srm_auto_toggled
 signal winds_toggled
@@ -104,6 +105,8 @@ var _bar_tail: Array[Control] = []  # what moves to it: time, tilt and speed
 var _layout_queued := false
 var _sites: Array[String] = []
 var _setting_slider := false
+var _notice: Label
+var _notice_timer: SceneTreeTimer
 
 
 func _ready() -> void:
@@ -159,6 +162,9 @@ func _build_top_right() -> void:
 	var fetch := _button("Fetch", "Download a site / time range, or follow a site live (F)")
 	fetch.pressed.connect(fetch_toggled.emit)
 	row.add_child(fetch)
+	var export := _button("Export", "Save this loop as an animated PNG, as shown (E)")
+	export.pressed.connect(func() -> void: export_requested.emit())
+	row.add_child(export)
 	mosaic_button = _button("Mosaic", "Also draw other sites at the same time (M)")
 	mosaic_button.toggle_mode = true
 	mosaic_button.pressed.connect(mosaic_toggled.emit)
@@ -659,3 +665,27 @@ func _wrap_bar(narrow: bool) -> void:
 	time_label.custom_minimum_size.x = 0.0 if narrow else 220.0
 	time_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL if narrow else Control.SIZE_FILL
 	time_label.add_theme_font_size_override("font_size", 12 if narrow else 14)
+
+
+## Shows `text` at the top centre for a few seconds (export results and the like).
+func notify(text: String) -> void:
+	if _notice == null:
+		_notice = _label(14)
+		_notice.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+		_notice.grow_horizontal = Control.GROW_DIRECTION_BOTH
+		_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_notice.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		add_child(_notice)
+	_notice.text = text
+	_notice.offset_left = -size.x / 2.0 + MARGIN
+	_notice.offset_right = size.x / 2.0 - MARGIN
+	_notice.offset_bottom = -_bar.size.y - GAP
+	_notice.offset_top = _notice.offset_bottom
+	_notice.visible = true
+	_notice_timer = get_tree().create_timer(6.0)
+	var mine := _notice_timer
+	mine.timeout.connect(
+		func() -> void:
+			if _notice_timer == mine:
+				_notice.visible = false
+	)
