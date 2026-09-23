@@ -783,7 +783,8 @@ func _update_section() -> void:
 	hud.set_section(section_on, shown)
 	view_3d.overlay.set_section(shown, view_2d.section_a, view_2d.section_b)
 	if shown:
-		hud.section.show_section(volume, _volume_field(), view_2d.section_a, view_2d.section_b)
+		var a := view_2d.section_a
+		hud.section.show_section(volume, _volume_field(), a, view_2d.section_b, _neighbors)
 
 
 ## Queues background reads of the frames after the current one, wrapping around the loop,

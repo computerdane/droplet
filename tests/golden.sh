@@ -17,6 +17,7 @@ declare -A CASES=(
 	[cones_section]="view=3d field=REF dist=160 pitch=30 yaw=-30 section=-10,-15,50,45"
 	[volume_render]="view=3d render=volume field=REF dist=90 pitch=20 yaw=-30 density=0.3"
 	[section_vwp]="field=REF zoom=3 section=-10,-15,50,45 vwp=1"
+	[section_mosaic]="field=REF zoom=1.5 mosaic=1 section=-20,10,90,20"
 	[hodograph_hover]="field=VEL srm=auto winds=1 zoom=3 hover=700,360"
 	[cref_mosaic]="field=CREF mosaic=1 zoom=2 hover=760,330"
 	[echo_tops]="field=ET zoom=3"

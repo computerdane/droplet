@@ -6,7 +6,8 @@
 // A band samples tilt "a", or with `blend` interpolates linearly in elevation between
 // tilt a (below) and tilt b (above), falling back to whichever one has data if that tilt's
 // beam (half a beamwidth) reaches the pixel.
-// A and B are in the radar's local frame: km, +x east, +y south (as ppi.gdshader).
+// A and B are in the radar's local frame: km, +x east, +y south (as ppi.gdshader); in a mosaic
+// each radar gets the section transformed into its own frame and a t_min..t_max share of it.
 shader_type canvas_item;
 
 #include "res://shaders/storm.gdshaderinc"
@@ -27,6 +28,9 @@ uniform vec4 geom_b = vec4(0.5, 2.125, 0.25, 1192.0);
 uniform float cmap_min = -64.0;
 uniform float cmap_max = 64.0;
 uniform vec4 range_folded_color : source_color = vec4(0.55, 0.0, 0.55, 1.0);
+// Mosaic: this radar draws only the part of the section nearest to it (SectionView pieces).
+uniform float t_min = 0.0;
+uniform float t_max = 1.0;
 
 const float KE_A = 8494.67;  // 4/3 * 6371 km
 
@@ -40,6 +44,9 @@ float sample_tilt(sampler2D tex, vec4 geom, float r, float u) {
 }
 
 void fragment() {
+	if (UV.x < t_min || UV.x >= t_max) {
+		discard;
+	}
 	vec2 p = mix(a_km, b_km, UV.x);
 	float h = (1.0 - UV.y) * h_max_km;
 	float s = length(p);

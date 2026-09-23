@@ -31,7 +31,7 @@ tests, ~6 s). All green.
 
 **Gaps.**
 
-- Sections use one site, live follows one site per process.
+- Live follows one site per process.
 
 ## Roadmap
 
@@ -51,8 +51,7 @@ Ordered by what unblocks the most.
    storm cell identification (nexrad/src/cells.rs) and tracking with motion vectors and
    forecasts, tornado debris signature flags. Left: SPC outlooks, overlays in 3D.
 5. **Finishing 3D.** Done: hover readout in 3D (ray pick against the cones, checked against
-   the rendered pixels), the A-B section curtain, warnings and cells in 3D. Left: mosaic
-   cross-sections.
+   the rendered pixels), the A-B section curtain, warnings and cells in 3D, mosaic cross-sections.
 6. **Data quality.** Temporal dealiasing against the previous volume, VAD as a dealiasing
    reference, caching the live ring position, multi-site live in one process, a disk quota
    for `data/`.

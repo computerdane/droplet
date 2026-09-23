@@ -42,3 +42,22 @@ func test_beam_model() -> void:
 			var s: float = ke_a * asin(r * cos(th) / (ke_a + h))
 			worst = maxf(worst, absf(SectionViewScript.beam_height(elev, s) - h))
 	check(worst <= 0.01, "section beam height off cone.gdshader by %.4f km" % worst)
+
+
+## Mosaic sections: A -> B is split where the nearest radar changes, and each stretch gets
+## the line in its radar's frame.
+func test_section_split() -> void:
+	var sv := SectionView.new()
+	var vol = lib.open(lib.volumes[0])
+	var other = lib.open(lib.volumes[-1])
+	var n := {"volume": other, "offset_km": Vector2(60, 0), "rotation": 0.1}
+	var pieces: Array = sv._split(vol, Vector2(-20, 0), Vector2(100, 0), [n])
+	sv.free()
+	if not check_eq(pieces.size(), 2, "two stretches"):
+		return
+	check(absf(pieces[0]["t1"] - 50.0 / 120.0) < 1e-4, "boundary half way between the radars")
+	check_eq(pieces[1]["t0"], pieces[0]["t1"], "contiguous")
+	check_eq(pieces[1]["t1"], 1.0, "to B")
+	check(pieces[0]["volume"] == vol and pieces[1]["volume"] == other, "nearest radar first")
+	var a2: Vector2 = pieces[1]["a"]
+	check(a2.distance_to(Vector2(-80, 0).rotated(-0.1)) < 1e-4, "A in the neighbour's frame")

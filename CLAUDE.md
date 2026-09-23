@@ -176,7 +176,8 @@ gdformat scripts tests && gdlint scripts tests
   left drag A→B in 2D, right drag pans). One full-plot ColorRect per elevation band; the shader inverts the
   4/3-earth beam model (pixel height/distance → elevation angle + slant range) and samples the polar
   textures directly. Default interpolates linearly between adjacent tilts; "Beams only" shows each tilt
-  ±½ beamwidth (0.95°). `beam_height()` is the CPU twin, checked against cone.gdshader in tests/unit/test_geometry.gd.
+  ±½ beamwidth (0.95°). With mosaic on, `_split()` cuts A-B where the nearest radar changes and each stretch is
+  drawn from its own radar (line transformed into its frame, `t_min`/`t_max` in the shader). `beam_height()` is the CPU twin, checked against cone.gdshader in tests/unit/test_geometry.gd.
 - `shaders/storm.gdshaderinc` – storm-relative velocity: `storm_motion` uniform (m/s east/north, radar-local),
   subtracts its radial component × cos(elev). Included by ppi, cone, section and volume shaders. `main._storm_vector()`
   is non-zero only for VEL/DVEL with SRM on (T, HUD row, `srm=from_deg,speed_ms` or `srm=auto`, meteorological
@@ -260,11 +261,11 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
   background prefetch of loop frames, velocity dealiasing (DVEL), vertical cross-sections,
   storm-relative velocity, fetching from the UI, translucent volume rendering, VAD wind profile +
   hodograph + automatic (Bunkers) storm motion, hover readout (2D, 3D, section, VWP), VWP time-height plot, NWS warning polygons, storm cell tracking with TDS flags.
-- Next ideas: dealiasing that uses the previous volume as a temporal reference, mosaic cross-sections,
+- Next ideas: dealiasing that uses the previous volume as a temporal reference,
   a VAD-based temporal reference for dealiasing.
 - Web: decoded volumes are not persisted (raw files are, in
   the Cache API; re-decoding costs ~0.5 s/volume against 84 MB stored per decoded volume).
 - Mosaic uses whatever is on disk; `live` follows one site per process (the fetch panel can start several
   for a live mosaic). Fetching from the UI needs the `nexrad` binary (PATH or `DROPLET_NEXRAD`) and a source checkout (not an export).
 - The 3D ground disk/rings are centred on the selected site only.
-- Cross-sections use the selected site only (no mosaic). Cells and rotation tracks are the selected site's only.
+- Cells and rotation tracks are the selected site's only.
