@@ -195,10 +195,11 @@ gdformat scripts tests && gdlint scripts tests
   safety); 85 % of `$DROPLET_QUOTA_GB` for volumes. If the protected scans alone exceed it they are all kept and the
   summary says the quota is still exceeded. Run after `update`/`fetch`, after each complete `live` volume and by
   `nexrad prune`; the summary line carries no volume names (the fetch panel would take them for new volumes).
-  Protected windows: the app's `data/window.json` (below) if fresh; `update`/`fetch` add the range they fetched;
+  Protected windows (all sites' scans inside them): the app's `data/window.json` (below) if fresh; `update`/`fetch` add
+  the range they fetched;
   `nexrad prune --keep-from T --keep-to T` replaces the file's window.
-- `data/window.json` – the app's current time window for prune, written atomically when it changes (writer: follow-up
-  to stage A of #37): `{"from": "2013-05-20T19:30:00Z", "to": "2013-05-20T20:45:00Z", "live": false, "written":
+- `data/window.json` – the app's current time window for prune, written atomically when it changes and at least
+  hourly while the app runs (a heartbeat, so a window left open for more than a day stays fresh; writer: stage B, #39): `{"from": "2013-05-20T19:30:00Z", "to": "2013-05-20T20:45:00Z", "live": false, "written":
   "2026-09-23T12:00:00Z"}`. ISO 8601 UTC, `from <= to`, inclusive. `live` (optional, default false): the app writes
   `from = now - span`, `to = now`, and prune protects `[now - span, open end]`, so it rolls without rewrites.
   Ignored when unreadable, invalid, without `written`, or `written` is more than 24 h from now (stale after a crash).
