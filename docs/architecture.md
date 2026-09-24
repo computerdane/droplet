@@ -208,6 +208,9 @@ gdformat scripts tests && gdlint scripts tests
   Below `NARROW_WIDTH` (720, phones) the playback bar takes two rows, the hint is hidden, and when the top-right
   column cannot fit beside the info text it spans the top with the info under it. Tilt -/+ buttons stand in for Up/Down.
   The field/product buttons are one dropdown; the national view hides per-site playback and field controls.
+- `scripts/key_hint.gd` – `KeyHint`, the bottom-left key hint: keycaps (arrows drawn, mouse actions as pills) and
+  labels on a dim panel, drawn in code so `measure(width)` gives the wrapped height for `Hud._layout()`. Shows the
+  essentials; H, a click on its last item, or `keys=all` expands it to every key. `items_for()` lists them per mode.
 - `scripts/loop_export.gd` – `LoopExport` (E, the Export button, `export=<path>` at startup then quit): steps main through the
   current sequence, captures the viewport after each volume is drawn (waiting for warnings fetches), and writes an APNG
   (`encode()`: IHDR, acTL, fcTL + IDAT/fdAT per frame, CRC-32 in GDScript) at the loop speed to `data/exports/` (web:

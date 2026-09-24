@@ -8,8 +8,8 @@ extends Control
 ## Layout adapts to the canvas size (main.gd keeps the UI scale >= 1, so small windows get
 ## a smaller canvas rather than tiny text), see _layout(): the top-right rows wrap when the
 ## info text leaves little room, the hodograph and cross-section panels are sized from the
-## space left and go side by side when they do not fit stacked, and the key hint wraps next
-## to them or hides when there is no room.
+## space left and go side by side when they do not fit stacked, and the key hint (KeyHint)
+## wraps next to them or hides when there is no room.
 
 signal play_toggled
 signal step_requested(delta: int)
@@ -70,7 +70,7 @@ const HINT_MIN_WIDTH := 240.0
 const NARROW_WIDTH := 720.0
 
 var info: Label
-var hint: Label
+var hint: KeyHint
 var site_option: OptionButton
 var overview_button: Button
 var view_button: Button
@@ -142,11 +142,10 @@ func _build_info() -> void:
 	info = _label(12)
 	info.position = Vector2(12, INFO_TOP)
 	add_child(info)
-	hint = _label(12)
-	hint.modulate = Color(1, 1, 1, 0.55)
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint = KeyHint.new()
 	hint.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	hint.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	hint.expanded_changed.connect(_queue_layout)
 	add_child(hint)
 
 
@@ -489,7 +488,7 @@ func _layout() -> void:
 	# Key hint: bottom left (above the VWP), wrapped to the room left of whatever reaches
 	# down to it.
 	var hint_right := right
-	var hint_top := hint_bottom - _hint_height(right - MARGIN)
+	var hint_top := hint_bottom - hint.measure(right - MARGIN)
 	for c: Control in [_top_box, hodograph, section]:
 		if c.visible and c.get_rect().end.y > hint_top:
 			hint_right = minf(hint_right, c.position.x - GAP)
@@ -497,26 +496,15 @@ func _layout() -> void:
 	hint.offset_left = MARGIN
 	hint.offset_right = MARGIN + hint_w
 	hint.offset_bottom = -(view.y - hint_bottom)
-	hint.offset_top = hint.offset_bottom
+	var hint_h := hint.measure(hint_w)
+	hint.offset_top = hint.offset_bottom - hint_h
 	hint.visible = (
 		view.x >= NARROW_WIDTH
 		and hint_w >= HINT_MIN_WIDTH
-		and hint_bottom - _hint_height(hint_w) > info_bottom + GAP
+		and hint_bottom - hint_h > info_bottom + GAP
 	)
 
 	fetch_panel.custom_minimum_size.x = minf(480.0, view.x - 2 * MARGIN)
-
-
-## Height of the key hint wrapped to `width` (measured with the font: a hidden Label does not
-## re-wrap, so its minimum size would be stale).
-func _hint_height(width: float) -> float:
-	var font := hint.get_theme_font("font")
-	var font_size := hint.get_theme_font_size("font_size")
-	var flags := TextServer.BREAK_MANDATORY | TextServer.BREAK_WORD_BOUND
-	var sz := font.get_multiline_string_size(
-		hint.text, HORIZONTAL_ALIGNMENT_LEFT, width, font_size, -1, flags
-	)
-	return sz.y
 
 
 ## Width of a flow row laid out on one line.
@@ -540,14 +528,15 @@ func set_info(text: String) -> void:
 	info.text = text
 
 
-## Items in `text` are separated by runs of spaces; single spaces inside an item become
-## no-break spaces so wrapping only happens between items.
-func set_hint(text: String) -> void:
-	var re := RegEx.create_from_string("(?<=\\S) (?=\\S)")
-	text = re.sub(text, "\u00a0", true)
-	if hint.text != text:
-		hint.text = text
-		_queue_layout()
+## `essential` keys are shown by default, `all` when the hint is expanded (H); items are
+## [keys, label] (see KeyHint).
+func set_hint(essential: Array, all: Array = []) -> void:
+	hint.set_items(essential, all)
+	_queue_layout()
+
+
+func toggle_hint() -> void:
+	hint.set_expanded(not hint.expanded)
 
 
 func set_sites(sites: Array[String], current: String) -> void:
