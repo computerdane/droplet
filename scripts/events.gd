@@ -174,6 +174,14 @@ static func start(event: Dictionary, fetcher: Fetcher) -> Fetcher.Job:
 	return job
 
 
+## The site to open on: `want` (site=, defaulted from event=) if cached or the event's own
+## (whose fetch is about to start), else "" for the caller's fallback, the latest site.
+static func startup_site(event: Dictionary, want: String, sites: Array[String]) -> String:
+	if sites.has(want) or (not want.is_empty() and want == event.get("site", "")):
+		return want
+	return ""
+
+
 ## The frame to open on for event=: the one of `frames` (the event's site, ascending) nearest
 ## `unix` (the peak, or an explicit time=) if it lies within the event's loop, else -1: the
 ## site's other scans (yesterday's live view) are not the event, so nothing shows until its

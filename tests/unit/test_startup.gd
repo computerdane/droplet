@@ -19,6 +19,16 @@ const LOOP: Array[String] = [
 const OTHER_DAY: Array[String] = ["KTLX_20130519_220000", "KTLX_20130519_220500"]
 
 
+func test_startup_site() -> void:
+	var e := Events.find(EVENT_ID)
+	var cached: Array[String] = ["KTSU"]
+	check_eq(Events.startup_site(e, "KTLX", cached), "KTLX", "the event's site, uncached")
+	check_eq(Events.startup_site(e, "KTSU", cached), "KTSU", "a cached site=")
+	check_eq(Events.startup_site({}, "KXYZ", cached), "", "an uncached site=: fall back")
+	check_eq(Events.startup_site({}, "", cached), "", "no site= nor event=: fall back")
+	check_eq(Events.startup_site({}, "", []), "", "an empty library: fall back")
+
+
 func test_frame_within_event() -> void:
 	var e := Events.find(EVENT_ID)
 	var peak := Events.unix(e["peak"])

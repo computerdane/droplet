@@ -273,6 +273,10 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/events.gd` – `Events.LIST`: notable events (site, UTC from/to/peak, note; tornadoes and hurricanes 1997–2023,
   times checked against the archive listing). The fetch panel's "Notable events" list and `event=<id>` fetch the loop
   (`Events.start()`) and the finished job jumps to the peak (`jump_to` meta); `event=` also defaults `site=` and `time=`.
+  While the view is on the event's site (not live), each scan the fetch writes takes over if nearer the peak
+  (`Events.takes_over`), so the view converges on the peak even if the fetch fails or stops part way. At launch,
+  `event=` selects its site even when uncached and shows only a cached scan inside the event's loop
+  (`Events.frame_within`), else no frame until its scans arrive; a failed last job stays in the info text.
 - `scripts/app_options.gd` – `key=value` options from the command line, or the query string on web.
   With no site/time/fetch/event the web app opens the national composite without starting a site job;
   an explicit web URL without `fetch=` fetches the volume at `time=`, else starts live for `site=`.
