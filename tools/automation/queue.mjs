@@ -469,7 +469,7 @@ export function summarize(item) {
     case 'comment': case 'inline_comment':
       return `${item.type} ${ref}${who} ${item.change}${item.path ? ` ${item.path}:${item.line ?? ''}` : ''}: ${firstLine(item.body)}`;
     case 'preview': return `preview ${ref}${who} ${item.change}: ${item.sha ?? 'unknown sha'}`;
-    case 'review': return `review ${ref}${who} ${item.state}: ${firstLine(item.body)}`;
+    case 'review': return `review ${ref}${who} ${item.change} ${item.state ?? item.previous_state}: ${firstLine(item.body)}`;
     case 'approval': return `approval ${ref} ${item.change}: ${item.reason}`;
     case 'check': return `check ${ref} ${item.name} ${item.from ?? 'new'} -> ${item.to ?? 'removed'}`;
     case 'issue': case 'pull_request': {
