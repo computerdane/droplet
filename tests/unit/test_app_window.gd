@@ -376,9 +376,36 @@ func test_live_span_survives_l_and_events() -> void:
 	_close(main)
 
 
+## Live mode survives a finished update of the newest scan (F, Newest volume; fetch=latest): its
+## scan is in the live window, so the window stays live and the followers keep running.
+func _check_newest_scan_fetch_keeps_live_following() -> void:
+	TimeWindow.clock_override = T0 + 360
+	var main := _launch(["site=KTST"])
+	main._pick_site("KTST")
+	var follower: Fetcher.Job = main.fetcher.jobs[-1]
+	check(follower.kind == "live" and main.live, "following KTST live")
+	main.hud.fetch_panel.update_requested.emit("KTST", "", "", "")
+	var newest: Fetcher.Job = main.fetcher.jobs[-1]
+	check_eq(newest.key, "update KTST newest", "Newest volume")
+	newest.volumes.append(KTST[1])
+	main.fetcher._finish(newest, 0)
+	check(main.window.live and main.live, "still live")
+	check(follower.running and not follower.stopped, "the follower survives")
+	check_eq(main.volume.name, KTST[1], "following the newest")
+	_close(main)
+	main = _launch(["site=KTST", "fetch=latest"])
+	var job: Fetcher.Job = main.fetcher.jobs[0]
+	job.volumes.append(KTST[1])
+	main.fetcher._finish(job, 0)
+	check(main.window.live and main.live, "fetch=latest: live on")
+	TimeWindow.clock_override = -1
+	_close(main)
+
+
 ## fetch=latest opens live, but the newest scan may be older than the last hour: the finished
 ## job re-targets the window so what it fetched is visible (its range when it has one).
 func test_finished_update_outside_the_window_retargets_it() -> void:
+	_check_newest_scan_fetch_keeps_live_following()
 	var main := _launch(["site=KTST", "window=20240501_200000/20240501_210000"])
 	var job: Fetcher.Job = main.fetcher.start_update("KTST")
 	job.volumes.append(KTST[1])

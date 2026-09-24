@@ -67,6 +67,9 @@ fn parse_selection(args: &[String]) -> Result<(String, Selection)> {
     let mut sel = Selection::default();
     let mut i = 1;
     while i < args.len() {
+        if !matches!(args[i].as_str(), "--interval" | "--since-minutes") {
+            return Err(format!("unknown option {}", args[i]).into());
+        }
         let value = args.get(i + 1).ok_or_else(|| format!("{} needs a value", args[i]))?;
         match args[i].as_str() {
             "--at" => sel.at = Some(Utc::parse_iso(value)?),
@@ -91,6 +94,9 @@ fn parse_live(args: &[String]) -> Result<(Vec<String>, f64, u32)> {
     let mut since_minutes = archive::DEFAULT_BACKFILL_MINUTES;
     let mut i = sites.len();
     while i < args.len() {
+        if !matches!(args[i].as_str(), "--interval" | "--since-minutes") {
+            return Err(format!("unknown option {}", args[i]).into());
+        }
         let value = args.get(i + 1).ok_or_else(|| format!("{} needs a value", args[i]))?;
         match args[i].as_str() {
             "--interval" => interval = value.parse().map_err(|_| "--interval: not a number")?,
@@ -314,6 +320,7 @@ mod tests {
             (&["KTLX", "--since-minutes"][..], "needs a value"),
             (&["KTLX", "--interval", "soon"][..], "not a number"),
             (&["KTLX", "--bogus", "1"][..], "unknown option"),
+            (&["KTLX", "--bogus"][..], "unknown option"),
             (&["--since-minutes", "5"][..], "missing SITE"),
         ] {
             let err = live(args).unwrap_err().to_string();

@@ -689,15 +689,16 @@ func _follow_fetch(name: String) -> bool:
 
 ## A finished update jumps to the last volume it fetched (a notable event: to its peak). What
 ## it fetched must be visible: when that lies outside the window, the window becomes the job's
-## range, else the half hour around it (fetch=latest from a radar quiet for over an hour). A
-## live window's fetch (Fetcher.start_window without live following) leaves live mode on.
+## range, else the half hour around it (fetch=latest from a radar quiet for over an hour). In
+## live mode an update whose scans are in the live window (the newest scan, a live window's fetch
+## where live cannot run) leaves live following, and its followers, on.
 func _on_job_finished(job: Fetcher.Job) -> void:
 	print("fetch: ", job.describe())  # the web smoke test waits for this line
 	if job.kind != "update" or job.stopped or job.volumes.is_empty():
 		return
-	if job.window != null and job.window.live:  # live mode where live following cannot run
-		return
 	var t: int = job.get_meta("jump_to", RadarLibrary.unix_of(job.volumes[-1]))
+	if window.live and (window.contains(t) or job.window != null and job.window.live):
+		return
 	if not window.contains(t):
 		var range := TimeWindow.parse_option(job.from + "/" + job.to)  # null without a range
 		_set_window(range if range != null else TimeWindow.around(t))
