@@ -5,7 +5,8 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { approval, scopeHash, reply, claim, checkpoint, checkJob, loadState, saveState, parseArgs, GitHub, sync, LABELS,
-  normalizePaths, pathsOverlap, reconcile, stack } from './queue.mjs';
+  normalizePaths, pathsOverlap, reconcile, stack, activity, observe, findBaseline, storeSnapshot, summarize,
+  watchUntilChange, PREVIEW_MARKER } from './queue.mjs';
 
 const policy = { approvers: [{ login: 'owner', id: 7 }], max_repair_attempts: 3,
   max_active_issues: 1, max_open_prs: 3, default_branch: 'main' };
@@ -588,4 +589,214 @@ test('scope or approval changed during setup cannot inherit the old planned path
     assert.throws(() => claim(github, 1, root, setup, { paths: 'web' }), /Approval or scope changed during setup/);
     assert.equal(loadState(root).jobs[1], undefined);
   }
+});
+
+// Activity deltas. Snapshots mirror snapshot(): REST issue/inline comments and gh PR JSON.
+const restComment = (id, body, userId, login, at = '2026-09-23T12:00:00Z', extra = {}) => ({ id, body,
+  user: { id: userId, login }, created_at: at, updated_at: at, url: `https://github.com/x/y/issues/1#c${id}`, ...extra });
+function baseSnapshot() {
+  return {
+    issues: [{ number: 12, title: 'Fix loading', body: 'Scope', url: 'u12', author: 'owner', updated_at: '2026-09-23T12:00:00Z',
+      labels: ['needs-approval'], approval: { approved: false, reason: 'needs human /approve' },
+      comments: [restComment(1, 'First thought', 7, 'owner')] }],
+    pull_requests: [{ number: 57, url: 'p57', title: 'PR', body: 'Closes #3', author: { login: 'bot' }, baseRefName: 'main',
+      headRefName: 'ai/issue-3', headRefOid: 'aaaaaaaa', updatedAt: '2026-09-23T12:00:00Z', isDraft: false, reviewDecision: '',
+      statusCheckRollup: [{ __typename: 'CheckRun', workflowName: 'CI', name: 'test', status: 'IN_PROGRESS', conclusion: '' }],
+      comments: [{ id: 'IC_1', author: { login: 'owner' }, body: 'Looks close', createdAt: '2026-09-23T12:00:00Z', url: 'pc1', viewerDidAuthor: false }],
+      reviews: [], inline_comments: [] }],
+    stacks: [], jobs: { 3: { phase: 'in-review', pr: 57 } }, fingerprint: 'a'.repeat(64),
+  };
+}
+const context = (extra = {}) => ({ policy, viewer: { id: 99, login: 'bot' },
+  lookupPull: () => assert.fail('unexpected PR lookup'), lookupIssue: () => assert.fail('unexpected issue lookup'), ...extra });
+
+test('activity reports new, edited and deleted issue comments with author roles', () => {
+  const before = baseSnapshot();
+  const after = structuredClone(before);
+  after.issues[0].comments[0] = { ...after.issues[0].comments[0], body: 'Prefer option B', updated_at: '2026-09-23T12:05:00Z' };
+  after.issues[0].comments.push(restComment(2, 'Design: use a ring buffer\nmore', 7, 'owner', '2026-09-23T12:06:00Z'),
+    restComment(3, 'Answer', 99, 'bot', '2026-09-23T12:07:00Z'));
+  const items = activity(before, after, context());
+  assert.deepEqual(items.map(i => [i.type, i.id, i.change, i.approver, i.self]),
+    [['comment', 1, 'edited', true, false], ['comment', 2, 'new', true, false], ['comment', 3, 'new', false, true]]);
+  assert.equal(items[1].body, 'Design: use a ring buffer\nmore');
+  assert.equal(summarize(items[1]), 'comment #12 owner (approver) new: Design: use a ring buffer');
+  const removed = activity(after, before, context()).filter(i => i.change === 'deleted');
+  assert.deepEqual(removed.map(i => i.id), [2, 3]);
+});
+
+test('activity reports PR conversation, inline comments, reviews and preview updates', () => {
+  const before = baseSnapshot();
+  const after = structuredClone(before);
+  const pr = after.pull_requests[0];
+  pr.comments[0].body = 'Looks close; one nit';
+  pr.comments.push({ id: 'IC_2', author: { login: 'github-actions' }, createdAt: '2026-09-23T12:09:00Z', url: 'pc2',
+    body: `${PREVIEW_MARKER}\n[Open live preview](x)\n\nDeployed commit: \`bbbbbbbb\`.`, viewerDidAuthor: false });
+  pr.inline_comments.push(restComment(40, 'Off by one here', 7, 'owner', '2026-09-23T12:08:00Z', { path: 'web/a.js', line: 9 }));
+  pr.reviews.push({ id: 'PRR_1', author: { login: 'owner' }, state: 'CHANGES_REQUESTED', body: 'Please fix',
+    submittedAt: '2026-09-23T12:08:30Z', commit: { oid: 'aaaaaaaa' } });
+  const items = activity(before, after, context());
+  assert.deepEqual(items.map(i => [i.type, i.change]), [
+    ['comment', 'edited'], ['inline_comment', 'new'], ['review', 'new'], ['preview', 'new']]);
+  assert.equal(items[0].approver, true);
+  assert.equal(items[1].path, 'web/a.js');
+  assert.equal(items[2].state, 'CHANGES_REQUESTED');
+  assert.equal(items[3].sha, 'bbbbbbbb');
+  assert.equal(summarize(items[1]), 'inline_comment #57 owner (approver) new web/a.js:9: Off by one here');
+  assert.equal(summarize(items[3]), 'preview #57 github-actions new: bbbbbbbb');
+  const dismissed = structuredClone(after);
+  dismissed.pull_requests[0].reviews[0].state = 'DISMISSED';
+  assert.deepEqual(activity(after, dismissed, context()).map(i => [i.type, i.change, i.previous_state]),
+    [['review', 'edited', 'CHANGES_REQUESTED']]);
+});
+
+test('activity reports approval, label, edit and job changes', () => {
+  const before = baseSnapshot();
+  const after = structuredClone(before);
+  const issue = after.issues[0];
+  issue.comments.push(restComment(5, '/approve', 7, 'owner', '2026-09-23T12:10:00Z'));
+  issue.approval = { approved: true, reason: 'approved by maintainer', comment_id: 5, url: 'a5', scope: 's' };
+  issue.labels = ['ready'];
+  after.jobs[3] = { phase: 'done', pr: 57 };
+  let items = activity(before, after, context());
+  assert.deepEqual(items.map(i => [i.type, i.change]), [
+    ['issue', 'labels'], ['approval', 'approved'], ['comment', 'new'], ['job', 'updated']]);
+  assert.equal(items.find(i => i.type === 'approval').at, '2026-09-23T12:10:00Z');
+  const held = structuredClone(after);
+  held.issues[0].approval = { approved: false, reason: 'held by maintainer' };
+  held.issues[0].title = 'Fix loading faster';
+  items = activity(after, held, context());
+  assert.deepEqual(items.map(i => [i.type, i.change]), [['issue', 'edited'], ['approval', 'held']]);
+  assert.equal(summarize(items[1]), 'approval #12 held: held by maintainer');
+});
+
+test('activity reports check transitions, head changes and new stacks', () => {
+  const before = baseSnapshot();
+  const after = structuredClone(before);
+  const pr = after.pull_requests[0];
+  pr.headRefOid = 'cccccccc';
+  pr.statusCheckRollup = [
+    { __typename: 'CheckRun', workflowName: 'CI', name: 'test', status: 'COMPLETED', conclusion: 'FAILURE',
+      completedAt: '2026-09-23T12:20:00Z', detailsUrl: 'run' },
+    { __typename: 'StatusContext', context: 'pages', state: 'PENDING' }];
+  after.stacks = [{ number: 50, open: true, base: { ref: 'main' }, pull_requests: [{ number: 57 }, { number: 58 }] }];
+  const items = activity(before, after, context());
+  const check = items.find(i => i.type === 'check' && i.name === 'CI/test');
+  assert.deepEqual([check.from, check.to, check.head_sha], ['pending', 'fail', 'cccccccc']);
+  assert.equal(summarize(check), 'check #57 CI/test pending -> fail');
+  assert.deepEqual(items.find(i => i.name === 'pages').to, 'pending');
+  assert.equal(items.find(i => i.type === 'pull_request').change, 'head');
+  assert.deepEqual(items.find(i => i.type === 'stack').pull_requests, [57, 58]);
+  assert.equal(activity(after, structuredClone(after), context()).length, 0);
+});
+
+test('PRs and issues leaving the open lists are resolved to merged or closed with one lookup each', () => {
+  const before = baseSnapshot();
+  const after = { ...structuredClone(before), issues: [], pull_requests: [] };
+  const lookups = [];
+  const items = activity(before, after, context({
+    lookupPull: n => { lookups.push(['pull', n]); return { state: 'closed', merged_at: '2026-09-23T13:00:00Z', merged_by: { login: 'owner' }, merge_commit_sha: 'm' }; },
+    lookupIssue: n => { lookups.push(['issue', n]); return { state: 'closed', state_reason: 'completed', closed_at: '2026-09-23T13:00:01Z' }; },
+  }));
+  assert.deepEqual(lookups, [['issue', 12], ['pull', 57]]);
+  assert.deepEqual(items.map(i => [i.type, i.change]), [['pull_request', 'merged'], ['issue', 'closed']]);
+  assert.equal(summarize(items[0]), 'pull_request #57 merged: by owner');
+  const failed = activity(before, after, context({ lookupPull: () => { throw new Error('boom'); }, lookupIssue: () => ({ state: 'closed' }) }));
+  assert.deepEqual(failed.find(i => i.type === 'pull_request').error, 'boom');
+});
+
+class ObserveGitHub {
+  constructor() { this.policy = policy; this.calls = []; }
+  api(endpoint) { this.calls.push(endpoint); if (endpoint === 'user') return { id: 99, login: 'bot' }; throw new Error(`unexpected ${endpoint}`); }
+  endpoint(suffix) { return suffix; }
+  pull() { throw new Error('unexpected pull'); }
+}
+
+test('observe flags missing and stale baselines, then itemizes changes since a stored fingerprint', () => temp(root => {
+  const github = new ObserveGitHub();
+  const first = baseSnapshot();
+  let result = observe(github, first, first.fingerprint, root);
+  assert.equal(result.baseline, 'none');
+  assert.deepEqual(result.activity, []);
+  assert.equal(result.issues.length, 1);
+  const second = structuredClone(first);
+  second.fingerprint = 'b'.repeat(64);
+  second.issues[0].comments.push(restComment(2, 'Question?', 7, 'owner', '2026-09-23T12:30:00Z'));
+  result = observe(github, second, first.fingerprint, root);
+  assert.equal(result.baseline, 'since');
+  assert.equal(result.baseline_fingerprint, first.fingerprint);
+  assert.deepEqual(result.activity.map(i => i.id), [2]);
+  assert.equal(result.viewer, 'bot');
+  result = observe(github, second, 'f'.repeat(64), root);
+  assert.equal(result.baseline, 'stale');
+  assert.equal(result.baseline_fingerprint, second.fingerprint);
+  assert.equal(findBaseline(undefined, root).baseline, 'last');
+  assert.equal(findBaseline('../../etc/passwd', root).baseline, 'stale');
+}));
+
+test('stored snapshots are pruned to a bounded index', () => temp(root => {
+  for (let i = 0; i < 35; i++) storeSnapshot({ fingerprint: i.toString(16).padStart(64, '0') }, root);
+  const index = JSON.parse(readFileSync(join(root, '.automation/snapshots/index.json'), 'utf8'));
+  assert.equal(index.length, 30);
+  assert.equal(existsSync(join(root, `.automation/snapshots/${'0'.repeat(64)}.json`)), false);
+  assert.equal(findBaseline(index[0], root).baseline, 'since');
+}));
+
+test('watch-until-change loops until the fingerprint changes and writes the full JSON', () => temp(root => {
+  const out = join(root, 'watch-last.json');
+  const outputs = [{ fingerprint: 'old', activity: [], baseline: 'since' },
+    { fingerprint: 'new', baseline: 'since', activity: [{ type: 'comment', number: 12, author: 'owner', approver: true, change: 'new', body: 'Hi' }] }];
+  const calls = [];
+  const lines = [];
+  const code = watchUntilChange({ since: 'old', out }, { execute: args => { calls.push(args); return JSON.stringify(outputs.shift()); },
+    sleep: () => assert.fail('slept'), log: line => lines.push(line), warn: () => {} });
+  assert.equal(code, 0);
+  assert.deepEqual(calls, [['watch', '--since', 'old', '--seconds', '60'], ['watch', '--since', 'old', '--seconds', '60']]);
+  assert.equal(JSON.parse(readFileSync(out, 'utf8')).fingerprint, 'new');
+  assert.deepEqual(lines, [`CHANGED baseline=since items=1 json=${out}`, 'comment #12 owner (approver) new: Hi', 'fingerprint new']);
+}));
+
+test('watch-until-change backs off on errors, resets after success and stops after five failures', () => temp(root => {
+  const out = join(root, 'watch-last.json');
+  const sleeps = [];
+  const lines = [];
+  let n = 0;
+  const execute = () => {
+    n++;
+    if (n === 3) return JSON.stringify({ fingerprint: 'same', activity: [] });
+    throw new Error('HTTP 502');
+  };
+  const code = watchUntilChange({ since: 'same', out }, { execute, sleep: ms => sleeps.push(ms), log: l => lines.push(l), warn: () => {} });
+  assert.equal(code, 1);
+  assert.deepEqual(sleeps, [60000, 120000, 60000, 120000, 180000, 240000]);
+  assert.match(lines.at(-1), /^PERSISTENT_ERROR after 5 consecutive failures: HTTP 502/);
+  assert.equal(existsSync(out), false);
+  const initial = [];
+  assert.equal(watchUntilChange({ out }, { execute: args => { initial.push(args); return JSON.stringify({ fingerprint: 'x', activity: [], baseline: 'none' }); },
+    sleep: () => {}, log: l => lines.push(l) }), 0);
+  assert.deepEqual(initial, [['status']]);
+  assert(lines.includes('BASELINE none: itemized activity may be incomplete; review the full snapshot'));
+}));
+
+test('CLI accepts status/watch-until-change fingerprints', () => {
+  assert.equal(parseArgs(['status', '--since', 'abc']).since, 'abc');
+  assert.equal(parseArgs(['watch-until-change']).since, undefined);
+  assert.equal(parseArgs(['watch-until-change', '--out', 'x.json']).out, 'x.json');
+  assert.throws(() => parseArgs(['watch-until-change', '--seconds', '5']), /Unknown option/);
+});
+
+test('watch-until-change wrapper refuses to run from a worker worktree', t => {
+  const { root, git, execute } = repository(t);
+  copyFileSync(new URL('./watch-until-change', import.meta.url), join(root, 'tools/automation/watch-until-change'));
+  git(['add', '.']); git(['commit', '-m', 'wrapper']); git(['push', 'origin', 'main']);
+  const job = claim(new ParallelGitHub(), 1, root, execute, { paths: 'scripts' });
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  assert.throws(() => execFileSync('bash', [join(job.worktree, 'tools/automation/watch-until-change')], {
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000, env,
+  }), error => {
+    assert.match(error.stderr, /canonical controller checkout/);
+    return true;
+  });
+  assert.equal(existsSync(join(job.worktree, '.automation/watch-last.json')), false);
 });

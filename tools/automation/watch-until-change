@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Wait until the controller queue changes, then print a short activity summary.
+# Launch as a background command from the controller checkout; the full JSON is
+# written to .automation/watch-last.json (or --out FILE). Exit 1 prints
+# PERSISTENT_ERROR after repeated failures. See docs/development-loop.md.
+set -euo pipefail
+exec node "$(dirname "$0")/queue.mjs" watch-until-change "$@"
