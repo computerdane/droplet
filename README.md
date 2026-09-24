@@ -62,7 +62,8 @@ L live · Up/Down tilt · 1-8 field (REF VEL SW ZDR PHI RHO CFP DVEL) · 9 colum
 (composite reflectivity, echo tops, VIL, low-level rotation, rotation tracks) · 0 KDP, azimuthal
 shear, hydrometeor classes · S next site · M mosaic · V 2D/3D · R reset view · X cross-section ·
 T storm-relative velocity · W hodograph · P wind profile over the loop (VWP; click a column to
-jump there) · A warnings · C storm cells · O SPC outlook · E export the loop (animated PNG) · F fetch.
+jump there) · A warnings · C storm cells · O SPC outlook · E export the loop (animated PNG) · F fetch ·
+H show all keys in the bottom-left hint (it shows the essentials by default).
 2D: wheel zoom, drag pan; in cross-section mode left drag draws the line A→B, right drag pans.
 Hovering the map, the cross-section or the VWP shows the value under the mouse.
 3D: left drag orbit, right drag pan, wheel zoom, B cones/volume rendering, I isolate tilts,

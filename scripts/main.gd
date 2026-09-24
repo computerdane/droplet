@@ -17,7 +17,7 @@ extends Node
 ## basemap=0 (no basemap; or basemap=<dir>) volumes=res://tests/fixtures/volumes (DirSource
 ## root; default res://data/volumes) fetch=latest|live|2013-05-20T20:00Z|<from>/<to> (start a
 ## fetch job for site=, default KTLX; see AppOptions) event=moore2013 (a notable event's
-## loop, see Events)
+## loop, see Events) keys=all (the key hint expanded, as H does)
 ##
 ## On web the options come from the page's query string instead (?site=KTLX&time=...).
 ## With no explicit site, time or fetch the app opens on NOAA's live US composite;
@@ -46,19 +46,6 @@ const FIELD_KEYS := {
 	KEY_7: "CFP",
 	KEY_8: "DVEL",
 }
-const HINT_COMMON := (
-	"Space play   Left/Right step   Shift+Left/Right prev/next loop   Home/End first/last\n"
-	+ "[ ] speed   L live   Up/Down tilt   1-8 field   9 products   0 KDP/shear/HCA   S site\n"
-	+ "M mosaic   V 2D/3D   R reset view   X section   F fetch   T storm-relative   W hodograph\n"
-	+ "P VWP   A warnings   O SPC outlook   C cells   E export loop   "
-)
-const HINT_2D := "wheel zoom   drag pan   hover: value"
-const HINT_SECTION := "wheel zoom   left drag: section A to B   right drag pan   hover: value"
-const HINT_3D := (
-	"left drag orbit   right drag pan   wheel zoom   B cones/volume   I isolate tilts   "
-	+ ", . threshold   - = volume opacity   PgUp/PgDn height exaggeration"
-)
-
 var library := RadarLibrary.new()
 var fetcher := Fetcher.new()
 var overlays := Overlays.new()  # warnings and storm cells over the 2D view
@@ -173,6 +160,7 @@ func _ready() -> void:
 	overlays.setup(hud, opts)
 	winds_shown = opts.get("winds", "0") == "1"
 	vwp_shown = opts.get("vwp", "0") == "1"
+	hud.hint.expanded = opts.get("keys", "") == "all"
 	if opts.get("hover", "") == "0":
 		_hover_off = true
 	elif opts.has("hover"):
@@ -375,11 +363,8 @@ func _set_view_3d(on: bool) -> void:
 
 
 func _update_hint() -> void:
-	if overview:
-		hud.set_hint("Click a radar marker to see its latest scans   wheel zoom   drag pan")
-		return
-	var extra := HINT_3D if view_is_3d else (HINT_SECTION if section_on else HINT_2D)
-	hud.set_hint(HINT_COMMON + extra)
+	var items := KeyHint.items_for(overview, view_is_3d, section_on)
+	hud.set_hint(items[0], items[1])
 
 
 func _set_section_on(on: bool) -> void:
@@ -1061,6 +1046,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_toggle_vwp()
 		KEY_F:
 			_toggle_fetch_panel()
+		KEY_H:
+			hud.toggle_hint()
 		KEY_B:
 			view_3d.volume_render = not view_3d.volume_render
 			_refresh()
