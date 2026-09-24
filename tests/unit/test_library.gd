@@ -18,6 +18,20 @@ func test_fixture_set() -> void:
 			check(vol.has_field(i, "VEL") == vol.has_field(i, "DVEL"), "DVEL next to VEL")
 
 
+func test_for_site_window() -> void:
+	var site: String = lib.sites()[0]
+	var all: Array[String] = lib.for_site(site)
+	check_eq(lib.for_site(site, null), all, "no window: every scan")
+	var newest := RadarLibraryScript.unix_of(all[-1])
+	var only: Array[String] = [all[-1]]
+	check_eq(lib.for_site(site, TimeWindow.fixed(newest, newest)), only, "inclusive window")
+	check_eq(lib.for_site(site, TimeWindow.fixed(newest + 1, newest + 60)), [], "after the newest")
+	check_eq(lib.for_site(site, TimeWindow.live_window(60, newest + 3601)), [], "live, 1 s past")
+	var window := TimeWindow.fixed(RadarLibraryScript.unix_of(all[0]), newest)
+	check_eq(lib.for_site(site, window), all, "window spanning all")
+	check_eq(lib.for_site(site, window), window.filter(all), "same as TimeWindow.filter")
+
+
 func test_volume_quality() -> void:
 	var vol: RadarVolume = lib.open(lib.volumes[0])
 	check_eq(VolumeUpdatePolicyScript.quality(vol), "", "complete scan has no quality warning")

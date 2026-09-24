@@ -37,10 +37,11 @@ func sites() -> Array[String]:
 	return out
 
 
-func for_site(site: String) -> Array[String]:
+## The volumes of `site`, oldest first; only those inside `window` (a TimeWindow) if given.
+func for_site(site: String, window: TimeWindow = null) -> Array[String]:
 	var out: Array[String] = []
 	for v in volumes:
-		if site_of(v) == site:
+		if site_of(v) == site and (window == null or window.contains(unix_of(v))):
 			out.append(v)
 	return out
 
