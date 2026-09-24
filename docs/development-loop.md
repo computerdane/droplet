@@ -87,6 +87,25 @@ unless Fable is included or you explicitly authorize usage credits. See
 To keep the trial within included usage, check that usage credits are disabled in
 Claude Settings → Usage before starting.
 
+The Claude Code coordinator monitors with a background command instead of a goal:
+
+```sh
+bash tools/automation/watch-until-change              # since the last result
+bash tools/automation/watch-until-change --since FINGERPRINT --out FILE
+```
+
+It repeats bounded `watch` calls until the fingerprint changes, writes the full
+JSON to `.automation/watch-last.json` (or `--out`), and prints one summary line per
+activity item plus the new fingerprint. Without `--since` or a previous result it
+returns the current status. It backs off after errors and exits 1 with
+`PERSISTENT_ERROR` after five consecutive failures. Claude Code notifies the
+coordinator when the background command exits. The coordinator must read every
+activity item, including human comments on issues and PRs, inline comments,
+reviews, approvals, checks, and merges, and act on or acknowledge each before
+restarting the watcher. A maintainer comment posted just before `/approve` refines
+the approved scope and must be read before dispatch. Restart the watcher as a new
+background command, never inside a foreground command with `&`.
+
 Ask questions and request refinements on issues, including unapproved discoveries.
 The active coordinator answers while the loop runs and catches up after restarting.
 Questions and discussion do not authorize implementation. Use the Question issue form for
@@ -204,6 +223,7 @@ Use the trusted controller helper, never an issue worktree's edited copy:
 node tools/automation/queue.mjs reconcile
 node tools/automation/queue.mjs status
 node tools/automation/queue.mjs watch --since FINGERPRINT --seconds 50
+bash tools/automation/watch-until-change --since FINGERPRINT
 node tools/automation/queue.mjs claim 42 --paths scripts/hud.gd,tests/unit/test_touch.gd
 node tools/automation/queue.mjs claim 43 --base-issue 42 --paths scripts/ppi_view.gd
 node tools/automation/queue.mjs claim 43 --recover
@@ -218,6 +238,15 @@ node tools/automation/queue.mjs propose --title 'Observed problem' --body-file /
 ```
 
 `status`/`watch` read GitHub, including issue questions and PR inline feedback.
+Both return `activity`, a time-ordered list of self-contained changes since
+`--since FINGERPRINT` (for `status` without it, since the last stored result):
+comments (new/edited/deleted, with `approver` and `self` flags), inline comments,
+reviews, approval changes, issue opened/edited/labels/closed, PR opened/head/base/
+merged/closed, per-check state changes, Pages previews, stacks, and local jobs.
+Recent snapshots are kept in `.automation/snapshots/`. `baseline` is `since` when
+the fingerprint was found, `last` for plain `status`, `stale` when it was not found
+(compared with the latest stored snapshot), or `none`; the last two require a full
+review of the snapshot fields, which are unchanged.
 `claim` checks approval, limits, conflicts, dependencies, and existing work before
 creating an issue worktree. `check` guards further work/pushes against revoked or
 changed scope. `checkpoint` is local and still works after a hold; update visible
