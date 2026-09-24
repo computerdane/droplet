@@ -42,8 +42,11 @@ at launch.
 
 macOS support covers Apple Silicon (`aarch64-darwin`); nixpkgs no longer builds for
 Intel Macs. Godot comes prebuilt from the Nix binary cache and runs as a plain
-executable from the Nix store; no app is added to /Applications. The macOS dev
-shell omits the Linux-only golden-screenshot (Xvfb/Mesa) and Chromium tools.
+executable from the Nix store; no app is added to /Applications. It uses Godot's
+Vulkan driver (MoltenVK) by default, because its Metal driver crashes on startup;
+pass `--rendering-driver opengl3` (before any `--`) to try OpenGL instead. The
+macOS dev shell omits the Linux-only golden-screenshot (Xvfb/Mesa) and Chromium
+tools.
 
 The decoder is also available separately: `nix run .#nexrad -- update KTLX`.
 When run separately it writes under the current directory unless `DROPLET_ROOT`
