@@ -43,33 +43,39 @@ static func parse() -> Dictionary:
 ## DEFAULT_FETCH_SITE). Main only calls this on startup for an explicit site, time, event or
 ## fetch; an unqualified URL opens the national composite instead. event=<id> (see Events)
 ## fetches that event's loop instead. On web, a permalink with time= alone fetches that scan, and
-## otherwise site= fetches the app's `window` (Fetcher.start_window: live following for a live
-## window, or window=<from>/<to>'s scans). No job starts for a time outside `window` (window=
-## wins over fetch= and event=, see TimeWindow.from_options): nothing is fetched then.
+## otherwise site= fetches the app's `window` (Fetcher.start_window: window=<from>/<to>'s scans).
+## A live window is live mode's fetch (Fetcher.start_view), with mosaic=1 the neighbours' too
+## (desktop only). Nothing starts outside `window` (window= wins over fetch= and event=, see
+## TimeWindow.from_options): an event or a fetch= range is clipped to it (TimeWindow.clip) and
+## skipped when they do not overlap, as is a fetch= time or latest outside it.
 static func start_fetch(opts: Dictionary, fetcher: Fetcher, window: TimeWindow) -> void:
 	var site: String = opts.get("site", DEFAULT_FETCH_SITE).to_upper()
 	var what: String = opts.get("fetch", "")
 	var event := Events.find(opts.get("event", ""))
 	if what.is_empty() and not event.is_empty():
-		if Fetcher.within(window, "update", "", event["from"], event["to"]):
-			Events.start(event, fetcher)
+		Events.start(event, fetcher, window)
 		return
 	if what.is_empty() and fetcher.web:
-		if not opts.has("time") or opts.has("window"):
-			fetcher.start_window(site, window)
-			return
-		what = iso_of_name_time(opts["time"])
+		var at_time := opts.has("time") and not opts.has("window")
+		what = iso_of_name_time(opts["time"]) if at_time else "view"
 	if what == "live" and not fetcher.can_live:
 		what = "latest"
-	if what == "live":
-		if window.live:
-			fetcher.start_window(site, window)
-		return
-	var at := what if not "/" in what and what != "latest" else ""
-	var from := what.get_slice("/", 0) if "/" in what else ""
-	var to := what.get_slice("/", 1) if "/" in what else ""
-	if not what.is_empty() and Fetcher.within(window, "update", at, from, to):
-		fetcher.start_update(site, at, from, to)
+	var range := TimeWindow.parse_option(what) if "/" in what else null
+	if (what == "view" or what == "live") and window.live:
+		fetcher.start_view(site, window, opts.get("mosaic", "0") == "1")
+	elif what == "view":
+		fetcher.start_window(site, window)
+	elif what == "live":
+		pass  # live following only in a live window
+	elif range != null:
+		if range.clip(window) != null:
+			fetcher.start_window(site, range.clip(window))
+	elif "/" in what:  # not a range nexrad takes: it says so
+		fetcher.start_update(site, "", what.get_slice("/", 0), what.get_slice("/", 1))
+	elif not what.is_empty():
+		var at := what if what != "latest" else ""
+		if Fetcher.within(window, "update", at):
+			fetcher.start_update(site, at)
 
 
 ## 20130520_200359 (as in time= and volume names) -> 2013-05-20T20:03:59Z.

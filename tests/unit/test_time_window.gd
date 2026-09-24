@@ -284,3 +284,19 @@ func test_of_request() -> void:
 	check(TimeWindow.of_request("junk", "", "") == null, "a bad time")
 	check(TimeWindow.of_request("", "2013-05-20T21:00Z", "2013-05-20T20:00Z") == null, "reversed")
 	check(TimeWindow.of_request("", "2013-05-20T21:00Z", "") == null, "half a range")
+
+
+func test_live_span_cap_and_clip() -> void:
+	check_eq(TimeWindow.parse_option("live:99999").span_sec, TimeWindow.MAX_LIVE_MIN * 60, "a day")
+	check_eq(TimeWindow.live_window(1440).span_sec, 86400, "a day is allowed")
+	var event := TimeWindow.fixed(1000, 2000)
+	check_eq(
+		event.clip(TimeWindow.fixed(1500, 3000)).to_option(),
+		TimeWindow.fixed(1500, 2000).to_option(),
+		""
+	)
+	check(event.clip(TimeWindow.fixed(0, 5000)).equals(event), "inside: all of it")
+	check(event.clip(TimeWindow.fixed(2000, 2500)).equals(TimeWindow.fixed(2000, 2000)), "an end")
+	check(event.clip(TimeWindow.fixed(2001, 2500)) == null, "apart")
+	var live := TimeWindow.live_window(10, 1800)  # from 1200, open-ended
+	check(event.clip(live).equals(TimeWindow.fixed(1200, 2000)), "a live window has no upper end")

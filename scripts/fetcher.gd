@@ -229,16 +229,30 @@ func start_window(site: String, window: TimeWindow) -> Job:
 	return job
 
 
-## What live mode fetches for the site on screen: its live `window`, and with `neighbors` the
-## nearest few sites' (Mosaic.nearest_sites) for the mosaic. Nothing for a fixed window: the
-## app never fetches historical data unless asked (F).
+## What live mode fetches for the site on screen (view_sites): its live `window`, and with
+## `neighbors` its nearest neighbours' for the mosaic. Live followers of any other site stop, so
+## clicking around does not pile them up; a site already followed is left as it is. Nothing for
+## a fixed window: the app never fetches historical data unless asked (F).
 func start_view(site: String, window: TimeWindow, neighbors := false) -> void:
 	if not window.live or site.is_empty():
 		return
-	start_window(site, window)
-	if neighbors:
-		for s in Mosaic.nearest_sites(site):
+	var keep := view_sites(site, neighbors)
+	for job in running_jobs():
+		if job.kind == "live" and not job.stopped and not keep.has(job.site):
+			stop(job)
+	for s in keep:
+		if running_job(request_key("live", s)) == null:
 			start_window(s, window)
+
+
+## The sites live mode follows for `site`: itself, and with `neighbors` on the desktop its
+## Mosaic.nearest_sites(). Not on web: a page keeps only about ten scans in memory (main.gd's
+## WEB_MEMORY_BUDGET_BYTES), and neighbours' scans would evict the loop on screen.
+func view_sites(site: String, neighbors := false) -> Array[String]:
+	var out: Array[String] = [site]
+	if neighbors and not web:
+		out.append_array(Mosaic.nearest_sites(site))
+	return out
 
 
 ## Stops the running jobs that fetch outside `window` (the app's window changed; see within).

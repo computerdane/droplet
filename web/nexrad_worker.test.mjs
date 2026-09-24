@@ -104,12 +104,12 @@ test("live backfills the app's live window: since_minutes reaches keys_since", a
   assert.equal(d.followed.length, 1, "60 min when the request does not say");
 });
 
-test("a long live window backfills only its newest BACKFILL_MAX scans", async () => {
+test("a long live window backfills only the newest BACKFILL_MAX (10) scans the page can keep", async () => {
   const keys = Array.from({ length: 25 }, (_, i) => `k${String(i).padStart(2, "0")}`);
   const h = harness({ keys, minutes: 600 });
   await h.context.run("KTST", 600);
-  assert.equal(h.fetched.length, 20);
+  assert.equal(h.fetched.length, 10);
   assert.equal(h.fetched[0], "k24", "newest first");
-  assert.equal(h.fetched.at(-1), "k05");
-  assert.match(h.messages[0].line, /the newest 20 of 25 scans in the last 600 min/);
+  assert.equal(h.fetched.at(-1), "k15");
+  assert.match(h.messages[0].line, /the newest 10 of 25 scans in the last 600 min/);
 });

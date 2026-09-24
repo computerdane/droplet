@@ -61,7 +61,7 @@ gdformat scripts tests && gdlint scripts tests
   it to headless Chromium and writes the results to disk.
 - `web/` – the static web app. `nexrad_worker.js` = the browser's `nexrad` CLI: one module worker per job
   (`{"cmd": "update"|"live", ...}` in, live with `since_minutes`, the live window's span, which it backfills from the
-  archive first, at most the newest 20 scans; `line`/`volume`/`done`/`error` messages out, sweep buffers transferred),
+  archive first, at most the newest 10 scans, what the page keeps; `line`/`volume`/`done`/`error` messages out, sweep buffers transferred),
   sync XHR for listings (workers allow it; the Rust is blocking), raw archive files kept in the Cache API (newest
   300), live sleeps via `Atomics.wait` (needs cross-origin isolation; `Fetcher.can_live` greys out Live without it).
   An update of several volumes decodes on a pool of nested workers (`{"cmd": "decode"}`, min(4, cores − 2)) and
@@ -243,12 +243,18 @@ gdformat scripts tests && gdlint scripts tests
   hour). With no site/time/fetch/window, starts on the live US composite (the window stays live; nothing is followed).
   Fetches follow the window (#40): `_set_window()` stops the jobs outside it (`Fetcher.stop_outside`: live following
   unless the window is live, updates whose time or range misses it), so freezing (L, a step back, a scrub) stops live
-  following and turning L on fetches again. In live mode clicking a radar selects it and fetches its live window
-  (`_fetch_live`, `Fetcher.start_view`: live following that backfills the window's span; with the mosaic on, its
-  `Mosaic.nearest_sites()`, 4 within 900 km, too; turning the mosaic on does the same). In a fixed window nothing is
-  fetched by itself: a click shows the cached in-window scans, or "no scans in this window / Press F to fetch". The
-  fetch panel's requests set the window first (`_open`: `TimeWindow.of_request`, the range, ± 30 min around a time,
-  the live window for the newest scan or Live; an event's loop), then run. Parses `key=value` user args (see its header) –
+  following and turning L on fetches again. In live mode picking a site (a marker, the HUD's list, S) selects it and
+  fetches its live window (`_pick_site`, `_fetch_live`, `Fetcher.start_view`: live following that backfills the
+  window's span; with the mosaic on, on the desktop only, its `Mosaic.nearest_sites()`, 4 within 900 km, too; toggling
+  the mosaic does the same), and stops following every other site, so followers do not pile up. On web neighbours
+  are not fetched: the page keeps about ten scans, and theirs would evict the loop on screen. In a fixed window
+  nothing is fetched by itself: a pick shows the cached in-window scans, or "no scans in this window / Press F to
+  fetch". The fetch panel's requests set the window first (`_open`: `TimeWindow.of_request`, the range, ± 30 min
+  around a time, the live window for the newest scan or Live; an event's loop), then run; the panel refuses times
+  that make no window (a bad time, half a range, a reversed one), and main runs nothing without one. A fetch is
+  clipped to the window when it starts (`TimeWindow.clip`: `event=` and `fetch=` ranges at startup, an event against
+  the window); a job already running that overlaps a new window keeps running (`within` is overlap, not
+  containment), its scans outside the window cached but not shown. Parses `key=value` user args (see its header) –
   screenshot.gd passes them through. `scripts/info_text.gd` builds its top-left info text ("no scans in this window"
   when the site has scans only outside it, or none in a fixed window), `scripts/playback.gd` its loop arithmetic (next frame, dwell, sequence
   jumps, speed steps, loop volumes, VWP columns).
@@ -315,8 +321,9 @@ gdformat scripts tests && gdlint scripts tests
   following of any span is one per site); a finished, failed, or stopping job does not block a restart.
   `start_window(site, window)` fetches a window: `nexrad live SITE --since-minutes <span>` (web: `since_minutes`) for a
   live one, where live cannot run (`can_live`) an update of its extent so far (deduplicated by site and window), and
-  `update --from --to` for a fixed one. `within(window, kind, at, from, to)` decides what `stop_outside` stops. The fetch panel's LineEdits are the
-  only focusable controls (focus released on close).
+  `update --from --to` for a fixed one. `within(window, kind, at, from, to)` (overlap) decides what `stop_outside`
+  stops. `start_view(site, window, neighbors)` is live mode's fetch (`view_sites()`: neighbours on the desktop
+  only); it stops live followers of other sites. The fetch panel's LineEdits are the only focusable controls (focus released on close).
 - `scripts/events.gd` – `Events.LIST`: notable events (site, UTC from/to/peak, note; tornadoes and hurricanes 1997–2023,
   times checked against the archive listing). The fetch panel's "Notable events" list and `event=<id>` fetch the loop
   (`Events.start()`, which fetches the event's window with `start_window` after main opens it) and the finished job
@@ -332,8 +339,10 @@ gdformat scripts tests && gdlint scripts tests
   `time=` (± 30 min) imply one, else live (`TimeWindow.from_options`).
   With no site/time/fetch/event/window the web app opens the national composite without starting a site job;
   an explicit web URL without `fetch=` fetches the volume at `time=` alone, else the window for `site=`
-  (`Fetcher.start_window`: live following for the default live window, `window=`'s scans). `start_fetch` never starts
-  a job outside the window (`window=` wins over `fetch=` and `event=`; `Fetcher.within`).
+  (`Fetcher.start_view` for the default live window, with `mosaic=1` the neighbours too on the desktop, e.g.
+  `fetch=live mosaic=1`; `start_window` for `window=`'s scans). `start_fetch` never starts a job outside the window
+  (`window=` wins over `fetch=` and `event=`): an event or a `fetch=` range is clipped to it (`TimeWindow.clip`) and
+  skipped when they do not overlap, a `fetch=` time or latest outside it is skipped (`Fetcher.within`).
   On web main.gd uses a MemorySource (1400 MiB budget, oldest evicted, enough for roughly ten
   full recent scans plus a partial) and a 192 MiB texture cache within the 2 GB wasm heap.
 - `scripts/basemap.gd` + `shaders/basemap*.gdshader*` – lon/lat line meshes projected on the GPU
@@ -403,7 +412,8 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 - Decoder reads both archive layouts: bzip2 LDM records (current) and the older gzip-wrapped uncompressed stream (~pre-2016, `.gz` keys), and both radial formats: Message 31 (Build 10+, ~mid-2008 onward) and legacy Message 1 (8-bit REF on 1 km gates to 460 km, VEL/SW on 250 m gates, 1° radials, no dual-pol). Message 1 files carry no site location (`nexrad/src/sites.rs`, the NCEI station list) and the oldest (`ARCHIVE2.nnn` headers) not even the ICAO (`level2::with_site()` takes it from the file name or key). Checked on KTLX 1995, 1999-05-03 (Bridge Creek-Moore), 2005, 2007.
 - Verified against KTLX 2026-09-22 (VCP 212, bz2) and KTLX 2013-05-20 20:03Z (VCP 12, gz, the Moore tornado).
 - `live` backfills the complete scans of the live window (the last `--since-minutes`, default 60, the app's
-  `window=live:<minutes>`; `archive::keys_since` by the scan time in each key; on web at most the newest 20)
+  `window=live:<minutes>`; `archive::keys_since` by the scan time in each key; on web at most the newest 10, as the page keeps about ten scans; the app caps the span at a day,
+  `TimeWindow.MAX_LIVE_MIN`, and so does `--since-minutes`)
   from the archive mirror before following the in-progress volume (skipping that partial if joined after its first chunk), then follows each new one.
   Recent archive scans first appear newest-first as provisional previews so the live view reaches the
   newest available time promptly. The same raw scans are then finalized oldest-first, replacing their

@@ -163,13 +163,18 @@ func _submit() -> void:
 	if site.length() != 4:
 		set_jobs(PackedStringArray(["Site must be a 4-letter ICAO id, e.g. KTLX"]))
 		return
+	var at := _t1.text.strip_edges() if _mode.selected == Mode.AT else ""
+	var from := _t1.text.strip_edges() if _mode.selected == Mode.RANGE else ""
+	var to := _t2.text.strip_edges() if _mode.selected == Mode.RANGE else ""
+	# Each request becomes the time window (TimeWindow.of_request): it needs times that parse, and
+	# a range needs both ends in order.
+	if _mode.selected in [Mode.AT, Mode.RANGE] and TimeWindow.of_request(at, from, to) == null:
+		var what := "a time" if _mode.selected == Mode.AT else "both ends, From before To"
+		set_jobs(PackedStringArray(["Need %s in UTC, e.g. 2013-05-20T20:00Z" % what]))
+		return
 	match _mode.selected:
-		Mode.LATEST:
-			update_requested.emit(site, "", "", "")
-		Mode.AT:
-			update_requested.emit(site, _t1.text.strip_edges(), "", "")
-		Mode.RANGE:
-			update_requested.emit(site, "", _t1.text.strip_edges(), _t2.text.strip_edges())
+		Mode.LATEST, Mode.AT, Mode.RANGE:
+			update_requested.emit(site, at, from, to)
 		Mode.LIVE:
 			live_requested.emit(site)
 	get_viewport().gui_release_focus()

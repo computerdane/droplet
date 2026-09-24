@@ -79,6 +79,32 @@ fn parse_selection(args: &[String]) -> Result<(String, Selection)> {
     Ok((site, sel))
 }
 
+/// `SITE... [--interval SECONDS] [--since-minutes MINUTES]`: the sites, the poll interval and how
+/// far back to backfill (the app passes its live window's span, TimeWindow.span_sec; clamped to
+/// `archive::MAX_BACKFILL_MINUTES`).
+fn parse_live(args: &[String]) -> Result<(Vec<String>, f64, u32)> {
+    let sites: Vec<String> = args.iter().take_while(|a| !a.starts_with("--")).map(|s| s.to_uppercase()).collect();
+    if sites.is_empty() {
+        return Err("missing SITE".into());
+    }
+    let mut interval = 5.0f64;
+    let mut since_minutes = archive::DEFAULT_BACKFILL_MINUTES;
+    let mut i = sites.len();
+    while i < args.len() {
+        let value = args.get(i + 1).ok_or_else(|| format!("{} needs a value", args[i]))?;
+        match args[i].as_str() {
+            "--interval" => interval = value.parse().map_err(|_| "--interval: not a number")?,
+            "--since-minutes" => {
+                let minutes: u32 = value.parse().map_err(|_| "--since-minutes: not a whole number of minutes")?;
+                since_minutes = minutes.min(archive::MAX_BACKFILL_MINUTES);
+            }
+            other => return Err(format!("unknown option {other}").into()),
+        }
+        i += 2;
+    }
+    Ok((sites, interval, since_minutes))
+}
+
 fn decode(path: &Path, volumes_dir: &Path) -> Result<PathBuf> {
     volume::write_volume(&level2::read_file(path)?, volumes_dir)
 }
@@ -124,29 +150,7 @@ fn run(args: &[String]) -> Result<()> {
         }
         "live" => {
             // One or more sites, each followed on its own thread.
-            let sites: Vec<String> = rest.iter().take_while(|a| !a.starts_with("--")).map(|s| s.to_uppercase()).collect();
-            if sites.is_empty() {
-                return Err("missing SITE".into());
-            }
-            let mut interval = 5.0f64;
-            // The app passes its live window's length (TimeWindow.span_sec) so the backfill covers it.
-            let mut since_minutes = archive::DEFAULT_BACKFILL_MINUTES;
-            let mut i = sites.len();
-            while i < rest.len() {
-                match rest[i].as_str() {
-                    "--interval" => {
-                        interval = rest.get(i + 1).ok_or("--interval needs a value")?.parse().map_err(|_| "--interval: not a number")?;
-                        i += 2;
-                    }
-                    "--since-minutes" => {
-                        let value = rest.get(i + 1).ok_or("--since-minutes needs a value")?;
-                        since_minutes = value.parse().map_err(|_| "--since-minutes: not a whole number of minutes")?;
-                        since_minutes = since_minutes.min(archive::MAX_BACKFILL_MINUTES);
-                        i += 2;
-                    }
-                    other => return Err(format!("unknown option {other}").into()),
-                }
-            }
+            let (sites, interval, since_minutes) = parse_live(rest)?;
             // Remember where each ring was, so the next run needs a few listings, not ~20.
             let ring_file = root.join("data").join("live_ring.json");
             let ring: serde_json::Map<String, serde_json::Value> =
@@ -286,5 +290,34 @@ fn main() {
     if let Err(e) = run(&args) {
         eprintln!("nexrad: {e}");
         exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn live(args: &[&str]) -> Result<(Vec<String>, f64, u32)> {
+        parse_live(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn live_arguments() {
+        assert_eq!(live(&["ktlx", "KFDR"]).unwrap(), (vec!["KTLX".to_string(), "KFDR".to_string()], 5.0, 60));
+        assert_eq!(live(&["KTLX", "--since-minutes", "20", "--interval", "2.5"]).unwrap(), (vec!["KTLX".to_string()], 2.5, 20));
+        assert_eq!(live(&["KTLX", "--since-minutes", "0"]).unwrap().2, 0, "no backfill");
+        assert_eq!(live(&["KTLX", "--since-minutes", "99999"]).unwrap().2, archive::MAX_BACKFILL_MINUTES, "clamped to a day");
+        for (args, why) in [
+            (&["KTLX", "--since-minutes", "x"][..], "not a whole number"),
+            (&["KTLX", "--since-minutes", "-5"][..], "not a whole number"),
+            (&["KTLX", "--since-minutes", "1.5"][..], "not a whole number"),
+            (&["KTLX", "--since-minutes"][..], "needs a value"),
+            (&["KTLX", "--interval", "soon"][..], "not a number"),
+            (&["KTLX", "--bogus", "1"][..], "unknown option"),
+            (&["--since-minutes", "5"][..], "missing SITE"),
+        ] {
+            let err = live(args).unwrap_err().to_string();
+            assert!(err.contains(why), "{args:?}: {err}");
+        }
     }
 }

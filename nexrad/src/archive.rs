@@ -95,8 +95,9 @@ pub fn keys_between(bucket: &dyn Bucket, site: &str, start: Utc, end: Utc) -> Re
 /// How far back `nexrad live` backfills by default: the app's default live window
 /// (`TimeWindow.DEFAULT_LIVE_MIN`, 60 min, about ten scans in precipitation modes).
 pub const DEFAULT_BACKFILL_MINUTES: u32 = 60;
-/// The longest backfill `nexrad live --since-minutes` takes (a week: seven daily listings).
-pub const MAX_BACKFILL_MINUTES: u32 = 7 * 24 * 60;
+/// The longest backfill `nexrad live --since-minutes` takes: a day (two daily listings at most,
+/// a few hundred scans), as the app caps `window=live:<minutes>` (`TimeWindow.MAX_LIVE_MIN`).
+pub const MAX_BACKFILL_MINUTES: u32 = 24 * 60;
 
 /// The complete archive volumes of `site` whose scans start at or after `start` (up to `now`,
 /// whose day is the last listed), oldest first: what live following backfills so its history

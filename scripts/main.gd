@@ -29,9 +29,9 @@ extends Node
 ##
 ## On web the options come from the page's query string instead (?site=KTLX&time=...).
 ## With no explicit site, time or fetch the app opens on NOAA's live US composite. Fetches
-## follow the window (Fetcher.start_window, stop_outside): in live mode clicking a station (or L)
-## fetches its live window and follows it, with the mosaic on its nearest neighbours' too; a
-## fixed window never fetches by itself (F does), and changing the window stops jobs outside it.
+## follow the window (Fetcher.start_view, stop_outside): in live mode picking a site (or L) fetches
+## its live window and follows it (desktop: its mosaic neighbours too), other sites' followers stop;
+## a fixed window never fetches by itself (F does), and changing the window stops jobs outside it.
 ## Readouts use sweep files; loop and mosaic volumes preload via VolumeCache.
 
 const LIVE_RESCAN_SEC := 3.0
@@ -114,7 +114,7 @@ func _ready() -> void:
 	play_timer.one_shot = true
 	play_timer.timeout.connect(_on_play_tick)
 	view_2d.view_changed.connect(_update_info)
-	view_2d.site_clicked.connect(_select_map_site)
+	view_2d.site_clicked.connect(_pick_site)
 	view_2d.section_changed.connect(_update_section)
 	view_3d.camera.moved.connect(_update_info)
 	add_child(fetcher)
@@ -253,8 +253,10 @@ func _connect_hud() -> void:
 	hud.fetch_toggled.connect(_toggle_fetch_panel)
 	hud.fetch_panel.update_requested.connect(
 		func(s: String, at: String, from: String, to: String) -> void:
-			_open(s, TimeWindow.of_request(at, from, to, live_minutes))
-			fetcher.start_update(s, at, from, to)
+			var w := TimeWindow.of_request(at, from, to, live_minutes)
+			if w != null:  # else not a window (the panel says so): no job outside the window
+				_open(s, w)
+				fetcher.start_update(s, at, from, to)
 	)
 	hud.fetch_panel.live_requested.connect(
 		func(s: String) -> void:
@@ -266,7 +268,7 @@ func _connect_hud() -> void:
 		func(id: String) -> void:
 			var event := Events.find(id)
 			_open(event["site"], TimeWindow.of_event(event))
-			Events.start(event, fetcher)
+			Events.start(event, fetcher, window)
 	)
 	if not fetcher.can_live:
 		hud.fetch_panel.disable_live("Live needs a cross-origin isolated page (COOP/COEP headers)")
@@ -306,26 +308,16 @@ func _select_site(s: String) -> void:
 		_update_info()
 
 
-## Picking a marker works even before that site's first volume has been downloaded. In live
-## mode it fetches the site's live window (_fetch_live); a fixed window shows what is cached.
-func _select_map_site(s: String) -> void:
-	_pick_site(s)
-	if window.live:
-		_set_live(true)
-		_fetch_live()
-
-
-## Live mode fetches what it shows: the site's live window and, with the mosaic on, its nearest
-## neighbours' (Fetcher.start_view). Never a fixed window's: F fetches that.
+## Live mode fetches what it shows: the site's live window and, with the mosaic on (desktop), its
+## nearest neighbours'; other sites' followers stop (Fetcher.start_view). Never a fixed window's.
 func _fetch_live() -> void:
 	if not overview:
 		fetcher.start_view(site, window, mosaic)
 
 
-## A fetch the user asked for (the fetch panel) opens its window (null: it stays) and site.
+## A fetch the user asked for (the fetch panel) opens its window and site.
 func _open(s: String, w: TimeWindow) -> void:
-	if w != null:
-		_set_window(w)
+	_set_window(w)
 	if site != s:
 		_select_site(s)
 
@@ -408,8 +400,7 @@ func _set_section_on(on: bool) -> void:
 
 func _toggle_mosaic() -> void:
 	mosaic = not mosaic
-	if mosaic:
-		_fetch_live()
+	_fetch_live()  # the neighbours' followers start or stop
 	_refresh()
 
 
@@ -450,10 +441,14 @@ func _moved() -> void:
 	_user_moves += 1
 
 
-## A site the user picked (the HUD's list, S, a marker).
+## A site the user picked (the HUD's list, S, a marker), even before any of its scans exist. In
+## live mode it fetches the site's live window (_fetch_live); a fixed window shows what is cached.
 func _pick_site(s: String) -> void:
 	_moved()
 	_select_site(s)
+	if window.live:
+		_set_live(true)
+		_fetch_live()
 
 
 ## Nudging the storm motion switches to manual, starting from the automatic estimate.

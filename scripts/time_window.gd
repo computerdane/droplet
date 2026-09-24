@@ -17,6 +17,9 @@ extends RefCounted
 ## The app writes the window to data/window.json (write_file) for `nexrad prune` to protect.
 
 const DEFAULT_LIVE_MIN := 60
+## The longest live window (window=live:<minutes> is clamped): a day, as `nexrad live
+## --since-minutes` backfills at most (archive::MAX_BACKFILL_MINUTES).
+const MAX_LIVE_MIN := 24 * 60
 const AROUND_SEC := 30 * 60  # time=T opens T ± 30 min, like the fetch panel's prefill
 
 ## Tests: when >= 0, the clock tick(), live_window(), freeze() and write_file() read.
@@ -63,13 +66,21 @@ static func of_request(
 	return live_window(minutes)
 
 
-## The last `minutes` up to `now` (default: the system clock).
+## The last `minutes` (at most MAX_LIVE_MIN) up to `now` (default: the system clock).
 static func live_window(minutes := DEFAULT_LIVE_MIN, now := -1) -> TimeWindow:
 	var w := TimeWindow.new()
 	w.live = true
-	w.span_sec = minutes * 60
+	w.span_sec = mini(minutes, MAX_LIVE_MIN) * 60
 	w.tick(now)
 	return w
+
+
+## The part of this (fixed) window inside `other` (open-ended when live), or null when they do
+## not overlap: what a fetch started for this range may fetch (Events.start, start_fetch).
+func clip(other: TimeWindow) -> TimeWindow:
+	var lo := maxi(from, other.from)
+	var hi := to if other.live else mini(to, other.to)
+	return fixed(lo, hi) if lo <= hi else null
 
 
 ## Rolls a live window forward to end at `now` (default: the system clock). Fixed windows

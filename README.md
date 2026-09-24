@@ -84,7 +84,7 @@ The buttons at the top right and the playback bar do the same with the mouse.
 DVEL is VEL dealiased at decode time; storm motion for storm-relative velocity is set with the
 row under the field buttons. For real-time data, run `nexrad live KTLX` in another
 terminal (or use F → Live); the app follows it. `nexrad live` first backfills the last 60 min
-from the archive (`--since-minutes 30` for another span). See [the architecture guide](docs/architecture.md) for architecture and data format.
+from the archive (`--since-minutes 30` for another span, at most a day). See [the architecture guide](docs/architecture.md) for architecture and data format.
 
 ## AI development workflow
 
@@ -118,10 +118,11 @@ rolling with the clock (L turns it off, freezing the window where it is, and on 
 `window=` option sets it directly: `window=live:30` (the last 30 min) or
 `window=2013-05-20T19:30Z/2013-05-20T20:45Z`. Every site's timeline, the loop, the mosaic and
 the export use only the scans inside it; scans from other times stay cached but out of sight.
-Downloads follow the window too. In live mode, clicking a radar fetches its last hour (the live
-window) and follows it, and with the mosaic on its four nearest neighbours as well. A historical
-window never downloads by itself: clicking a radar shows what is cached for that time, and F
-fetches the rest. Each fetch-panel request sets the window, and changing the window stops
+Downloads follow the window too. In live mode, picking a radar (on the map, in the site list, or
+with S) fetches its last hour (the live window, at most a day) and follows it, and stops following
+the radar you left. With the mosaic on, the desktop app also follows its four nearest neighbours
+(the web app does not: a browser page holds only about ten scans). A historical window never
+downloads by itself: picking a radar shows what is cached for that time, and F fetches the rest. Each fetch-panel request sets the window, and changing the window stops
 downloads for other times (turning live off stops live following; L starts it again).
 
 Location (G, or the Location button) marks your position on the map. It is off by default; the

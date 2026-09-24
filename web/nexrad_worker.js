@@ -36,10 +36,11 @@ const RAW_CACHE_FILES = 300; // 7 to 11 MB each
 // Decoders per update job; Godot's renderer and its worker threads need cores too.
 const POOL_SIZE = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 2));
 // How far back live() backfills unless the request says (TimeWindow.DEFAULT_LIVE_MIN), and the
-// most volumes it holds for that: the raw files wait in memory until finalized, and the page keeps
-// only about ten decoded scans (MemorySource's budget), so a long live window gets its newest.
+// most volumes it holds for that: the page keeps only about ten decoded scans (main.gd's
+// WEB_MEMORY_BUDGET_BYTES for MemorySource; more would evict the loop on screen), and the raw files
+// wait in memory until finalized, so a long live window gets its newest ten.
 const BACKFILL_MINUTES = 60;
-const BACKFILL_MAX = 20;
+const BACKFILL_MAX = 10;
 
 const line = (text) => postMessage({ type: "line", line: text });
 const fileName = (key) => key.split("/").pop();

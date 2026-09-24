@@ -165,11 +165,15 @@ static func unix(iso: String) -> int:
 	return Time.get_unix_time_from_datetime_string(t + ":00" if t.length() == 16 else t)
 
 
-## Fetches `event`'s window (TimeWindow.of_event, Fetcher.start_window): main follows its scans
-## as they arrive (takes_over) and jumps to its peak when the job finishes ("jump_to"). Main opens
-## that window first (_open), which stops the jobs outside it.
-static func start(event: Dictionary, fetcher: Fetcher) -> Fetcher.Job:
-	var job := fetcher.start_window(event["site"], TimeWindow.of_event(event))
+## Fetches `event`'s window (TimeWindow.of_event, Fetcher.start_window), clipped to the app's
+## `window` when given (nothing, null, when they do not overlap): main follows its scans as they
+## arrive (takes_over) and jumps to its peak when the job finishes ("jump_to"). Main opens the
+## event's window first (_open), which stops the jobs outside it.
+static func start(event: Dictionary, fetcher: Fetcher, window: TimeWindow = null) -> Fetcher.Job:
+	var w := TimeWindow.of_event(event)
+	if window != null:
+		w = w.clip(window)
+	var job := fetcher.start_window(event["site"], w) if w != null else null
 	if job != null:
 		job.set_meta("jump_to", unix(event["peak"]))
 	return job

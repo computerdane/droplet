@@ -211,3 +211,31 @@ func test_live_backfills_its_span() -> void:
 
 func _key(kind: String, site: String, at := "", from := "", to := "") -> String:
 	return FetcherScript.request_key(kind, site, at, from, to)
+
+
+## Live mode follows the site on screen and (desktop only) its mosaic neighbours; followers of
+## other sites stop when the view moves on; updates are left alone.
+func test_start_view_follows_only_the_view() -> void:
+	var fetcher := _fake()
+	var live := TimeWindow.live_window()
+	check_eq(fetcher.view_sites("KTLX", true).size(), 5, "desktop: the site and 4 neighbours")
+	fetcher.web = true
+	check_eq(fetcher.view_sites("KTLX", true), ["KTLX"] as Array[String], "web: no neighbours")
+	fetcher.web = false
+	var update: FetcherScript.Job = fetcher.start_update("KOUN")
+	fetcher.start_view("KTLX", live, true)
+	check_eq(fetcher.launched.size(), 6, "5 followers and the update")
+	fetcher.start_view("KTLX", live, true)
+	check_eq(fetcher.launched.size(), 6, "again: nothing new, nothing flagged")
+	check(not fetcher.jobs[1].repeated, "not 'already running'")
+	fetcher.start_view("KAMA", live)
+	var following := fetcher.running_jobs().filter(
+		func(j: FetcherScript.Job) -> bool: return j.kind == "live"
+	)
+	check_eq(following.size(), 1, "only KAMA is followed now")
+	check_eq(following[0].site, "KAMA", "the new site")
+	check(update.running, "the update keeps on")
+	fetcher.start_view("KTLX", TimeWindow.around(0))
+	check_eq(fetcher.launched.size(), 7, "a fixed window: nothing")
+	fetcher.stop_all()
+	fetcher.free()
