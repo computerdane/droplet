@@ -4,10 +4,17 @@ extends VolumeSource
 ## the shape nexrad-wasm's decode() returns. add_volume() again with the same name replaces
 ## it (a live volume that grew) and bumps its version. Thread-safe.
 ##
-## With a budget, adding a volume evicts the oldest others (by scan time) until the sweep bytes
-## fit; the web build's 2 GB heap cannot keep unlimited live volumes (often >100 MiB each).
+## With a budget, adding a volume evicts others until the sweep bytes fit; the web build's 2 GB
+## heap cannot keep unlimited live volumes (often >100 MiB each). Volumes whose scan time (from
+## the name) lies outside the window set by set_window() go first, oldest first; only then the
+## oldest inside it. The volume just added is never evicted. Without a window: oldest first.
+
+const OPEN_END := -1  # set_window(from, OPEN_END): no upper bound, e.g. a live window
 
 var budget_bytes := 0  # 0 = unlimited
+var _window_from := 0  # unix seconds, inclusive
+var _window_to := 0  # unix seconds, inclusive; OPEN_END: open-ended
+var _has_window := false
 var _volumes: Dictionary = {}  # name -> {meta: String, version: int, files: Dictionary, bytes: int}
 var _bytes := 0
 var _next_version := 1
@@ -31,11 +38,30 @@ func add_volume(name: String, volume_json: String, files: Dictionary) -> void:
 	_bytes += size
 	if budget_bytes > 0 and _bytes > budget_bytes:
 		var others: Array = _volumes.keys().filter(func(n: String) -> bool: return n != name)
-		others.sort_custom(func(a: String, b: String) -> bool: return a.right(15) < b.right(15))
+		others.sort_custom(_evicts_before)
 		for n: String in others:
 			if _bytes <= budget_bytes:
 				break
 			_drop(n)
+	_mutex.unlock()
+
+
+## Protects scans in [from_unix, to_unix] (inclusive, unix seconds) from eviction while
+## others remain. A live window that rolls with the clock passes to_unix = OPEN_END, so later
+## scans stay inside without calling this again; its from_unix still needs updating as it rolls.
+## Takes effect at the next add_volume().
+func set_window(from_unix: int, to_unix: int) -> void:
+	_mutex.lock()
+	_window_from = from_unix
+	_window_to = to_unix
+	_has_window = true
+	_mutex.unlock()
+
+
+## Back to plain oldest-first eviction.
+func clear_window() -> void:
+	_mutex.lock()
+	_has_window = false
 	_mutex.unlock()
 
 
@@ -78,6 +104,23 @@ func read_file(name: String, file: String) -> PackedByteArray:
 
 func describe() -> String:
 	return "memory (%d volumes)" % names().size()
+
+
+## True if `name`'s scan time lies inside the window (false without one). Mutex held.
+func _in_window(name: String) -> bool:
+	if not _has_window:
+		return false
+	var t := RadarLibrary.unix_of(name)
+	return t >= _window_from and (_window_to == OPEN_END or t <= _window_to)
+
+
+## Eviction order: outside the window before inside, then oldest scan first.
+func _evicts_before(a: String, b: String) -> bool:
+	var ia := _in_window(a)
+	var ib := _in_window(b)
+	if ia != ib:
+		return ib
+	return a.right(15) < b.right(15)
 
 
 func _drop(name: String) -> void:
