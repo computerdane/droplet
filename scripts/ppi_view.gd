@@ -32,6 +32,8 @@ const SITE_MARKER_RADIUS_PX := 3.5
 const SITE_HIT_RADIUS_PX := 12.0
 const SITE_LABEL_ZOOM := 0.5  # show ICAO labels only zoomed in this far or more
 const SITE_CLICK_MOVE_PX := 6.0  # press/release must stay within this to count as a click
+const USER_COLOR := Color(0.35, 1.0, 0.55)  # the viewer's position (UserLocation)
+const USER_MARKER_RADIUS_PX := 6.0
 const DEFAULT_CENTER_LATLON := Vector2(39.0, -98.0)  # CONUS, used before any set_site()
 
 var storm_motion := Vector2.ZERO  # m/s east, north; zero = ground-relative (see main.gd)
@@ -54,6 +56,8 @@ var _outlook: Array = []  # the SPC outlook's areas, the same shape
 var _cells: Array = []  # StormCells.track() entries of the frame on screen
 var _sites: Array[String] = []  # RadarSites codes shown as clickable station markers
 var _site_positions: Dictionary = {}  # code -> Vector2 km, camera/world frame (+x east, +y south)
+var _user_latlon := Vector2.INF  # the viewer's (lat, lon), INF when not shown
+var _user_pos := Vector2.INF  # it in the camera/world frame
 var _press_screen := Vector2.INF  # left-button-down screen pos; used to tell a click from a drag
 
 @onready var ppi: ColorRect = $PPI
@@ -133,6 +137,19 @@ func _rebuild_site_positions() -> void:
 			continue
 		var p := Basemap.project(ll.x, ll.y, center.x, center.y)  # +x east, +y north
 		_site_positions[code] = Vector2(p.x, -p.y)  # into camera/world frame (+y south)
+	_user_pos = Vector2.INF
+	if _user_latlon != Vector2.INF:
+		_user_pos = UserLocation.world_of(_user_latlon, center)
+
+
+## The viewer's position (lat, lon) to mark, projected like the station markers so it follows
+## set_site() (radar or national overview); Vector2.INF hides it.
+func set_user_latlon(ll: Vector2) -> void:
+	if ll == _user_latlon:
+		return
+	_user_latlon = ll
+	_rebuild_site_positions()
+	overlay.queue_redraw()
 
 
 func set_active(on: bool) -> void:
@@ -326,6 +343,7 @@ func _draw_overlay() -> void:
 	_draw_cells()
 	_draw_site_markers()
 	_draw_cities()
+	_draw_user_marker()
 	if section_mode and has_section:
 		_draw_section_line()
 
@@ -360,6 +378,18 @@ func _draw_site_markers() -> void:
 				font, Vector2(6, -4), code, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, color
 			)
 			overlay.draw_set_transform(Vector2.ZERO)
+
+
+## The viewer's position: a dot in a ring at constant screen size, on a dark halo.
+func _draw_user_marker() -> void:
+	if _user_pos == Vector2.INF:
+		return
+	overlay.draw_set_transform(_user_pos, 0.0, Vector2.ONE / cam.zoom.x)
+	var r := USER_MARKER_RADIUS_PX
+	overlay.draw_circle(Vector2.ZERO, r + 2.5, Color(0, 0, 0, 0.6))
+	overlay.draw_arc(Vector2.ZERO, r, 0.0, TAU, 32, USER_COLOR, 2.0, true)
+	overlay.draw_circle(Vector2.ZERO, 3.0, USER_COLOR)
+	overlay.draw_set_transform(Vector2.ZERO)
 
 
 func _draw_section_line() -> void:

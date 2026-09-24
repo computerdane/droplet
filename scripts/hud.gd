@@ -24,6 +24,7 @@ signal mosaic_toggled
 signal warnings_toggled
 signal cells_toggled
 signal outlook_toggled
+signal location_toggled
 signal section_toggled
 signal fetch_toggled
 signal export_requested
@@ -78,6 +79,7 @@ var mosaic_button: Button
 var warnings_button: Button
 var cells_button: Button
 var outlook_button: Button
+var location_button: Button
 var section_button: Button
 var section: SectionView
 var fetch_panel: FetchPanel
@@ -195,6 +197,11 @@ func _build_top_right() -> void:
 	cells_button.toggle_mode = true
 	cells_button.pressed.connect(cells_toggled.emit)
 	row.add_child(cells_button)
+	location_button = _button("Location", UserLocation.TIP_WEB)
+	location_button.toggle_mode = true
+	location_button.pressed.connect(location_toggled.emit)
+	location_button.visible = false  # until set_location() says the platform has it
+	row.add_child(location_button)
 	section_button = _button("Section", "Vertical cross-section: drag A to B in the 2D view (X)")
 	section_button.toggle_mode = true
 	section_button.pressed.connect(section_toggled.emit)
@@ -554,6 +561,14 @@ func set_overlays_on(warnings_on: bool, cells_on: bool, outlook_on: bool) -> voi
 	warnings_button.set_pressed_no_signal(warnings_on)
 	cells_button.set_pressed_no_signal(cells_on)
 	outlook_button.set_pressed_no_signal(outlook_on)
+
+
+## The Location toggle. Hidden where the platform has no location yet (desktop), where G
+## explains instead.
+func set_location(on: bool, available: bool, tip: String) -> void:
+	location_button.set_pressed_no_signal(on)
+	location_button.visible = available
+	location_button.tooltip_text = tip
 
 
 func set_mosaic(on: bool, available: bool) -> void:
