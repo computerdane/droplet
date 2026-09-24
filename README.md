@@ -75,10 +75,13 @@ terminal (or use F → Live); the app follows it. See [the architecture guide](d
 
 ## AI development workflow
 
-Start an interactive coordinator with `bash tools/automation/start`. It watches GitHub,
-answers questions, and delegates approved work in parallel. Approve an issue with
-an unedited `/approve` comment; use `/hold` to stop it. Changes arrive in PRs with CI
-and Pages previews, with native GitHub stacks for dependent changes. You control merging.
+Start an interactive coordinator with `bash tools/automation/start` for Codex or
+`bash tools/automation/start claude` for Claude Code. Either coordinator watches
+GitHub, answers questions, and delegates approved work in parallel. Run only one
+coordinator in a checkout; stop and checkpoint before switching between them.
+Approve an issue with an unedited `/approve` comment; use `/hold` to stop it.
+Changes arrive in PRs with CI and Pages previews, with native GitHub stacks for
+dependent changes. You control merging.
 
 See [setup and operation](docs/development-loop.md) for bot authentication, approval,
 recovery, and model routing, and [Pages previews](docs/pages-previews.md) for deployment.

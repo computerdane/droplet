@@ -1,7 +1,26 @@
 #!/usr/bin/env bash
-# Start one interactive coordinator using the existing Codex login.
+# Start one interactive coordinator using the selected coding-agent login.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+agent=codex
+if [[ ${1:-} == codex || ${1:-} == claude ]]; then
+  agent=$1
+  shift
+fi
+if [[ $agent == claude && -n ${ANTHROPIC_API_KEY:-} ]]; then
+  echo 'Unset ANTHROPIC_API_KEY to use the Claude Code subscription.' >&2
+  exit 1
+fi
+if [[ $agent == codex && -n ${OPENAI_API_KEY:-} ]]; then
+  echo 'Unset OPENAI_API_KEY to use the Codex subscription.' >&2
+  exit 1
+fi
+if [[ $agent == codex ]]; then
+  if ! login_status=$(codex login status 2>&1) || [[ $login_status != *'Logged in using ChatGPT'* ]]; then
+    echo 'Sign in to Codex with ChatGPT before starting the subscription-backed loop.' >&2
+    exit 1
+  fi
+fi
 export GH_CONFIG_DIR="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh-droplet-bot}"
 mkdir -p .automation
 touch .automation/.gdignore
@@ -14,4 +33,7 @@ fi
 git config --local credential.https://github.com.helper '!gh auth git-credential'
 node tools/automation/queue.mjs reconcile
 node tools/automation/queue.mjs status >.automation/startup.json
+if [[ $agent == claude ]]; then
+  exec claude --permission-mode auto --model opus 'I authorize you to claim and implement all issues that have been approved by me on GitHub. Use the github-loop skill in skills/github-loop/SKILL.md. Manage the approved GitHub development queue for this working session. Continue watching for new issues, questions, review feedback, and CI results until I ask you to stop. Schedule independent issues in parallel and use native GitHub stacks for dependent changes. Choose specialist models according to the skill routing policy. Follow the approval gate and keep implementation in separate worktrees. Read .automation/startup.json to recover existing work. Do not merge PRs.' "$@"
+fi
 exec codex --approve-for-me --model gpt-6-sol 'I authorize you to claim and implement all issues that have been approved by me on GitHub. Use the github-loop skill in skills/github-loop/SKILL.md. Start a goal to manage the approved GitHub development queue for this working session. Continue watching for new issues, questions, review feedback, and CI results until I ask you to stop. Schedule independent issues in parallel and use native GitHub stacks for dependent changes. Choose specialist models according to the skill routing policy. Follow the approval gate and keep implementation in separate worktrees. Read .automation/startup.json to recover existing work. Do not merge PRs.' "$@"

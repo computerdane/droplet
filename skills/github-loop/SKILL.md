@@ -5,29 +5,35 @@ description: Manage Droplet's GitHub queue during a user-started development ses
 
 # GitHub development loop
 
-Read [the operating guide](../../docs/development-loop.md) once for setup and
+Read `docs/development-loop.md` from the repository root once for setup and
 commands. Invoke `node tools/automation/queue.mjs` from the trusted controller
 checkout; never use a worker's modified helper or policy to authorize its work.
 
 ## Choose models deliberately
 
-The manager is GPT-6 Sol. Use the configured `mechanical` (Luna), `implementer`
-(Sol), `reviewer` (Sol), `planner` (Astra), and `expert` (Astra) roles when available.
-Choose per subtask. Astra is appropriate for extensive planning, unfamiliar
+Use the configured `mechanical`, `implementer`, `reviewer`, `planner`, and `expert`
+roles when available. In Codex these use Luna, Sol, and Astra respectively; in
+Claude Code they use Sonnet, Opus, and Fable. Choose per subtask. The strongest
+model is appropriate for extensive planning, unfamiliar
 architecture, difficult numerical work, or correctness risks that warrant extra
-reasoning. A large feature such as satellite rendering normally deserves an Astra
-planning pass; its routine implementation pieces can still go to Sol or Luna.
+reasoning. A large feature such as satellite rendering normally deserves a
+`planner` pass; its routine implementation pieces can still go to an `implementer`
+or `mechanical` agent.
 Record a brief model-selection reason with each delegation. Prefer the least costly
-model likely to succeed, start with at most one Astra task at a time, and reassess
+model likely to succeed, start with at most one strongest-model task at a time, and reassess
 after each bounded deliverable. Do not escalate every issue by default. If a model
 is unavailable, report it and choose an available alternative without changing
 authentication or billing. For explicit model overrides, provide a focused task
 brief rather than assuming a full-history fork can change its inherited model.
+In Claude Code, use Fable only when it is included in the active subscription's
+allowance or the user has explicitly authorized usage credits. Otherwise use Opus
+for `planner` and `expert` tasks; do not change billing to make a model available.
 
 Starting this loop authorizes issue/PR comments, discovered issue creation, issue
 branch pushes, PR creation, and native stack registration for approved work. It
 does not authorize merging, main pushes, repository administration, or approving
-issues. Normal tool permissions still apply. Use the existing Codex subscription.
+issues. Normal tool permissions still apply. Use the existing subscription login
+for the selected coding agent.
 
 ## Recover and monitor
 
@@ -42,8 +48,9 @@ worker uses their file scopes. Checkpoints cannot prove a process has stopped.
 While monitoring is requested, use `watch --since FINGERPRINT` between useful
 actions. It waits for changes and returns after a bounded timeout. Keep watching
 an empty queue until stopped; do not manufacture work. On authentication, network,
-or quota errors, back off and report a persistent blocker. Goal mode can continue
-across turns when the user starts a goal, but limits and interruptions can stop it.
+or quota errors, back off and report a persistent blocker. In Codex, goal mode can
+continue across turns when the user starts a goal; in either agent, limits and
+interruptions can stop monitoring.
 
 Answer the maintainer's questions and requested refinements on unapproved issues
 as well as approved ones. Use `reply NUMBER --issue-body --body-file FILE` for an
@@ -52,7 +59,7 @@ initial answer to a question in the issue body, or `reply NUMBER --comment ID
 safe after restart. Questions and answers need no `/approve`; implementation
 requests remain approval gated.
 Post any clarification or follow-up question from the loop on the relevant GitHub
-issue or PR, then watch for the answer there. Do not ask it in the Codex session.
+issue or PR, then watch for the answer there. Do not ask it in the agent session.
 Revise proposed scope when asked; editing an approved issue needs a new `/approve`.
 Watch general PR comments, inline comments, and reviews. Checkpoint addressed review
 IDs and commit SHAs so a restart does not repeat responses.

@@ -1,8 +1,9 @@
 # GitHub development sessions
 
-Start an interactive Codex session on your Linux computer when you want to work.
-It uses your existing subscription, a separate GitHub bot identity, and local
-checkpoints. GitHub Actions runs CI and publishes Pages previews independently.
+Start an interactive Codex or Claude Code session on your Linux computer when you
+want to work. Both use subscription authentication, the same separate GitHub bot
+identity, and local checkpoints. GitHub Actions runs CI and publishes Pages
+previews independently.
 
 ## One-time setup
 
@@ -38,30 +39,60 @@ Do not expose personal credentials or production secrets to workers.
 
 ## Start, discuss, and stop
 
-Use Node.js 22+, `gh`, `git`, `flock`, and subscription-authenticated Codex on Linux:
+Use Node.js 22+, `gh`, `git`, `flock`, and a subscription-authenticated Codex or
+Claude Code CLI on Linux:
 
 ```sh
 nix develop
-bash tools/automation/start
+bash tools/automation/start          # Codex (default)
+bash tools/automation/start claude   # Claude Code
 ```
 
-The launcher opens GPT-6 Sol with the repository skill and a monitoring goal. A
-lock prevents a second coordinator in the same checkout. The `.agents/skills/github-loop`
-symlink also makes `$github-loop` discoverable in a new Codex session; the launcher
-works without discovery because it supplies the skill path explicitly.
-Trust the dedicated controller checkout in Codex so its project configuration and
-agent roles load. The launcher uses `--approve-for-me` (verified with Codex CLI
-0.156.1) to route tool approval requests through automatic review while retaining
-the workspace sandbox. This is separate from your issue `/approve` gate. A denied
-tool action or managed permission policy can still block work; the manager must
-report it. The launcher does not disable the sandbox.
+Both launchers reconcile the same queue, load `.automation/startup.json`, and use
+the same checkpoint files and GitHub approval gate. The checkout lock prevents a
+second coordinator here, including one using the other CLI. It does not coordinate
+separate clones or machines.
+
+### Codex coordinator
+
+The default launcher opens GPT-6 Sol with the repository skill and a monitoring
+goal. The `.agents/skills/github-loop` symlink also makes `$github-loop`
+discoverable in a new Codex session; the launcher works without discovery because
+it supplies the skill path explicitly. Trust the dedicated controller checkout in
+Codex so its project configuration and agent roles load. The launcher uses
+`--approve-for-me` (verified with Codex CLI 0.156.1) to route tool approval
+requests through automatic review while retaining the workspace sandbox. This is
+separate from your issue `/approve` gate. A denied tool action or managed
+permission policy can still block work; the manager must report it. The launcher
+does not disable the sandbox.
+Keep `OPENAI_API_KEY` unset for this subscription-backed session; the launcher
+rejects it before accessing the queue. It also checks that `codex login status`
+reports a ChatGPT login, since a saved API-key login uses API billing too.
+
+### Claude Code coordinator
+
+Run `bash tools/automation/start claude` after logging in to Claude Code with your
+subscription. The launcher opens an Opus coordinator with automatic permission
+mode and the repository loop instructions. It can delegate bounded tasks to local
+Claude Code subagents. Automatic tool permissions do not bypass the GitHub human
+`/approve` gate or the controller helper's live authorization checks. Claude Code
+does not have a Codex goal equivalent configured here; keep the interactive session
+running while monitoring, and restart the launcher to recover after an interruption.
+Check `/usage` before and after a trial to see five-hour and weekly allowance use.
+Keep `ANTHROPIC_API_KEY` unset so Claude Code uses the subscription instead of API
+billing. Fable is included on Max plans, subject to a 50% weekly Fable limit, but
+uses pay-as-you-go credits from the start on Pro. Use Opus for planner/expert work
+unless Fable is included or you explicitly authorize usage credits. See
+[Claude plan usage](https://support.claude.com/en/articles/15424964-claude-fable-models-on-your-plan).
+To keep the trial within included usage, check that usage credits are disabled in
+Claude Settings → Usage before starting.
 
 Ask questions and request refinements on issues, including unapproved discoveries.
-Codex answers while the loop runs and catches up after restarting. Questions and
-discussion do not authorize implementation. Use the Question issue form for
+The active coordinator answers while the loop runs and catches up after restarting.
+Questions and discussion do not authorize implementation. Use the Question issue form for
 codebase questions; asking and answering a question does not need `/approve`.
-Codex posts its own clarifying and follow-up questions on the relevant issue or
-PR and watches for answers there, rather than asking them in the Codex session.
+The coordinator posts its own clarifying and follow-up questions on the relevant
+issue or PR and watches for answers there.
 Requests to change the code still need a human `/approve` comment. To approve an
 issue, post this as an entire, unedited comment:
 
@@ -75,13 +106,15 @@ cannot authorize work. A command deleted from GitHub disappears from the live
 decision history; revoke with a new `/hold`, not by deleting old comments. An edit
 in the same timestamp second as approval conservatively requires a fresh comment.
 
-Tell Codex to stop and let it checkpoint before closing. Goal controls also include
-`/goal pause` and `/goal resume`. A goal does not survive every process failure,
-usage limit, or blocker automatically; restart the launcher to reconstruct work
-from GitHub and `.automation/state.json`. Keep `.worktrees/` for unfinished changes.
-Run only one coordinator at a time, with multiple workers. The lock and checkpoints
-are local to this checkout; they do not coordinate separate clones or machines.
-Moving machines requires transferring checkpoints and unfinished work deliberately.
+Tell the active coordinator to stop and let it interrupt workers and checkpoint
+before closing or switching CLIs. Codex goal controls also include `/goal pause`
+and `/goal resume`; Claude Code sessions do not use these controls. A Codex goal
+does not survive every process failure, usage limit, or blocker automatically.
+Restart either launcher to reconstruct work from GitHub and
+`.automation/state.json`. Keep `.worktrees/` for unfinished changes. Run only one
+coordinator at a time, with multiple workers. The lock and checkpoints are local
+to this checkout. Moving machines requires transferring checkpoints and unfinished
+work deliberately.
 
 | Label | Meaning |
 | --- | --- |
@@ -90,7 +123,7 @@ Moving machines requires transferring checkpoints and unfinished work deliberate
 | `in-progress` | Active implementation |
 | `in-review` | PR awaiting your review |
 | `blocked` | Needs input or exhausted repair attempts |
-| `agent-discovered` | Additional label for a finding proposed by Codex |
+| `agent-discovered` | Additional label for a finding proposed by the coordinator |
 
 The issue workflow reconciles labels, and the dispatcher independently verifies
 the human comment and edit history. Holds stop work at the next polling boundary;
@@ -125,6 +158,8 @@ and [REST stack API](https://docs.github.com/en/rest/pulls/stacks).
 
 ## Model routing
 
+### Codex
+
 GPT-6 Sol is the coordinator and normal implementation model. It chooses a model
 per subtask, not once for the entire issue:
 
@@ -150,6 +185,16 @@ after its bounded deliverable. These are routing instructions, not a billing cap
 Model availability and usage limits still depend on your subscription/workspace.
 [Official subagent configuration](https://learn.chatgpt.com/docs/agent-configuration/subagents)
 supports per-agent models and reasoning effort; `.codex/agents` contains the roles.
+
+### Claude Code
+
+The Claude Code coordinator uses Opus and the `.claude/agents` roles:
+`mechanical` uses Sonnet, `implementer` and `reviewer` use Opus, and `planner`
+and `expert` use Fable. Give each writing subagent a specific file scope or
+separate worktree, and use independent review for consequential changes. Choose
+the role for each task according to its complexity and subscription limits;
+record the choice and any escalation reason in the checkpoint. Codex goal controls
+do not apply to Claude Code.
 
 ## Controller commands
 
@@ -196,10 +241,10 @@ session IDs, tests/evidence, addressed feedback IDs, dependencies, next actions,
 blockers. Record each failed repair with `--repair`; the third blocks that attempt.
 A new approval is required to retry it. Infrastructure outages are not code failures.
 
-The helper does not call a model, but bounded polling still resumes Codex to process
-tool results, so idle monitoring is not completely free. Authentication failures,
-API outages, and subscription limits require backoff and reporting, not treating
-the queue as empty.
+The helper does not call a model, but bounded polling still resumes the active
+coordinator to process tool results, so idle monitoring is not completely free.
+Authentication failures, API outages, and subscription limits require backoff and
+reporting, not treating the queue as empty.
 
 ## First live trial
 
