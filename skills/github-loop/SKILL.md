@@ -52,6 +52,28 @@ or quota errors, back off and report a persistent blocker. In Codex, goal mode c
 continue across turns when the user starts a goal; in either agent, limits and
 interruptions can stop monitoring.
 
+`status` and `watch` include `activity`: every change since the given fingerprint
+(new or edited comments with author/approver/self flags, inline comments, reviews,
+approval changes, issue and PR lifecycle, checks, previews, stacks, and jobs).
+Read every item; do not infer changes from labels, checks, or the latest comment.
+If `baseline` is not `since`, the list may be incomplete: review the full snapshot.
+
+### Claude Code monitoring
+
+Run `bash tools/automation/watch-until-change` as a background command
+(`run_in_background`) from the controller checkout. It exits when the queue
+changes and prints one line per activity item; the full JSON is in
+`.automation/watch-last.json`. On each exit:
+
+- Read every `activity` item, including all new human comments on issues and PRs,
+  inline comments, reviews, approvals, checks, and merges. Act on or explicitly
+  acknowledge each before reporting nothing new or restarting the watcher.
+- A maintainer comment posted just before `/approve` refines the approved scope.
+  Read it before dispatching that issue.
+- `PERSISTENT_ERROR` means repeated failures: report the blocker.
+- Restart the watcher as a new background command. Never start it inside a
+  foreground command with `&`.
+
 Answer the maintainer's questions and requested refinements on unapproved issues
 as well as approved ones. Use `reply NUMBER --issue-body --body-file FILE` for an
 initial answer to a question in the issue body, or `reply NUMBER --comment ID
