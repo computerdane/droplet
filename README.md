@@ -34,16 +34,16 @@ nix profile add .#droplet       # install droplet (and on Linux, its desktop men
 
 Downloaded scans live in `${XDG_CACHE_HOME:-~/.cache}/droplet/data`, with the
 decoder's default 20 GB quota (`DROPLET_QUOTA_GB` overrides it). Saved animations
-live in `${XDG_DATA_HOME:-~/.local/share}/droplet/exports`. On macOS the fallbacks
-are `~/Library/Caches` and `~/Library/Application Support` instead. Set `DROPLET_ROOT` to
-override the cache root, or `DROPLET_EXPORT_DIR` to change the export directory.
-The basemap is pinned by hash and updated with the package, not at launch.
+live in `${XDG_DATA_HOME:-~/.local/share}/droplet/exports`. On macOS the
+fallbacks are `~/Library/Caches` and `~/Library/Application Support` instead. Set
+`DROPLET_ROOT` to override the cache root, or `DROPLET_EXPORT_DIR` to change the
+export directory. The basemap is pinned by hash and updated with the package, not
+at launch.
 
 macOS support covers Apple Silicon (`aarch64-darwin`); nixpkgs no longer builds for
 Intel Macs. Godot comes prebuilt from the Nix binary cache and runs as a plain
-executable from the Nix store (not quarantined, so Gatekeeper should not prompt); no
-app is added to /Applications. The
-macOS dev shell omits the Linux-only golden-screenshot (Xvfb/Mesa) and Chromium tools.
+executable from the Nix store; no app is added to /Applications. The macOS dev
+shell omits the Linux-only golden-screenshot (Xvfb/Mesa) and Chromium tools.
 
 The decoder is also available separately: `nix run .#nexrad -- update KTLX`.
 When run separately it writes under the current directory unless `DROPLET_ROOT`
