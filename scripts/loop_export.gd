@@ -45,15 +45,15 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 ## Exports the current sequence to `path` (default: see the class doc).
 func run(path := "") -> void:
-	var frames: Array[String] = _main.frames
-	if running or frames.is_empty():
+	if running or (_main.frames as Array[String]).is_empty():
 		return
 	running = true
-	var seq: Vector2i = _main._sequence()
-	var keep: int = _main.frame
 	var was_playing: bool = _main.playing
 	_main._set_playing(false)
-	_main._set_live(false)
+	_main._set_live(false)  # freezes a live window: read the loop after that
+	var frames: Array[String] = _main.frames
+	var seq: Vector2i = _main._sequence()
+	var keep: int = _main.frame
 	var pngs: Array[PackedByteArray] = []
 	for i in range(seq.x, seq.y + 1):
 		_main._go_to(i)

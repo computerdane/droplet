@@ -130,12 +130,13 @@ pub fn resolve_keys(site: &str, at: &str, from: &str, to: &str, bucket: &JsValue
     Ok(keys.iter().map(|k| JsValue::from(k.as_str())).collect())
 }
 
-/// The most recent `n` complete archive volumes for `site`, oldest first (see
-/// `archive::recent_keys`): what `live()` backfills before following the chunks bucket, so a
-/// partial scan never shows up as if it were the history.
+/// Complete archive scans from the last `minutes`, oldest first. These seed browser live
+/// following without presenting an in-progress chunk as historical data.
 #[wasm_bindgen]
-pub fn recent_keys(site: &str, n: usize, bucket: &JsValue) -> Result<Array, JsError> {
-    let keys = archive::recent_keys(&JsBucket::new(bucket)?, &site.to_uppercase(), n).map_err(|e| JsError::new(&e.to_string()))?;
+pub fn keys_since(site: &str, minutes: u32, bucket: &JsValue) -> Result<Array, JsError> {
+    let now = Utc::now();
+    let start = now.add_secs(-60.0 * f64::from(minutes.min(archive::MAX_BACKFILL_MINUTES)));
+    let keys = archive::keys_since(&JsBucket::new(bucket)?, &site.to_uppercase(), start, now).map_err(|e| JsError::new(&e.to_string()))?;
     Ok(keys.iter().map(|k| JsValue::from(k.as_str())).collect())
 }
 
@@ -162,8 +163,8 @@ pub fn live(
     prior_files: Option<Map>,
 ) -> Result<(), JsError> {
     let bucket = JsBucket::new(bucket)?;
-    // The last complete volume's DVEL, the temporal dealiasing reference of the next one (as
-    // `nexrad live` finds it on disk); seeded from `prior_json`/`prior_files` when given.
+    // The last complete volume's DVEL, the temporal reference of the next one, seeded from
+    // `prior_json`/`prior_files` when given. Native live uses the same session-local chain.
     let mut prior: Vec<volume::PriorTilt> = Vec::new();
     let mut prior_time: Option<Utc> = None;
     if let (Some(json), Some(files)) = (prior_json, prior_files) {

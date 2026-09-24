@@ -103,6 +103,7 @@ var legend_classes: HBoxContainer  # class abbreviations under a categorical leg
 var play_button: Button
 var slider: HSlider
 var time_label: Label
+var window_label: Label  # the time window on the timeline (TimeWindow.label)
 var speed_option: OptionButton
 var live_button: Button
 var _field_row: HFlowContainer
@@ -359,7 +360,11 @@ func _build_bottom_bar() -> void:
 	time_label = _label(14)
 	time_label.custom_minimum_size.x = 220
 	row.add_child(time_label)
-	_bar_tail = [time_label]
+	window_label = _label(12)
+	window_label.modulate = Color(1, 1, 1, 0.75)
+	window_label.tooltip_text = "The time window the timeline, loop and mosaic show (L: live)"
+	row.add_child(window_label)
+	_bar_tail = [time_label, window_label]
 
 	for step in [-1, 1]:  # for touch screens (keys: Down, Up)
 		var tilt := _button("Tilt " + ("-" if step < 0 else "+"), "Lower / higher tilt (Down / Up)")
@@ -535,6 +540,23 @@ func set_info(text: String) -> void:
 	info.text = text
 
 
+## The project stretches canvas items with aspect "expand" from the 1280x800 design size, so
+## the UI grows with big windows and the canvas fills any aspect ratio. Small windows would
+## shrink the text too; instead the scale stays at least the screen's own (HiDPI) scale, times
+## the user's `user_scale` (ui_scale=), and the HUD reflows into the smaller canvas.
+func fit_ui_scale(user_scale: float) -> void:
+	var win := get_window()
+	var design := Vector2(
+		ProjectSettings.get_setting("display/window/size/viewport_width"),
+		ProjectSettings.get_setting("display/window/size/viewport_height")
+	)
+	var stretch := minf(win.size.x / design.x, win.size.y / design.y)
+	if stretch <= 0.0:
+		return
+	var screen_scale := DisplayServer.screen_get_scale(win.current_screen)
+	win.content_scale_factor = maxf(stretch, screen_scale) * user_scale / stretch
+
+
 ## `essential` keys are shown by default, `all` when the hint is expanded (H); items are
 ## [keys, label] (see KeyHint).
 func set_hint(essential: Array, all: Array = []) -> void:
@@ -659,7 +681,12 @@ func set_overview(on: bool) -> void:
 	_queue_layout()
 
 
-## `frame` and `count` describe the position within the current sequence.
+## The time window on the timeline, as TimeWindow.label() puts it.
+func set_window(text: String) -> void:
+	window_label.text = text
+
+
+## `frame` and `count` describe the position within the current sequence (0: no frame).
 func set_playback(
 	playing: bool, live: bool, frame: int, count: int, time_text: String, fps: float
 ) -> void:
@@ -670,7 +697,7 @@ func set_playback(
 	slider.value = frame
 	slider.editable = count > 1
 	_setting_slider = false
-	time_label.text = "%s   %d/%d" % [time_text, frame + 1, count] if count > 0 else "US composite"
+	time_label.text = "%s   %d/%d" % [time_text, frame + 1, count] if count > 0 else "no scans"
 	var si := SPEEDS.find(fps)
 	if si >= 0 and speed_option.selected != si:
 		speed_option.select(si)

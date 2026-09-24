@@ -170,6 +170,10 @@ try {
       }
       return {colored, hash};
     })()`);
+    if (pixels.colored <= minimumColored) {
+      mkdirSync(dirname(out), { recursive: true });
+      writeFileSync(out.replace(/\.png$/, "-failure.png"), Buffer.from(shot.data, "base64"));
+    }
     assert(pixels.colored > minimumColored, `radar must draw in the viewport: ${JSON.stringify(pixels)}`);
     return { ...shot, pixels };
   };

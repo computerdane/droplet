@@ -67,6 +67,16 @@ A good demo: `nexrad update KTLX --from 2013-05-20T19:30Z --to 2013-05-20T20:40Z
 (the Moore, OK tornado), the same for KINX and KFDR, then press Space, V and M. Or press F
 in the app to fetch a site, a time or a time range (or follow a site live) from the UI.
 
+The timeline names the shared time window used by playback and the mosaic. Live mode rolls
+through the last 60 minutes; `window=live:120` selects two hours. Stepping, scrubbing, or
+selecting a VWP column suspends following while the window and downloads keep running.
+Press L or Live to return to the newest scan. If your selected scan ages out, the oldest
+remaining scan is shown. Turning Live off while following freezes the window.
+Historical `time=` links open ±30 minutes, events use their named range, and
+`window=<from>/<to>` sets an explicit UTC range. Browsing cached historical sites never
+starts a download; use Fetch to request data. Cached scans remain until the storage quota
+requires eviction, with scans outside the window evicted first.
+
 Controls: Space play/pause · Left/Right step volume · Home/End first/last · `[` `]` speed ·
 L live · Up/Down tilt · 1-8 field (REF VEL SW ZDR PHI RHO CFP DVEL) · 9 column products
 (composite reflectivity, echo tops, VIL, low-level rotation, rotation tracks) · 0 KDP, azimuthal

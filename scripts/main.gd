@@ -1,8 +1,14 @@
 extends Node
-## Controller: browsing state, playback, live following, and view/HUD updates.
+## Controller: browsing state, the time window, playback, live following, and view/HUD updates.
 ##
-## Frames are time ordered per site. Playback loops within a sequence (gaps ≤30 min);
-## live follows the newest, even as older backfill arrives. Elevation persists across frames.
+## The app shows one time window (`window`, a TimeWindow): the frames of every site are the
+## scans inside it, so the slider, playback, loop export, mosaic neighbours and prefetch never
+## reach outside. Live is a window covering the last 60 min that rolls with the clock and
+## follows the newest scan, even as older backfill arrives; L turns it off by freezing the
+## window where it is (the loop on screen stays), and on again with a fresh live window of the
+## same span. The playback bar names the window; on the desktop it goes to data/window.json
+## (on every change and hourly) for `nexrad prune`. Frames are time ordered per site; playback
+## loops within a sequence (gaps ≤30 min). Elevation persists across frames.
 ##
 ## Command-line options (after `--`): site=KTLX time=20130520_200359 field=VEL elev=0.5
 ## live=0|1 play=0|1 fps=8 zoom=2 pan=-15,5 (2D centre, km east,north) view=2d|3d yaw=30
@@ -17,16 +23,21 @@ extends Node
 ## basemap=0 (no basemap; or basemap=<dir>) volumes=res://tests/fixtures/volumes (DirSource
 ## root; default res://data/volumes) fetch=latest|live|2013-05-20T20:00Z|<from>/<to> (start a
 ## fetch job for site=, default KTLX; see AppOptions) event=moore2013 (a notable event's
-## loop, see Events) keys=all (the key hint expanded, as H does)
+## loop, see Events) window=live|live:<minutes>|<from>/<to> (the time window; without it fetch=,
+## event= and time= (± 30 min) set it, else live: TimeWindow.from_options) keys=all (the key
+## hint expanded, as H does)
 ##
 ## On web the options come from the page's query string instead (?site=KTLX&time=...).
-## With no explicit site, time or fetch the app opens on NOAA's live US composite;
-## clicking a station fetches its recent loop and follows live updates.
+## With no explicit site, time or fetch the app opens on NOAA's live US composite. Fetches
+## follow the window (Fetcher.start_view, stop_outside): in live mode picking a site (or L) fetches
+## its live window and follows it (desktop: its mosaic neighbours too), other sites' followers stop;
+## a fixed window never fetches by itself (F does), and changing the window stops jobs outside it.
 ## Readouts use sweep files; loop and mosaic volumes preload via VolumeCache.
 
 const LIVE_RESCAN_SEC := 3.0
+## data/window.json is rewritten this often while nothing changes (prune ignores a stale file).
+const WINDOW_HEARTBEAT_SEC := 3600.0
 const OVERVIEW_OVERLAY_REFRESH_SEC := 60.0
-const LOOP_DWELL_SEC := 1.0  # extra pause on the last frame of the loop
 ## Automatic storm motion may come from a volume (any site) up to this far away in time.
 const AUTO_STORM_MAX_SEC := 60 * 60
 const VELOCITY_FIELDS := ["VEL", "DVEL"]
@@ -55,13 +66,15 @@ var national: NationalComposite
 var overview_overlay_timer := Timer.new()
 var overview := false  # national MRMS image until the user picks a radar
 var site := ""
-var frames: Array[String] = []  # volume names for `site`, ascending time
+var window: TimeWindow  # the one time window every site's frames lie in
+var live_minutes := TimeWindow.DEFAULT_LIVE_MIN  # the live window's span (window=live:<minutes>)
+var frames: Array[String] = []  # volume names for `site` inside `window`, ascending time
 var frame := -1
 var volume: RadarVolume
 var sweep_index := -1  # sweep shown, resolved from field + target_elev
 var field_name := "REF"
 var target_elev := 0.5
-var live := true
+var live := true  # follow-latest; window.live may stay true while browsing
 var playing := false
 var fps := 4.0
 var view_is_3d := false
@@ -84,6 +97,9 @@ var _hover_pin := Vector2.INF  # hover= option: readout at this canvas point, no
 var _hover_off := false  # hover=0: no readout (Xvfb leaves the pointer mid-screen)
 var _readout_key: Array = []  # inputs of the readout on screen, see _update_readout
 var _tracks := RotationTracks.Loops.new()  # while the rotation tracks are on screen
+var _window_file := ""  # data/window.json for prune, when this app manages the data root
+var _user_moves := 0  # times the user moved the view by hand; a fetch follows only until then
+var _window_timer := Timer.new()  # its heartbeat
 
 @onready var view_2d: PpiView = $View2D
 @onready var view_3d: VolumeView3D = $View3D
@@ -98,7 +114,7 @@ func _ready() -> void:
 	play_timer.one_shot = true
 	play_timer.timeout.connect(_on_play_tick)
 	view_2d.view_changed.connect(_update_info)
-	view_2d.site_clicked.connect(_select_map_site)
+	view_2d.site_clicked.connect(_pick_site)
 	view_2d.section_changed.connect(_update_section)
 	view_3d.camera.moved.connect(_update_info)
 	add_child(fetcher)
@@ -107,6 +123,10 @@ func _ready() -> void:
 	overview_overlay_timer.timeout.connect(_refresh_overlays)
 	add_child(overview_overlay_timer)
 	add_child(loop_export)
+	_window_timer.wait_time = WINDOW_HEARTBEAT_SEC
+	_window_timer.timeout.connect(_write_window)
+	add_child(_window_timer)
+	_window_timer.start()
 	overlays.changed.connect(_refresh_overlays)
 	fetcher.job_updated.connect(_on_job_updated)
 	fetcher.job_finished.connect(_on_job_finished)
@@ -118,11 +138,16 @@ func _ready() -> void:
 	get_window().mouse_exited.connect(func() -> void: _mouse_in_window = false)
 
 	var opts := AppOptions.parse()
+	window = TimeWindow.from_options(opts)
+	live = window.live
+	if live:
+		live_minutes = window.span_sec / 60
 	overview = not (
 		opts.has("site")
 		or opts.has("time")
 		or opts.has("event")
 		or opts.has("fetch")
+		or opts.has("window")
 		or opts.has("view")
 		or opts.has("volumes")
 	)
@@ -135,6 +160,10 @@ func _ready() -> void:
 		_set_source(DirSource.new(opts["volumes"]))
 	elif fetcher.web:
 		_set_source(MemorySource.new(WEB_MEMORY_BUDGET_BYTES), WEB_CACHE_BUDGET_BYTES)
+	else:  # the data root nexrad prunes: tell it the window
+		_window_file = AppOptions.data_path("window.json")
+	hud.set_window(window.label())
+	_write_window()
 	ui_scale = clampf(float(opts.get("ui_scale", ui_scale)), 0.5, 4.0)
 	get_window().size_changed.connect(_fit_ui_scale)
 	_fit_ui_scale()
@@ -146,7 +175,7 @@ func _ready() -> void:
 	if opts.has("pan"):
 		var p: PackedFloat64Array = opts["pan"].split_floats(",")
 		view_2d.cam.position = Vector2(p[0], -p[1])
-	_apply_3d_options(opts)
+	AppOptions.apply_3d(opts, view_3d, field_name)
 	mosaic = opts.get("mosaic", "0") == "1"
 	if opts.get("srm", "") == "auto":
 		srm_on = true
@@ -182,15 +211,14 @@ func _ready() -> void:
 		# An event's site shows even before its scans exist (its fetch starts below), not the
 		# site last fetched.
 		var pick := Events.startup_site(event, want_site, sites)
-		_select_site(pick if not pick.is_empty() else library.site_of(library.latest()))
+		_select_site(pick if not pick.is_empty() else library.latest_site(window))
 		if opts.has("time"):
-			var t := RadarLibrary.unix_of("X_" + opts["time"])
-			var i := RadarLibrary.nearest_in_time(frames, t)
-			_go_to(Events.frame_within(event, frames, t) if not event.is_empty() else i)
-			live = false
+			# The in-window scan nearest time= (an event's peak); with none, no frame until the
+			# event's own scans arrive (the site's other days are outside the window).
+			_go_to(RadarLibrary.nearest_in_time(frames, TimeWindow.parse_time(opts["time"])))
 		_set_live(opts.get("live", "1" if live else "0") == "1")
 		_set_playing(opts.get("play", "0") == "1")
-		AppOptions.start_fetch(opts, fetcher)
+		AppOptions.start_fetch(opts, fetcher, window)
 	loop_export.setup(self, opts)
 
 
@@ -205,12 +233,13 @@ func _connect_hud() -> void:
 	hud.tilt_step_requested.connect(_step_tilt)
 	hud.scrubbed.connect(
 		func(i: int) -> void:
-			_set_live(false)
+			_moved()
+			_set_playing(false)
 			_go_to(_sequence().x + i)
 	)
 	hud.speed_selected.connect(_set_fps)
-	hud.live_toggled.connect(func() -> void: _set_live(not live))
-	hud.site_selected.connect(_select_site)
+	hud.live_toggled.connect(_toggle_live)
+	hud.site_selected.connect(_pick_site)
 	hud.field_selected.connect(_set_field)
 	hud.view_toggled.connect(func() -> void: _set_view_3d(not view_is_3d))
 	hud.mosaic_toggled.connect(_toggle_mosaic)
@@ -223,48 +252,31 @@ func _connect_hud() -> void:
 	hud.fetch_toggled.connect(_toggle_fetch_panel)
 	hud.fetch_panel.update_requested.connect(
 		func(s: String, at: String, from: String, to: String) -> void:
-			fetcher.start_update(s, at, from, to)
+			var w := TimeWindow.of_request(at, from, to, live_minutes)
+			if w != null:  # else not a window (the panel says so): no job outside the window
+				_open(s, w)
+				_fetch_live()
+				fetcher.start_update(s, at, from, to)
 	)
-	hud.fetch_panel.live_requested.connect(func(s: String) -> void: fetcher.start_live(s))
+	hud.fetch_panel.live_requested.connect(
+		func(s: String) -> void:
+			_open(s, TimeWindow.live_window(live_minutes))
+			_fetch_live()
+	)
 	hud.fetch_panel.stop_requested.connect(fetcher.stop_all)
 	hud.fetch_panel.event_requested.connect(
-		func(id: String) -> void: Events.start(Events.find(id), fetcher)
+		func(id: String) -> void:
+			var event := Events.find(id)
+			_open(event["site"], TimeWindow.of_event(event))
+			Events.start(event, fetcher, window)
 	)
 	if not fetcher.can_live:
 		hud.fetch_panel.disable_live("Live needs a cross-origin isolated page (COOP/COEP headers)")
 	hud.srm_changed.connect(_adjust_storm)
 
 
-func _apply_3d_options(opts: Dictionary) -> void:
-	var cam := view_3d.camera
-	cam.set_view(
-		float(opts.get("yaw", cam.yaw)),
-		float(opts.get("pitch", cam.pitch)),
-		float(opts.get("dist", cam.distance))
-	)
-	view_3d.set_exaggeration(float(opts.get("exag", view_3d.exaggeration)))
-	view_3d.isolate = int(opts.get("isolate", view_3d.isolate)) as ConeSet.Isolate
-	view_3d.volume_render = opts.get("render", "cones") == "volume"
-	view_3d.density = float(opts.get("density", view_3d.density))
-	if opts.has("threshold"):
-		view_3d.thresholds[field_name] = float(opts["threshold"])
-
-
-## The project stretches canvas items with aspect "expand" from the 1280x800 design size, so
-## the UI grows with big windows and the canvas fills any aspect ratio. Small windows would
-## shrink the text too; instead the scale stays at least the screen's own (HiDPI) scale and
-## the HUD reflows into the smaller canvas.
 func _fit_ui_scale() -> void:
-	var win := get_window()
-	var design := Vector2(
-		ProjectSettings.get_setting("display/window/size/viewport_width"),
-		ProjectSettings.get_setting("display/window/size/viewport_height")
-	)
-	var stretch := minf(win.size.x / design.x, win.size.y / design.y)
-	if stretch <= 0.0:
-		return
-	var screen_scale := DisplayServer.screen_get_scale(win.current_screen)
-	win.content_scale_factor = maxf(stretch, screen_scale) * ui_scale / stretch
+	hud.fit_ui_scale(ui_scale)
 
 
 # --- state changes -------------------------------------------------------------------
@@ -279,12 +291,14 @@ func _select_site(s: String) -> void:
 	national.set_overview(false)
 	var t := RadarLibrary.unix_of(frames[frame]) if frame >= 0 else 0
 	site = s
-	frames = library.for_site(site)
+	window.tick()
+	frames = library.for_site(site, window)
 	hud.set_sites(library.sites(), site)
 	if was_overview:
 		view_2d.reset_camera()
 		_update_hint()
-	# Keep roughly the same moment in time when switching sites.
+	# Keep roughly the same moment in time when switching sites (no frame if the site has
+	# no scan in the window).
 	_go_to(RadarLibrary.nearest_in_time(frames, t) if t > 0 else frames.size() - 1)
 	if volume == null:
 		var ll := RadarSites.location(site)
@@ -294,15 +308,23 @@ func _select_site(s: String) -> void:
 		_update_info()
 
 
-## Picking a marker works even before that site's first volume has been downloaded.
-func _select_map_site(s: String) -> void:
-	_select_site(s)
-	fetcher.start_site(s)
+## Live mode fetches what it shows: the site's live window and, with the mosaic on (desktop), its
+## nearest neighbours'; other sites' followers stop (Fetcher.start_view). Never a fixed window's.
+func _fetch_live() -> void:
+	if not overview:
+		fetcher.start_view(site, window, mosaic)
+
+
+func _open(s: String, w: TimeWindow) -> void:
+	if site != s:
+		_select_site(s)
+	_set_window(w)
 
 
 func _show_overview() -> void:
 	overview = true
 	site = ""
+	fetcher.start_view(site, window)
 	frames.clear()
 	frame = -1
 	volume = null
@@ -313,7 +335,7 @@ func _show_overview() -> void:
 	view_2d.set_zoom(minf(size.x / 5600.0, size.y / 3400.0))
 	national.set_overview(true)
 	overview_overlay_timer.start()
-	_set_live(false)
+	_set_live(false)  # nothing to follow; the window stays as it is
 	_set_playing(false)
 	_set_view_3d(false)
 	hud.set_sites(library.sites(), "")
@@ -334,21 +356,19 @@ func _go_to(i: int) -> void:
 ## Steps within the current sequence; it stops at either end rather than running into
 ## another day's data (see _step_sequence).
 func _step(delta: int) -> void:
+	_moved()
 	_set_playing(false)
-	if delta < 0:
-		_set_live(false)
 	var seq := _sequence()
 	_go_to(clampi(frame + delta, seq.x, seq.y))
 
 
 ## Jumps to the previous / next sequence: its last frame going back, its first going forward.
 func _step_sequence(delta: int) -> void:
-	var seq := _sequence()
-	var i := seq.y + 1 if delta > 0 else seq.x - 1
-	if i < 0 or i >= frames.size():
+	var i := Playback.sequence_jump(frames, _sequence(), delta)
+	if i < 0:
 		return
+	_moved()
 	_set_playing(false)
-	_set_live(false)
 	_go_to(i)
 
 
@@ -377,6 +397,7 @@ func _set_section_on(on: bool) -> void:
 
 func _toggle_mosaic() -> void:
 	mosaic = not mosaic
+	_fetch_live()  # the neighbours' followers start or stop
 	_refresh()
 
 
@@ -406,9 +427,25 @@ func _pick_frame(path: String) -> void:
 	var i := frames.find(path)
 	if i < 0:
 		return
+	_moved()
 	_set_playing(false)
-	_set_live(false)
 	_go_to(i)
+
+
+## The user moved the view by hand: a running fetch stops taking it over (_follow_fetch).
+func _moved() -> void:
+	_user_moves += 1
+	live = false  # suspend following, keeping the rolling window and its fetches
+
+
+## A site the user picked (the HUD's list, S, a marker), even before any of its scans exist. In
+## live mode it fetches the site's live window (_fetch_live); a fixed window shows what is cached.
+func _pick_site(s: String) -> void:
+	_moved()
+	_select_site(s)
+	if window.live:
+		_set_live(true)
+		_fetch_live()
 
 
 ## Nudging the storm motion switches to manual, starting from the automatic estimate.
@@ -462,15 +499,9 @@ func _sweep_field() -> String:
 
 ## Volumes of the loop around the current frame, oldest first.
 func _loop_volumes() -> Array[RadarVolume]:
-	var out: Array[RadarVolume] = []
 	if frame < 0:
-		return out
-	var seq := _sequence()
-	for k in range(seq.x, seq.y + 1):
-		var v := cache.get_volume(frames[k])
-		if v != null:
-			out.append(v)
-	return out
+		return []
+	return Playback.loop_volumes(cache, frames, _sequence())
 
 
 ## 9 / 0: the first field of `cycle`, then the next one.
@@ -490,11 +521,23 @@ func _step_tilt(delta: int) -> void:
 	_refresh()
 
 
+## L: live on also fetches the live window (_fetch_live); off freezes it, stopping live jobs.
+func _toggle_live() -> void:
+	_set_live(not live)
+	_fetch_live()
+
+
+## Explicit Live activation resumes following; deactivation freezes the window.
+## Manual navigation only suspends following (_moved), leaving the timer and fetches running.
 func _set_live(on: bool) -> void:
-	if overview and on:
+	if overview:
+		on = false
+	elif on != window.live:
+		_set_window(TimeWindow.live_window(live_minutes) if on else window.freeze())
 		return
 	live = on
 	if on:
+		_set_playing(false)
 		live_timer.start()
 		_on_live_tick()
 	else:
@@ -502,11 +545,45 @@ func _set_live(on: bool) -> void:
 	_update_playback()
 
 
+## Switches to `w`: jobs fetching outside it stop (Fetcher.stop_outside), the site's frames are
+## those inside it (the shown scan stays if it is, else the nearest inside shows), live following
+## matches it, the HUD names it and prune learns it.
+func _set_window(w: TimeWindow) -> void:
+	_user_moves += 1
+	window = w
+	fetcher.stop_outside(w)
+	if w.live:
+		live_minutes = w.span_sec / 60
+	hud.set_window(w.label())
+	_write_window()
+	if not overview and not site.is_empty():
+		_rescan()
+	_set_live(w.live)
+
+
+## Tells the pruners the window: data/window.json for `nexrad prune` (TimeWindow.write_file;
+## on the desktop when the app shows the data root it manages) on every change and as a
+## heartbeat, and the web MemorySource's eviction (_window_to_source).
+func _write_window() -> void:
+	if not _window_file.is_empty() and not window.write_file(_window_file):
+		push_warning("cannot write " + _window_file)
+	_window_to_source()
+
+
+## A MemorySource (web) evicts scans outside the window first once it has set_window (#41);
+## a live window's start rolls, so this also runs when the window ticks (_refilter).
+func _window_to_source() -> void:
+	var mem := library.source as MemorySource
+	if mem != null:
+		mem.set_window(window.from, window.upper())
+
+
 func _set_playing(on: bool) -> void:
 	if overview and on:
 		return
 	playing = on
 	if on:
+		_moved()
 		play_timer.start(1.0 / fps)
 	else:
 		play_timer.stop()
@@ -519,10 +596,7 @@ func _set_fps(v: float) -> void:
 
 
 func _cycle_speed(delta: int) -> void:
-	var i := Hud.SPEEDS.find(fps)
-	if i < 0:
-		i = Hud.DEFAULT_SPEED_INDEX
-	_set_fps(Hud.SPEEDS[clampi(i + delta, 0, Hud.SPEEDS.size() - 1)])
+	_set_fps(Playback.cycle_speed(fps, delta))
 
 
 func _sequence() -> Vector2i:
@@ -533,26 +607,20 @@ func _sequence() -> Vector2i:
 
 
 func _toggle_fetch_panel() -> void:
-	if hud.fetch_panel.visible:
-		hud.fetch_panel.close_panel()
-	else:
-		var t := RadarLibrary.unix_of(volume.name) if volume != null else 0
-		hud.fetch_panel.open_panel(site, t)
+	hud.fetch_panel.toggle(site, RadarLibrary.unix_of(volume.name) if volume != null else 0, window)
 
 
-## New volumes from a running job show up in the library straight away. A live job for
-## another site takes over the view once its first volume exists.
+## New volumes update the library; job notifications never resume suspended following.
 func _on_job_updated(job: Fetcher.Job) -> void:
 	var lines := PackedStringArray()
 	for j in fetcher.jobs:
 		lines.append(j.describe())
 	hud.fetch_panel.set_jobs(lines)
+	if not job.has_meta("moves"):  # its first report: it may follow until the user moves
+		job.set_meta("moves", _user_moves)
 	if job.volumes.size() != job.get_meta("seen", 0):
 		job.set_meta("seen", job.volumes.size())
 		_rescan()
-		if job.kind == "live" and job.volumes.size() == 1:
-			_select_site(job.site)
-			_set_live(true)
 	_update_info()
 
 
@@ -576,46 +644,70 @@ func _on_volume_changed(name: String) -> void:
 	overlays.invalidate_volume(name)
 	_tracks.invalidate_volume(name)
 	_rescan()
-	if _follow_event(name):
+	if _follow_fetch(name):
 		return
 	if volume != null and volume.name == name:
 		_go_to(frame)
 	elif (
 		VolumeUpdatePolicy.shown_in_loop(name, volume, frames, frame)
-		or (volume != null and mosaic and library.site_of(name) != site)
+		or (
+			volume != null
+			and mosaic
+			and library.site_of(name) != site
+			and window.contains(RadarLibrary.unix_of(name))
+		)
 	):
 		_refresh()
-	if live and not playing:
+	if window.live:
 		_on_live_tick()
 
 
-## An event's loop shows as it arrives while the view is on its site (Events.takes_over), so
-## the launch that fetches it ends on the event even if the fetch does not finish cleanly.
-func _follow_event(name: String) -> bool:
-	if live or site != RadarLibrary.site_of(name) or not frames.has(name):
+## An update's scans show as they arrive (oldest first) while the view is on its site, not
+## live, not playing, and the user has not moved it by hand since the job started: each
+## in-window scan nearer the fetch's target (an event's peak, the scan time it was asked for,
+## else the window's end) takes over (Events.takes_over), so the launch that fetches an event
+## ends on it even if the fetch does not finish cleanly. Scans outside the window are not in
+## `frames` and never show.
+func _follow_fetch(name: String) -> bool:
+	if window.live or playing or site != RadarLibrary.site_of(name) or not frames.has(name):
 		return false
 	for job in fetcher.running_jobs():
-		if job.site != site or not job.has_meta("jump_to"):
+		if job.stopped or job.kind != "update" or job.site != site:
 			continue
-		if Events.takes_over(job.get_meta("jump_to"), name, volume.name if volume != null else ""):
+		if job.get_meta("moves", -1) != _user_moves:
+			continue
+		var target: int = job.get_meta("jump_to", TimeWindow.parse_time(job.at))
+		if target < 0:
+			target = window.to
+		if Events.takes_over(target, name, volume.name if volume != null else ""):
 			_go_to(frames.find(name))
 			return true
 	return false
 
 
-## A finished update jumps to the last volume it fetched (a notable event: to its peak).
+## A finished update jumps to the last volume it fetched (a notable event: to its peak). What
+## it fetched must be visible: when that lies outside the window, the window becomes the job's
+## range, else the half hour around it (fetch=latest from a radar quiet for over an hour). In
+## live mode an update whose scans are in the live window (the newest scan, a live window's fetch
+## where live cannot run) leaves live following, and its followers, on.
 func _on_job_finished(job: Fetcher.Job) -> void:
 	print("fetch: ", job.describe())  # the web smoke test waits for this line
 	if job.kind != "update" or job.stopped or job.volumes.is_empty():
 		return
+	if overview or playing or job.site != site or job.get_meta("moves", -1) != _user_moves:
+		return
+	var t: int = job.get_meta("jump_to", RadarLibrary.unix_of(job.volumes[-1]))
+	if window.live and (window.contains(t) or job.window != null and job.window.live):
+		return
+	if not window.contains(t):
+		var range := TimeWindow.parse_option(job.from + "/" + job.to)  # null without a range
+		_set_window(range if range != null else TimeWindow.around(t))
 	_rescan()
 	_set_live(false)
 	_set_playing(false)
 	if job.site != site:
 		_select_site(job.site)
-	var i := frames.find(job.volumes[-1])
-	if job.has_meta("jump_to"):
-		i = RadarLibrary.nearest_in_time(frames, job.get_meta("jump_to"))
+	var i := RadarLibrary.nearest_in_time(frames, t)
 	if i >= 0:
 		_go_to(i)
 
@@ -631,42 +723,53 @@ func _set_source(source: VolumeSource, budget_bytes := cache.budget_bytes) -> vo
 func _rescan() -> void:
 	library.scan()
 	hud.set_sites(library.sites(), site)
-	frames = library.for_site(site)
-	if volume != null:
-		frame = maxi(frames.find(volume.name), 0)
+	_refilter()
 	_update_playback()
+
+
+## The site's frames inside the window (rolled forward first when live). The shown scan keeps
+## its place; when it is no longer inside (the window changed or rolled on), the nearest scan
+## inside shows, or none.
+func _refilter() -> void:
+	window.tick()
+	_window_to_source()
+	frames = library.for_site(site, window)
+	if volume == null:
+		if window.live and not frames.is_empty():
+			_go_to(frames.size() - 1 if live else 0)
+		return
+	var i := frames.find(volume.name)
+	if i >= 0:
+		frame = i
+	else:
+		_go_to(RadarLibrary.nearest_in_time(frames, RadarLibrary.unix_of(volume.name)))
 
 
 # --- timers --------------------------------------------------------------------------
 
 
+## Rolls the live window on, re-reads the source and follows the newest scan inside it.
 func _on_live_tick() -> void:
 	library.scan()
 	if overview:
 		return
-	if site.is_empty() and not library.volumes.is_empty():
-		_select_site(library.site_of(library.latest()))
+	if site.is_empty():
+		_select_site(library.latest_site(window))
 		return
-	frames = library.for_site(site)
-	if frames.is_empty():
-		return
-	if playing:
-		_update_playback()  # new frames join the loop on the next pass
-		return
-	var target := VolumeUpdatePolicy.live_target(library, site, volume, playing)
-	if not target.is_empty():
-		_go_to(frames.find(target))
+	_refilter()
+	if live and not frames.is_empty() and not playing:
+		var target := VolumeUpdatePolicy.live_target(frames, volume, playing)
+		if not target.is_empty():
+			_go_to(frames.find(target))
+	_update_playback()  # new frames join the loop on the next pass; old ones left it
 
 
 func _on_play_tick() -> void:
 	var seq := _sequence()
-	var next := frame + 1 if frame < seq.y else seq.x
+	var next := Playback.next_frame(frame, seq)
 	_go_to(next)
-	var wait := 1.0 / fps
-	if next == seq.y:
-		wait += LOOP_DWELL_SEC
 	if playing:
-		play_timer.start(wait)
+		play_timer.start(Playback.frame_wait(next, seq, fps))
 
 
 # --- presentation --------------------------------------------------------------------
@@ -683,7 +786,7 @@ func _refresh() -> void:
 			view_3d.set_site(ll.y, ll.x)
 	_neighbors = []
 	if mosaic and volume != null:
-		_neighbors = Mosaic.neighbors(library, cache, volume, shown, target_elev)
+		_neighbors = Mosaic.neighbors(library, cache, volume, shown, target_elev, window)
 	_others = Mosaic.assign_others(_neighbors)
 	var on_screen: Array = [volume.name] if volume != null else []
 	for n in _neighbors:
@@ -702,7 +805,7 @@ func _refresh() -> void:
 		view_3d.show_volume(volume, _volume_field(), target_elev, _neighbors, _others)
 	elif field_name == RotationTracks.VIEW_FIELD:
 		var loop := _loop_volumes()
-		_tracks.add_to_neighbors(_neighbors, library, loop)
+		_tracks.add_to_neighbors(_neighbors, library, loop, window)
 		view_2d.show_tracks(_tracks.of(loop), frame - _sequence().x + 1, _neighbors, _others)
 	else:
 		view_2d.show_sweep(volume, sweep_index, field_name, _neighbors, _others)
@@ -739,6 +842,7 @@ func _refresh() -> void:
 ## Warnings and tracked cells for the frame on screen (Overlays).
 func _refresh_overlays() -> void:
 	overlays.library = library
+	overlays.window = window
 	var index := frame - _sequence().x
 	overlays.update(view_2d, view_3d, volume, _loop_volumes(), index, _neighbors, overview)
 	_readout_key.clear()
@@ -750,13 +854,8 @@ func _update_vwp() -> void:
 	hud.set_vwp_shown(vwp_shown)
 	if not vwp_shown:
 		return
-	var columns := []
 	var seq := _sequence()
-	if frame >= 0:
-		for k in range(seq.x, seq.y + 1):
-			var path := frames[k]
-			var profile = library.winds(path).get("wind_profile")
-			columns.append({"path": path, "t": RadarLibrary.unix_of(path), "profile": profile})
+	var columns := Playback.vwp_columns(library, frames, seq) if frame >= 0 else []
 	var title := "VWP  %s  (km ARL, barbs kt)" % site
 	hud.vwp.show_profiles(columns, frame - seq.x, title)
 
@@ -774,19 +873,8 @@ func _update_winds() -> void:
 		motion = _auto_storm["storm_motion"]
 	var title := "VAD winds  %s %s  (m/s)" % [volume.icao(), RadarLibrary.clock(volume.name)]
 	var in_use := _storm_motion() if srm_on else Vector2.INF
-	hud.hodograph.show_winds(own.get("wind_profile"), motion, in_use, title, _storm_source())
-
-
-## Where the storm motion in effect comes from, for the info text and hodograph.
-func _storm_source() -> String:
-	var m := Hodograph.from_dir_speed(_storm_motion())
-	var what := "storm from %03d° at %d m/s" % [roundi(m.x) % 360, roundi(m.y)]
-	if not (srm_auto and not _auto_storm.is_empty()):
-		return what + " (manual)"
-	var src: String = _auto_storm["name"]
-	if volume != null and src == volume.name:
-		return what + " (Bunkers RM)"
-	return what + " (Bunkers RM, %s %s)" % [RadarLibrary.site_of(src), RadarLibrary.clock(src)]
+	var source := InfoText.storm_source(self)
+	hud.hodograph.show_winds(own.get("wind_profile"), motion, in_use, title, source)
 
 
 ## Readout of whatever is under the mouse: the section panel, the VWP, or the 2D view
@@ -890,7 +978,7 @@ func _preload_ahead() -> void:
 		budget -= cache.prefetch(path, f, target_elev, need)
 		var t := RadarLibrary.unix_of(path)
 		for nb in _neighbors:
-			var other := Mosaic.path_near(library, nb["site"], t)
+			var other := Mosaic.path_near(library, nb["site"], t, window)
 			if not other.is_empty():
 				budget -= cache.prefetch(other, f, target_elev, need)
 
@@ -903,99 +991,12 @@ func _update_playback() -> void:
 	var t := ""
 	if volume != null:
 		t = volume.time_utc().replace("T", " ").left(19) + "Z"
-	hud.set_playback(playing, live, frame - seq.x, seq.y - seq.x + 1, t, fps)
+	var count := seq.y - seq.x + 1 if frame >= 0 else 0
+	hud.set_playback(playing, live, frame - seq.x, count, t, fps)
 
 
 func _update_info() -> void:
-	if overview:
-		var lines := PackedStringArray(["United States  ·  NOAA MRMS composite reflectivity"])
-		lines.append("Select a radar marker to view its recent scans and follow live updates")
-		lines.append_array(overlays.info_lines())
-		hud.set_info("\n".join(lines))
-		return
-	if volume == null:
-		var jobs := fetcher.status_lines()
-		if not jobs.is_empty():
-			var state := (
-				"waiting for first scan" if fetcher.running_jobs().size() > 0 else "fetch failed"
-			)
-			hud.set_info("%s  %s\n%s" % [site, state, "\n".join(jobs)])
-			return
-		var help := "Run:  nexrad update KTLX   (or: nexrad live KTLX)"
-		if fetcher.web:
-			help = "Press F to fetch radar data"
-		hud.set_info("No volumes in %s\n%s" % [library.source.describe(), help])
-		return
-	var lines := PackedStringArray()
-	var quality := VolumeUpdatePolicy.quality(volume)
-	var vcp := int(volume.meta.get("vcp", 0))
-	lines.append(
-		"%s  VCP %d%s   frame %d/%d" % [volume.icao(), vcp, quality, frame + 1, frames.size()]
-	)
-	if sweep_index >= 0:
-		var sw := volume.sweep(sweep_index)
-		var shown := _volume_field() if view_is_3d else field_name
-		var tilts := volume.tilts(shown)
-		var scanned := str(sw["time"]).substr(11, 8) + "Z"
-		var elev := float(sw["elevation_deg"])
-		var pos := tilts.find(sweep_index) + 1
-		if volume.is_product(sweep_index):
-			var what: String = Hud.PRODUCT_NAMES.get(field_name, "")
-			var src := "AZSHR" if _sweep_field() == RotationTracks.FIELD else "REF"
-			var n := volume.tilts(src).size()
-			var from := "from %d %s tilts" % [n, src]
-			if field_name == RotationTracks.VIEW_FIELD:
-				var seq := _sequence()
-				from = "over frames 1-%d of %d" % [frame - seq.x + 1, seq.y - seq.x + 1]
-			lines.append("%s  %s %s  %s" % [field_name, what, from, scanned])
-		else:
-			lines.append(
-				"tilt %d/%d  %.2f°  %s  scanned %s" % [pos, tilts.size(), elev, shown, scanned]
-			)
-	else:
-		lines.append("%s not in this volume" % field_name)
-	var cache_mb := cache.used_bytes() >> 20
-	if view_is_3d:
-		var thr := view_3d.threshold_of(field_name)
-		var abs_mode := view_3d.threshold_is_abs(field_name)
-		(
-			lines
-			. append(
-				(
-					"3D  %s   hide %s < %s %s   height x%.0f   cache %d MB"
-					% [
-						(
-							"volume render, opacity %.3f/km" % view_3d.density
-							if view_3d.volume_render
-							else VolumeView3D.ISOLATE_NAMES[view_3d.isolate]
-						),
-						"|%s|" % field_name if abs_mode else field_name,
-						str(snappedf(thr, 0.01)),
-						Colormaps.unit_of(field_name).get_slice(" ", 0),
-						view_3d.exaggeration,
-						cache_mb,
-					]
-				)
-			)
-		)
-	else:
-		lines.append("zoom %.2f px/km   cache %d MB" % [view_2d.zoom(), cache_mb])
-	if _storm_vector() != Vector2.ZERO:
-		lines.append("storm-relative: " + _storm_source())
-	var ml = volume.meta.get("melting_layer")
-	if Colormaps.is_categorical(field_name) and ml is Dictionary:
-		lines.append(
-			(
-				"melting layer %.1f-%.1f km ARL (%s)"
-				% [ml["bottom_m"] / 1000.0, ml["top_m"] / 1000.0, ml["source"]]
-			)
-		)
-	if mosaic:
-		lines.append("mosaic: " + Mosaic.summary(_neighbors))
-	lines.append_array(overlays.info_lines())
-	for l in fetcher.status_lines():
-		lines.append("fetch: " + l)
-	hud.set_info("\n".join(lines))
+	hud.set_info(InfoText.build(self))
 
 
 # --- input ---------------------------------------------------------------------------
@@ -1022,9 +1023,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			else:
 				_step(1)
 		KEY_HOME:
-			_set_live(false)
+			_moved()
+			_set_playing(false)
 			_go_to(_sequence().x)
 		KEY_END:
+			_moved()
+			_set_playing(false)
 			_go_to(_sequence().y)
 		KEY_UP:
 			_step_tilt(1)
@@ -1035,9 +1039,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_BRACKETRIGHT:
 			_cycle_speed(1)
 		KEY_L:
-			_set_live(not live)
-		KEY_S:
-			_cycle_site()
+			_toggle_live()
+		KEY_S:  # the next cached site
+			var sites := library.sites()
+			if sites.size() > 1:
+				_pick_site(sites[(sites.find(site) + 1) % sites.size()])
 		KEY_R:
 			if view_is_3d:
 				view_3d.camera.reset()
@@ -1090,9 +1096,3 @@ func _unhandled_input(event: InputEvent) -> void:
 				_cycle_fields(RadarVolume.PRODUCTS + [RotationTracks.VIEW_FIELD])
 			elif e.keycode == KEY_0:
 				_cycle_fields(["KDP", "AZSHR", "HCA"])
-
-
-func _cycle_site() -> void:
-	var sites := library.sites()
-	if sites.size() > 1:
-		_select_site(sites[(sites.find(site) + 1) % sites.size()])

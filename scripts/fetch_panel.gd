@@ -2,9 +2,10 @@ class_name FetchPanel
 extends PanelContainer
 ## Dialog for fetching radar data from the UI (F): a site, and either its newest volume,
 ## the volume at a time, every volume in a time range, or live following; or one of the
-## notable events (Events). main.gd runs the requests through Fetcher and pushes job status
-## back with set_jobs(). The text fields are the only focusable controls in the HUD; closing
-## the panel releases focus so keyboard shortcuts work again.
+## notable events (Events). Each request also sets the app's time window (the range, the half
+## hour around the time, or live: TimeWindow.of_request) before main.gd runs it through Fetcher;
+## main pushes job status back with set_jobs(). The text fields are the only focusable controls
+## in the HUD; closing the panel releases focus so keyboard shortcuts work again.
 
 signal update_requested(site: String, at: String, from: String, to: String)
 signal live_requested(site: String)
@@ -14,7 +15,10 @@ signal event_requested(id: String)
 enum Mode { LATEST, AT, RANGE, LIVE }
 
 const MODE_NAMES := ["Newest volume", "Volume at time", "Time range", "Live"]
-const HELP := "Times are UTC, e.g. 2013-05-20T20:00Z. A range fetches every volume in it."
+const HELP := (
+	"Times are UTC, e.g. 2013-05-20T20:00Z. A range fetches every volume in it.\n"
+	+ "Each request sets the time window the timeline shows."
+)
 
 var _site: LineEdit
 var _mode: OptionButton
@@ -108,8 +112,9 @@ func _ready() -> void:
 	_update_fields()
 
 
-## Opens the panel with `site` and times around `unix_time` (the frame on screen) filled in.
-func open_panel(site: String, unix_time: int) -> void:
+## Opens the panel with `site` and times around `unix_time` (the frame on screen) filled in; a
+## range is the app's fixed `window` when it has one.
+func open_panel(site: String, unix_time: int, window: TimeWindow = null) -> void:
 	if not site.is_empty():
 		_site.text = site
 	if unix_time > 0:
@@ -117,8 +122,19 @@ func open_panel(site: String, unix_time: int) -> void:
 		_t2.text = _iso(unix_time + 30 * 60)
 		if _mode.selected == Mode.RANGE:
 			_t1.text = _iso(unix_time - 30 * 60)
+	if _mode.selected == Mode.RANGE and window != null and not window.live:
+		_t1.text = _iso(window.from)
+		_t2.text = _iso(window.to)
 	visible = true
 	_site.grab_focus()
+
+
+## F: opens the panel (open_panel) or closes it.
+func toggle(site: String, unix_time: int, window: TimeWindow) -> void:
+	if visible:
+		close_panel()
+	else:
+		open_panel(site, unix_time, window)
 
 
 func close_panel() -> void:
@@ -147,13 +163,18 @@ func _submit() -> void:
 	if site.length() != 4:
 		set_jobs(PackedStringArray(["Site must be a 4-letter ICAO id, e.g. KTLX"]))
 		return
+	var at := _t1.text.strip_edges() if _mode.selected == Mode.AT else ""
+	var from := _t1.text.strip_edges() if _mode.selected == Mode.RANGE else ""
+	var to := _t2.text.strip_edges() if _mode.selected == Mode.RANGE else ""
+	# Each request becomes the time window (TimeWindow.of_request): it needs times that parse, and
+	# a range needs both ends in order.
+	if _mode.selected in [Mode.AT, Mode.RANGE] and TimeWindow.of_request(at, from, to) == null:
+		var what := "a time" if _mode.selected == Mode.AT else "both ends, From before To"
+		set_jobs(PackedStringArray(["Need %s in UTC, e.g. 2013-05-20T20:00Z" % what]))
+		return
 	match _mode.selected:
-		Mode.LATEST:
-			update_requested.emit(site, "", "", "")
-		Mode.AT:
-			update_requested.emit(site, _t1.text.strip_edges(), "", "")
-		Mode.RANGE:
-			update_requested.emit(site, "", _t1.text.strip_edges(), _t2.text.strip_edges())
+		Mode.LATEST, Mode.AT, Mode.RANGE:
+			update_requested.emit(site, at, from, to)
 		Mode.LIVE:
 			live_requested.emit(site)
 	get_viewport().gui_release_focus()

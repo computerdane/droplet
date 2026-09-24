@@ -18,6 +18,25 @@ func test_fixture_set() -> void:
 			check(vol.has_field(i, "VEL") == vol.has_field(i, "DVEL"), "DVEL next to VEL")
 
 
+func test_for_site_window() -> void:
+	var site: String = lib.sites()[0]
+	var all: Array[String] = lib.for_site(site)
+	check_eq(lib.for_site(site, null), all, "no window: every scan")
+	var newest := RadarLibraryScript.unix_of(all[-1])
+	var only: Array[String] = [all[-1]]
+	check_eq(lib.for_site(site, TimeWindow.fixed(newest, newest)), only, "inclusive window")
+	check_eq(lib.for_site(site, TimeWindow.fixed(newest + 1, newest + 60)), [], "after the newest")
+	check_eq(lib.for_site(site, TimeWindow.live_window(60, newest + 3601)), [], "live, 1 s past")
+	var window := TimeWindow.fixed(RadarLibraryScript.unix_of(all[0]), newest)
+	check_eq(lib.for_site(site, window), all, "window spanning all")
+	check_eq(lib.for_site(site, window), window.filter(all), "same as TimeWindow.filter")
+	check_eq(lib.latest_site(TimeWindow.fixed(0, 1)), lib.site_of(lib.latest()), "none: newest")
+	if fixtures:
+		check_eq(lib.latest_site(window), "KTST", "the site with the newest scan inside")
+		var ktsu := RadarLibraryScript.unix_of(lib.latest("KTSU"))
+		check_eq(lib.latest_site(TimeWindow.fixed(ktsu, ktsu)), "KTSU", "only KTSU inside")
+
+
 func test_volume_quality() -> void:
 	var vol: RadarVolume = lib.open(lib.volumes[0])
 	check_eq(VolumeUpdatePolicyScript.quality(vol), "", "complete scan has no quality warning")
@@ -39,15 +58,13 @@ func test_live_target_and_replaced_loop_frame() -> void:
 	source.add_volume(names[-1], lib.source.read_meta(names[-1]), {})
 	var index := RadarLibraryScript.new(source)
 	var current: RadarVolume = index.open(names[-1])
-	check_eq(
-		VolumeUpdatePolicyScript.live_target(index, "KTST", current, false), "", "newest pinned"
-	)
+	var frames: Array[String] = index.for_site("KTST")
+	check_eq(VolumeUpdatePolicyScript.live_target(frames, current, false), "", "newest pinned")
 	source.add_volume(names[0], lib.source.read_meta(names[0]), {})
 	index.scan()
+	frames = index.for_site("KTST")
 	check_eq(
-		VolumeUpdatePolicyScript.live_target(index, "KTST", current, false),
-		"",
-		"older backfill stays"
+		VolumeUpdatePolicyScript.live_target(frames, current, false), "", "older backfill stays"
 	)
 	check(
 		VolumeUpdatePolicyScript.shown_in_loop(names[0], current, index.for_site("KTST"), 1),
@@ -55,14 +72,21 @@ func test_live_target_and_replaced_loop_frame() -> void:
 	)
 	source.add_volume(names[-1], lib.source.read_meta(names[-1]), {})
 	check_eq(
-		VolumeUpdatePolicyScript.live_target(index, "KTST", current, false),
-		names[-1],
-		"same name reloads"
+		VolumeUpdatePolicyScript.live_target(frames, current, false), names[-1], "same name reloads"
 	)
 	check_eq(
-		VolumeUpdatePolicyScript.live_target(index, "KTST", current, true),
+		VolumeUpdatePolicyScript.live_target(frames, current, true), "", "playback stays on frame"
+	)
+	var window := TimeWindow.fixed(0, RadarLibraryScript.unix_of(names[0]))
+	check_eq(
+		VolumeUpdatePolicyScript.live_target(index.for_site("KTST", window), null, false),
+		names[0],
+		"the newest inside the window, not the newest cached"
+	)
+	check_eq(
+		VolumeUpdatePolicyScript.live_target([] as Array[String], current, false),
 		"",
-		"playback stays on frame"
+		"nothing in the window: stay"
 	)
 
 
@@ -206,6 +230,22 @@ func test_mosaic_cells() -> void:
 	var cache: VolumeCache = VolumeCache.new(lib.source)
 	var own: RadarVolume = lib.open(lib.latest("KTST"))
 	var neighbors := Mosaic.neighbors(lib, cache, own, "REF", 0.5)
+	var t := RadarLibraryScript.unix_of(own.name)
+	check_eq(
+		Mosaic.path_near(lib, "KTSU", t, TimeWindow.fixed(t - 3600, t + 3600)),
+		lib.for_site("KTSU")[0],
+		"a neighbour inside the window"
+	)
+	check_eq(
+		Mosaic.path_near(lib, "KTSU", t, TimeWindow.fixed(t + 3600, t + 7200)),
+		"",
+		"none inside the window"
+	)
+	check_eq(
+		Mosaic.neighbors(lib, cache, own, "REF", 0.5, TimeWindow.fixed(t, t)).size(),
+		0,
+		"the window bounds neighbours"
+	)
 	if not check_eq(neighbors.size(), 1, "KTSU is a neighbour"):
 		return
 	var n: Dictionary = neighbors[0]

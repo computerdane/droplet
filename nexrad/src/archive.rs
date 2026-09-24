@@ -92,31 +92,24 @@ pub fn keys_between(bucket: &dyn Bucket, site: &str, start: Utc, end: Utc) -> Re
     Ok(out)
 }
 
-/// Volumes to backfill before following live chunks: enough to give history without a slow
-/// startup (`nexrad live`, `nexrad-wasm::live`).
-pub const BACKFILL_COUNT: usize = 11; // newest plus latest-1 through latest-10
+/// Default live history and the maximum supported window, in minutes.
+pub const DEFAULT_BACKFILL_MINUTES: u32 = 60;
+pub const MAX_BACKFILL_MINUTES: u32 = 24 * 60;
 
-/// The most recent `n` complete archive volumes for `site`, oldest first. The archive mirror
-/// only ever holds finished uploads, so this never returns an in-progress scan (unlike the
-/// chunks bucket). Volumes run every 4-10 min, so `n` usually needs only today's keys; scans
-/// back a further week at most (VCPs with long clear-air volumes, or just after midnight UTC).
-pub fn recent_keys(bucket: &dyn Bucket, site: &str, n: usize) -> Result<Vec<String>> {
-    let mut day = Utc::now().date();
-    let mut keys: Vec<String> = Vec::new();
-    for _ in 0..8 {
-        let mut day_keys = list_keys(bucket, site, day)?;
-        day_keys.extend(keys);
-        keys = day_keys;
-        if keys.len() >= n {
-            break;
-        }
-        day = day.add_days(-1);
+/// Complete archive scans whose start time falls in `[start, now]`, oldest first. The archive
+/// mirror contains only finished scans. List each UTC day in the window once, including both
+/// sides of midnight; an empty result is valid when no scan has yet reached the mirror.
+pub fn keys_since(bucket: &dyn Bucket, site: &str, start: Utc, now: Utc) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut day = start.date();
+    while day <= now.date() {
+        out.extend(list_keys(bucket, site, day)?.into_iter().filter(|k| {
+            let time = key_time(k).unwrap();
+            start <= time && time <= now
+        }));
+        day = day.add_days(1);
     }
-    if keys.is_empty() {
-        return Err(format!("no volumes found for {site} in the last 8 days").into());
-    }
-    let start = keys.len().saturating_sub(n);
-    Ok(keys[start..].to_vec())
+    Ok(out)
 }
 
 /// Which keys a fetch/update asks for.
@@ -159,7 +152,9 @@ pub struct BackfillSeed {
 
 /// Publish recent scans newest first, then replace them with chronological temporal solutions.
 /// `keys` must be oldest first. Only raw file paths and one complete prior are retained; final
-/// decoding never reads provisional volumes as priors. Failed scans are logged and skipped.
+/// decoding uses a session-local prior: the archive predecessor immediately before the window,
+/// then each successfully finalized complete scan. Persisted volumes do not affect this chain.
+/// Failed scans are logged and skipped.
 pub fn backfill(
     bucket: &dyn Bucket,
     keys: &[String],
@@ -186,17 +181,33 @@ pub fn backfill(
             let _ = writeln!(log, "backfill {}: {e}", file_name(key));
         }
     }
-    let mut newest = None;
+    let mut prior = keys.first().and_then(|first| {
+        let first_time = key_time(first)?;
+        let site = file_name(first).get(..4)?;
+        let key = key_at(bucket, site, first_time.add_ms(-1)).ok()?;
+        let time = key_time(&key)?;
+        if !volume::is_prior(site, first_time, site, time) {
+            return None;
+        }
+        let raw = bucket.get(&key).ok()?;
+        let vol = level2::with_site(level2::read_volume(&raw).ok()?, &key);
+        vol.complete.then(|| (vol.icao.clone(), time, volume::encode_volume(&vol).prior()))
+    });
+    let mut finalized_name = None;
     for raw in downloaded.iter().rev() {
         let result = (|| -> Result<()> {
             let vol = level2::read_file(raw)?;
-            // Use exactly update's persisted reference at every step. This includes earlier
-            // finalized scans and cached scans whose download failed, but skips previews.
-            let enc = volume::encode_volume_with(&vol, &volume::find_prior(volumes_dir, &vol.icao, vol.time));
+            let reference = prior
+                .as_ref()
+                .filter(|(site, time, _)| volume::is_prior(&vol.icao, vol.time, site, *time))
+                .map(|(_, _, tilts)| tilts.as_slice())
+                .unwrap_or(&[]);
+            let enc = volume::encode_volume_with(&vol, reference);
             let path = volume::write_encoded(&enc, volumes_dir)?;
             emit(&path);
             if vol.complete {
-                newest = Some(BackfillSeed { name: volume::volume_dir_name(&vol.icao, vol.time), time: vol.time, prior: enc.prior() });
+                prior = Some((vol.icao.clone(), vol.time, enc.prior()));
+                finalized_name = Some(volume::volume_dir_name(&vol.icao, vol.time));
             }
             Ok(())
         })();
@@ -204,7 +215,7 @@ pub fn backfill(
             let _ = writeln!(log, "backfill finalize {}: {e}", raw.display());
         }
     }
-    newest
+    finalized_name.zip(prior).map(|(name, (_, time, prior))| BackfillSeed { name, time, prior })
 }
 
 #[cfg(test)]
@@ -322,7 +333,56 @@ mod tests {
     }
 
     #[test]
-    fn backfill_preserves_external_prior_and_excludes_failed_selected_scans() {
+    fn fresh_backfill_uses_archive_predecessor_outside_selected_window() {
+        use crate::{level2, synth, volume};
+        let dir = volume::tempdir::Dir::new("backfill-fresh-prior");
+        let raw_dir = dir.path().join("raw");
+        let volumes_dir = dir.path().join("volumes");
+        let bucket = FakeBucket::default();
+        let vols = synth::fixture_volumes();
+        let first = &vols[0];
+        let selected = &vols[1];
+        assert!(volume::is_prior(&selected.icao, selected.time, &first.icao, first.time));
+        let keys: Vec<String> = [first, selected]
+            .iter()
+            .map(|vol| format!("{}/{}/{}{}_V06", vol.time.date().slashed(), vol.icao, vol.icao, vol.time.compact()))
+            .collect();
+        bucket.put_day(&first.time.date().slashed(), &[file_name(&keys[0]), file_name(&keys[1])]);
+        for (key, vol) in keys.iter().zip([first, selected]) {
+            bucket.objects.borrow_mut().insert(key.clone(), synth::encode_archive(vol, synth::Layout::Bz2));
+        }
+        let decoded_first = level2::read_volume(&bucket.objects.borrow()[&keys[0]]).unwrap();
+        let decoded_selected = level2::read_volume(&bucket.objects.borrow()[&keys[1]]).unwrap();
+        let expected = volume::encode_volume_with(&decoded_selected, &volume::encode_volume(&decoded_first).prior());
+        let mut emitted = Vec::new();
+        backfill(&bucket, &keys[1..], &raw_dir, &volumes_dir, |path| emitted.push(path.to_path_buf()), &mut Vec::new()).unwrap();
+        assert_eq!(emitted.len(), 2, "only the selected scan is published and finalized");
+        assert!(!volumes_dir.join(volume::volume_dir_name(&first.icao, first.time)).exists(), "predecessor remains in memory");
+        for (name, bytes) in expected.files {
+            assert_eq!(std::fs::read(emitted[1].join(name)).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn empty_or_all_failed_backfill_has_no_live_seed() {
+        use crate::synth;
+        let dir = crate::volume::tempdir::Dir::new("backfill-no-seed");
+        let bucket = FakeBucket::default();
+        let raw = dir.path().join("raw");
+        let out = dir.path().join("volumes");
+        assert!(backfill(&bucket, &[], &raw, &out, |_| {}, &mut Vec::new()).is_none());
+        let vols = synth::fixture_volumes();
+        let keys: Vec<String> = vols[..2]
+            .iter()
+            .map(|vol| format!("{}/{}/{}{}_V06", vol.time.date().slashed(), vol.icao, vol.icao, vol.time.compact()))
+            .collect();
+        bucket.put_day(&vols[0].time.date().slashed(), &[file_name(&keys[0]), file_name(&keys[1])]);
+        bucket.objects.borrow_mut().insert(keys[0].clone(), synth::encode_archive(&vols[0], synth::Layout::Bz2));
+        assert!(backfill(&bucket, &keys[1..], &raw, &out, |_| {}, &mut Vec::new()).is_none(), "predecessor alone cannot seed live");
+    }
+
+    #[test]
+    fn backfill_ignores_external_prior_and_excludes_failed_selected_scans() {
         use crate::{level2, synth, volume};
         let dir = volume::tempdir::Dir::new("backfill-prior");
         let raw = dir.path().join("raw");
@@ -343,7 +403,6 @@ mod tests {
             }
         }
         volume::write_encoded(&external, &out).unwrap();
-        volume::write_encoded(&external, &expected).unwrap();
         let bucket = FakeBucket::default();
         let keys: Vec<String> = vols[..2].iter().map(|v| format!("{}{}_V06", v.icao, v.time.compact())).collect();
         for (key, vol) in keys.iter().zip(&vols) {
@@ -356,9 +415,12 @@ mod tests {
         let plain = volume::encode_volume(&vols[0]);
         assert!(
             plain.files.iter().any(|(file, bytes)| {
-                file.ends_with("_DVEL.bin") && *bytes != std::fs::read(expected.join(&names[0]).join(file)).unwrap()
+                file.ends_with("_DVEL.bin")
+                    && *bytes
+                        != std::fs::read(out.join(volume::volume_dir_name(&vols[0].icao, vols[0].time.add_secs(-300.0))).join(file))
+                            .unwrap()
             }),
-            "the external reference must change the solution"
+            "the cached reference differs from the session's raw first scan"
         );
         for name in &names {
             for entry in std::fs::read_dir(expected.join(name)).unwrap() {
@@ -366,8 +428,8 @@ mod tests {
                 assert_eq!(std::fs::read(entry.path()).unwrap(), std::fs::read(out.join(name).join(entry.file_name())).unwrap());
             }
         }
-        // Make the first selected scan fail finalization. The second must skip its provisional
-        // disk version and still use the external reference within the 15-minute window.
+        // Make the first selected scan fail finalization. The second must skip both its
+        // provisional disk version and the unrelated cached canonical reference.
         backfill(
             &bucket,
             &keys,
@@ -382,7 +444,7 @@ mod tests {
         )
         .unwrap();
         let second = level2::read_volume(&bucket.objects.borrow()[&keys[1]]).unwrap();
-        let want = volume::encode_volume_with(&second, &external.prior());
+        let want = volume::encode_volume(&second);
         for (file, bytes) in want.files {
             assert_eq!(bytes, std::fs::read(out.join(&names[1]).join(file)).unwrap());
         }
@@ -405,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn backfill_uses_cached_middle_scan_when_its_selected_download_fails() {
+    fn backfill_skips_cached_middle_scan_when_its_selected_download_fails() {
         use crate::{level2, synth, volume};
         let root = volume::tempdir::Dir::new("backfill-cached-middle");
         let raw = root.path().join("raw");
@@ -435,8 +497,11 @@ mod tests {
         }
         keys.insert(1, format!("{}{}_V06", vols[0].icao, middle_time.compact()));
         let decoded = level2::read_volume(&bucket.objects.borrow()[&keys[2]]).unwrap();
-        let want = volume::encode_volume_with(&decoded, &middle.prior());
-        let wrong = volume::encode_volume_with(&decoded, &volume::encode_volume(&vols[0]).prior());
+        let want = volume::encode_volume_with(
+            &decoded,
+            &volume::encode_volume(&level2::read_volume(&bucket.objects.borrow()[&keys[0]]).unwrap()).prior(),
+        );
+        let wrong = volume::encode_volume_with(&decoded, &middle.prior());
         assert!(want.files.iter().any(|(name, bytes)| name.ends_with("_DVEL.bin") && wrong.file(name) != Some(bytes.as_slice())));
         let seed = backfill(&bucket, &keys, &raw, &out, |_| {}, &mut Vec::new()).unwrap();
         for (name, bytes) in &want.files {
@@ -481,28 +546,25 @@ mod tests {
     }
 
     #[test]
-    fn recent_keys_spans_days_oldest_first() {
+    fn keys_since_spans_days_oldest_first_and_respects_both_bounds() {
         let b = FakeBucket::default();
-        let today = Utc::now().date();
-        let yesterday = today.add_days(-1);
-        b.put_day(&yesterday.slashed(), &["KTST20240430_235500_V06", "KTST20240430_235900_V06"]);
-        b.put_day(&today.slashed(), &["KTST20240501_000400_V06"]);
-        let keys = recent_keys(&b, "ktst", 3).unwrap();
+        b.put_day("2024/04/30", &["KTST20240430_225500_V06", "KTST20240430_233000_V06", "KTST20240430_235900_V06"]);
+        b.put_day("2024/05/01", &["KTST20240501_000400_V06", "KTST20240501_000400_V06_MDM", "KTST20240501_004000_V06"]);
+        let now = Utc::from_ymd_hms(2024, 5, 1, 0, 30, 0);
+        let keys = keys_since(&b, "ktst", now.add_secs(-3600.0), now).unwrap();
         assert_eq!(
             keys.iter().map(|k| file_name(k)).collect::<Vec<_>>(),
-            ["KTST20240430_235500_V06", "KTST20240430_235900_V06", "KTST20240501_000400_V06"]
+            ["KTST20240430_233000_V06", "KTST20240430_235900_V06", "KTST20240501_000400_V06"]
         );
-        // Fewer volumes exist than asked for: returns what it found, still oldest first.
-        assert_eq!(recent_keys(&b, "ktst", 10).unwrap().len(), 3);
-        // More volumes exist than asked for: keeps only the newest n.
-        let newest_only = recent_keys(&b, "ktst", 1).unwrap();
-        assert_eq!(file_name(&newest_only[0]), "KTST20240501_000400_V06");
+        assert_eq!(*b.listed.borrow(), ["2024/04/30/KTST/", "2024/05/01/KTST/"]);
+        assert_eq!(keys_since(&b, "KTST", now, now).unwrap().len(), 0);
     }
 
     #[test]
-    fn recent_keys_errors_when_nothing_found() {
+    fn keys_since_allows_no_scan_in_window() {
         let b = FakeBucket::default();
-        assert!(recent_keys(&b, "KTST", 5).unwrap_err().to_string().contains("no volumes"));
+        let now = Utc::from_ymd_hms(2024, 5, 1, 3, 0, 0);
+        assert!(keys_since(&b, "KTST", now.add_secs(-3600.0), now).unwrap().is_empty());
     }
 
     #[test]

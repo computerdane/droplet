@@ -1,14 +1,14 @@
 // The web build's stand-in for the `nexrad` CLI (scripts/fetcher.gd starts one module worker per
 // job and terminates it to stop, as it kills a process on the desktop). Posted one JSON request:
 //   {"cmd": "update", "site": "KTLX", "at": "", "from": "", "to": ""}   (ISO times or "")
-//   {"cmd": "live", "site": "KTLX", "interval": 5, "hint": {"volume": 417, "time_ms": ...}}
+//   {"cmd": "live", "site": "KTLX", "interval": 5, "since_minutes": 60, "hint": {"volume": 417, "time_ms": ...}}
 // Answers with {type: "line", line} (the CLI's output lines, "[i/n] file" progress included),
 // {type: "volume", name, volume_json, names, buffers} (sweep file names and their float16
 // ArrayBuffers, transferred), and finally {type: "done"} or {type: "error", message}. Live also
 // sends {type: "ring", volume, time_ms} as each volume begins: where the chunks ring was, which
 // the page keeps (localStorage) and passes back as `hint` so the next visit skips the search.
-// Before following the chunks bucket, live() first backfills the newest plus 10 older complete archive
-// volumes (recent_keys(), the archive mirror, never an in-progress scan) newest first, then finalizes them chronologically
+// Before following the chunks bucket, live() backfills complete archive volumes in the live
+// window (keys_since(), default 60 minutes) newest first, then finalizes them chronologically
 // through the same "volume"/"line" protocol, one decode+download failure logged and skipped
 // rather than aborting the backfill (an unreachable mirror does not block live following either).
 //
@@ -25,7 +25,7 @@
 // XHR, which workers may use, because the key selection and live loop in nexrad-wasm are blocking
 // Rust. Raw archive files are immutable and kept in the Cache API (the newest RAW_CACHE_FILES),
 // so revisiting an event costs only the decode.
-import init, { decode, live, redealias, resolve_keys, recent_keys } from "./nexrad_wasm.js";
+import init, { decode, keys_since, live, redealias, resolve_keys } from "./nexrad_wasm.js";
 
 const ARCHIVE = "https://unidata-nexrad-level2.s3.amazonaws.com";
 const CHUNKS = "https://unidata-nexrad-level2-chunks.s3.amazonaws.com";
@@ -34,8 +34,8 @@ const RAW_CACHE = `droplet-raw-v1-${encodeURIComponent(new URL("./", import.meta
 const RAW_CACHE_FILES = 300; // 7 to 11 MB each
 // Decoders per update job; Godot's renderer and its worker threads need cores too.
 const POOL_SIZE = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 2));
-// Recent complete archive volumes live() backfills before following the chunks bucket.
-const BACKFILL_COUNT = 11;
+const BACKFILL_MINUTES = 60;
+const FINAL_REFETCH_ATTEMPTS = 3;
 
 const line = (text) => postMessage({ type: "line", line: text });
 const fileName = (key) => key.split("/").pop();
@@ -168,25 +168,25 @@ async function update({ site, at = "", from = "", to = "", workers = POOL_SIZE }
   }
 }
 
-// Deliver newest first without a prior, then finalize oldest first from the same raw bytes.
-// Holding raw bytes is bounded by BACKFILL_COUNT; decoded volumes are transferred immediately.
+// Deliver newest first without a prior, then finalize oldest first. fetchRaw uses the Cache API,
+// so the second pass usually reuses bytes without keeping the whole window in worker memory.
 // Do not let provisional volumes become temporal references, even if a later decode fails.
-async function backfill(site) {
+async function backfill(site, minutes = BACKFILL_MINUTES) {
   let keys;
   try {
-    keys = recent_keys(site, BACKFILL_COUNT, bucket(ARCHIVE));
+    keys = keys_since(site, minutes, bucket(ARCHIVE));
   } catch (e) {
     line(`${site}: backfill unavailable: ${e?.message ?? e}`);
     return;
   }
-  const raw = new Map();
+  const previewed = new Set();
   for (const [i, key] of [...keys].reverse().entries()) {
     line(`[${i + 1}/${keys.length}] ${fileName(key)}`);
     try {
       const bytes = await fetchRaw(key);
       const [msg] = volumeMessage(decode(bytes, key));
       msg.volume_json = JSON.stringify({ ...JSON.parse(msg.volume_json), provisional: true });
-      raw.set(key, bytes);
+      previewed.add(key);
       postMessage(msg, msg.buffers);
       line(msg.name);
     } catch (e) {
@@ -194,26 +194,63 @@ async function backfill(site) {
     }
   }
   prior = null;
-  for (const key of keys) {
-    if (!raw.has(key)) continue;
+  // Start the session's temporal chain with the archive predecessor immediately before the
+  // selected window. redealias() checks site and the 15-minute age before each use.
+  const first = keys[0];
+  const stamp = first?.match(/[A-Z]{4}(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);
+  const firstTime = stamp
+    ? Date.UTC(...[+stamp[1], +stamp[2] - 1, +stamp[3], +stamp[4], +stamp[5], +stamp[6]])
+    : null;
+  if (firstTime !== null) {
     try {
-      const [msg] = volumeMessage(decode(raw.get(key), key));
+      const preceding = resolve_keys(site, new Date(firstTime - 1000).toISOString(), "", "", bucket(ARCHIVE))[0];
+      if (preceding) {
+        const [msg] = volumeMessage(decode(await fetchRaw(preceding), preceding));
+        withPrior(msg);
+      }
+    } catch (e) {
+      line(`${site}: backfill prior unavailable: ${e?.message ?? e}`);
+    }
+  }
+  let finalizedComplete = false;
+  for (const key of keys) {
+    if (!previewed.has(key)) continue;
+    // Cache API writes are best effort. Retry a transient refetch failure, but do not keep the
+    // chunk follower waiting indefinitely if the archive becomes unavailable after preview.
+    let bytes;
+    for (let attempt = 1; attempt <= FINAL_REFETCH_ATTEMPTS; attempt++) {
+      try {
+        bytes = await fetchRaw(key);
+        break;
+      } catch (e) {
+        if (attempt === FINAL_REFETCH_ATTEMPTS) {
+          line(`${site}: backfill finalize ${fileName(key)}: ${e?.message ?? e}; provisional scan unresolved`);
+        } else {
+          line(`${site}: backfill refetch ${fileName(key)}: ${e?.message ?? e}; retrying`);
+          await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** (attempt - 1)));
+        }
+      }
+    }
+    if (!bytes) continue;
+    try {
+      const [msg] = volumeMessage(decode(bytes, key));
       withPrior(msg);
       postMessage(msg, msg.buffers);
       line(msg.name);
+      if (JSON.parse(msg.volume_json).complete) finalizedComplete = true;
     } catch (e) {
       line(`${site}: backfill finalize ${fileName(key)}: ${e?.message ?? e}`);
-    } finally {
-      raw.delete(key);
     }
   }
+  // A predecessor alone must never seed chunk following: no selected complete scan finalized.
+  if (!finalizedComplete) prior = null;
 }
 
-async function follow({ site, interval = 5, hint = null }) {
+async function follow({ site, interval = 5, hint = null, since_minutes = BACKFILL_MINUTES }) {
   if (typeof SharedArrayBuffer === "undefined") {
     throw new Error("live needs a cross-origin isolated page (COOP/COEP headers)");
   }
-  await backfill(site);
+  await backfill(site, since_minutes);
   const nap = new Int32Array(new SharedArrayBuffer(4));
   const sleep = () => {
     Atomics.wait(nap, 0, 0, interval * 1000);

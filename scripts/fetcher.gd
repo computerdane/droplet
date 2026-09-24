@@ -14,8 +14,14 @@ extends Node
 ## volume_received passes it on for a MemorySource.
 ##
 ## A request identical to a running job's (same `request_key`: kind, site and times) does not
-## start another job: start_update/start_live return the running one, flagged "already running"
-## in its status line until its next output. Once it has finished, the request runs again.
+## start another job: start_update/start_live/start_window return the running one, flagged
+## "already running" in its status line until its next output. Once it has finished, the request
+## runs again.
+##
+## Jobs follow the app's one time window (TimeWindow, issue #37): start_window fetches a window
+## (live following for a live one, every scan of a fixed one), and main calls stop_outside when
+## the window changes, so no job fetches outside it. Live following backfills the live window's
+## span (`nexrad live --since-minutes`, the worker's `since_minutes`).
 
 signal job_updated(job: Job)
 signal job_finished(job: Job)
@@ -36,6 +42,10 @@ class Job:
 	var kind := ""  # "update" or "live"
 	var site := ""
 	var key := ""  # request_key() of the request that started it
+	var at := ""  # an update's time (ISO) if it fetches the scan at one, else its range
+	var from := ""  # (main follows the scans it writes and widens the window to it)
+	var to := ""
+	var window: TimeWindow  # the window start_window fetched, else null
 	var args := PackedStringArray()
 	var pid := -1
 	var stdio: FileAccess
@@ -88,40 +98,52 @@ func start_update(site: String, at := "", from := "", to := "") -> Job:
 	var running := _repeat(key)
 	if running != null:
 		return running
+	var job: Job
 	if web:
-		return _start_worker("update", site, key, {"at": at, "from": from, "to": to})
-	var args := PackedStringArray(["update", site])
+		job = _start_worker("update", site, key, {"at": at, "from": from, "to": to})
+	else:
+		var args := PackedStringArray(["update", site])
+		if not from.is_empty() and not to.is_empty():
+			args.append_array(["--from", from, "--to", to])
+		elif not at.is_empty():
+			args.append_array(["--at", at])
+		job = _start("update", site, key, args)
 	if not from.is_empty() and not to.is_empty():
-		args.append_array(["--from", from, "--to", to])
-	elif not at.is_empty():
-		args.append_array(["--at", at])
-	return _start("update", site, key, args)
+		job.from = from
+		job.to = to
+	else:
+		job.at = at
+	return job
 
 
-## Returns the already running job instead when `site` is already being followed.
-func start_live(site: String) -> Job:
+## Follows `site` live, backfilling the scans of the last `minutes` first (the live window's
+## span). Returns the already running job instead when `site` is already being followed (whatever
+## its span).
+func start_live(site: String, minutes := TimeWindow.DEFAULT_LIVE_MIN) -> Job:
 	var key := request_key("live", site)
 	var running := _repeat(key)
 	if running != null:
 		return running
 	if web:
-		var request := {}
+		var request := {"since_minutes": minutes}
 		var stored := _storage_get(RING_KEY + site)
 		var hint = JSON.parse_string(stored) if not stored.is_empty() else null
 		if hint is Dictionary:
 			request["hint"] = hint
 		return _start_worker("live", site, key, request)
-	return _start("live", site, key, PackedStringArray(["live", site]))
+	var args := PackedStringArray(["live", site, "--since-minutes", str(minutes)])
+	return _start("live", site, key, args)
 
 
 ## Identifies a request's dataset: the kind, the site, and for `update` what it selects, as
-## the CLI reads it (a range needs both ends, else the volume at `at`, else the newest).
+## the CLI reads it (a range needs both ends, else the volume at `at`, else the newest). Times are
+## compared as instants, so 2013-05-20T19:30Z and 2013-05-20T19:30:00Z are the same request.
 static func request_key(kind: String, site: String, at := "", from := "", to := "") -> String:
 	var parts := PackedStringArray([kind, site.strip_edges().to_upper()])
 	if kind == "update":
-		var a := at.strip_edges()
-		var f := from.strip_edges()
-		var t := to.strip_edges()
+		var a := _time_key(at)
+		var f := _time_key(from)
+		var t := _time_key(to)
 		if not f.is_empty() and not t.is_empty():
 			parts.append_array(["range", f, t])
 		elif not a.is_empty():
@@ -129,6 +151,12 @@ static func request_key(kind: String, site: String, at := "", from := "", to := 
 		else:
 			parts.append("newest")
 	return " ".join(parts)
+
+
+## A request time as request_key compares it: unix seconds when it parses, else as given.
+static func _time_key(t: String) -> String:
+	var unix := TimeWindow.parse_time(t)
+	return str(unix) if unix >= 0 else t.strip_edges()
 
 
 ## The running job started for `key`, or null (one being stopped does not count).
@@ -179,16 +207,90 @@ func status_lines() -> PackedStringArray:
 	return out
 
 
-## Fetches a site the user just picked on the map: live following when possible, else its
-## newest scan; nothing when a job for it is already running.
-func start_site(site: String) -> void:
-	for j in running_jobs():
-		if j.site == site:
-			return
-	if can_live:
-		start_live(site)
+## Fetches `window` for `site`: live following of a live window (backfilling its span), or where
+## live cannot run (can_live), the scans of its extent so far; every scan of a fixed window.
+## Returns the running job for the same site and window instead (a live window of the same span
+## is the same window, however it has rolled on).
+func start_window(site: String, window: TimeWindow) -> Job:
+	for job in running_jobs():
+		if (
+			not job.stopped
+			and job.site == site
+			and job.window != null
+			and job.window.equals(window)
+		):
+			return _repeat(job.key)
+	var job: Job
+	if window.live and can_live:
+		job = start_live(site, floori(window.span_sec / 60.0))
 	else:
-		start_update(site)
+		job = start_update(site, "", window.iso_from(), window.iso_to())
+	job.window = window
+	return job
+
+
+## What live mode fetches for the site on screen (view_sites): its live `window`, and with
+## `neighbors` its nearest neighbours' for the mosaic. Live followers of any other site stop, so
+## clicking around does not pile them up; an empty site stops all followers (overview). Nothing for
+## a fixed window: the app never fetches historical data unless asked (F).
+func start_view(site: String, window: TimeWindow, neighbors := false) -> void:
+	if not window.live:
+		return
+	var keep: Array[String] = []
+	if not site.is_empty():
+		keep = view_sites(site, neighbors)
+	for job in running_jobs():
+		var live_request := job.kind == "live" or (job.window != null and job.window.live)
+		if live_request and not job.stopped and not keep.has(job.site):
+			stop(job)
+	for s in keep:
+		if running_job(request_key("live", s)) == null:
+			start_window(s, window)
+
+
+## The sites live mode follows for `site`: itself, and with `neighbors` on the desktop its
+## Mosaic.nearest_sites(). Not on web: a page keeps only about ten scans in memory (main.gd's
+## WEB_MEMORY_BUDGET_BYTES), and neighbours' scans would evict the loop on screen.
+func view_sites(site: String, neighbors := false) -> Array[String]:
+	var out: Array[String] = [site]
+	if neighbors and not web:
+		out.append_array(Mosaic.nearest_sites(site))
+	return out
+
+
+## Stops the running jobs that fetch outside `window` (the app's window changed; see within).
+## Returns them.
+func stop_outside(window: TimeWindow) -> Array[Job]:
+	var out: Array[Job] = []
+	for job in running_jobs():
+		var changed_span := (
+			job.kind == "live" and job.window != null and job.window.span_sec != window.span_sec
+		)
+		if (
+			not job.stopped
+			and (changed_span or not within(window, job.kind, job.at, job.from, job.to))
+		):
+			stop(job)
+			out.append(job)
+	return out
+
+
+## Whether a request (start_update's times, or kind "live") fetches inside `window`: live
+## following only in a live window; an update when its entire range lies in the window, or its time
+## (`at`; now for the newest scan) lies in it. A time that does not parse counts as inside
+## (nexrad rejects it and the job fails visibly).
+static func within(window: TimeWindow, kind: String, at := "", from := "", to := "") -> bool:
+	if kind == "live":
+		return window.live
+	var ranged := not from.is_empty() and not to.is_empty()
+	var lo := TimeWindow.parse_time(from if ranged else at)
+	var hi := TimeWindow.parse_time(to) if ranged else lo
+	if not ranged and at.strip_edges().is_empty():
+		lo = TimeWindow.clock()
+		hi = lo
+	if lo < 0 or hi < 0:
+		return true
+	return lo >= window.from and (window.live or hi <= window.to)
 
 
 func _start(kind: String, site: String, key: String, args: PackedStringArray) -> Job:
