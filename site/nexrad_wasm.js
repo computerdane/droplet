@@ -22,6 +22,24 @@ export function decode(raw, key) {
 }
 
 /**
+ * Complete archive scans from the last `minutes`, oldest first. These seed browser live
+ * following without presenting an in-progress chunk as historical data.
+ * @param {string} site
+ * @param {number} minutes
+ * @param {any} bucket
+ * @returns {Array<any>}
+ */
+export function keys_since(site, minutes, bucket) {
+    const ptr0 = passStringToWasm0(site, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.keys_since(ptr0, len0, minutes, bucket);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
  * `nexrad live SITE` against the chunks bucket: each time the in-progress volume grows,
  * `emit({name, volume_json, files, complete})` is called; `log(line)` gets the CLI's status
  * lines. `sleep()` runs between polls and returns false to stop. Blocks until then.
@@ -50,25 +68,6 @@ export function live(site, bucket, sleep, emit, log, hint_volume, hint_time_ms, 
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
-}
-
-/**
- * The most recent `n` complete archive volumes for `site`, oldest first (see
- * `archive::recent_keys`): what `live()` backfills before following the chunks bucket, so a
- * partial scan never shows up as if it were the history.
- * @param {string} site
- * @param {number} n
- * @param {any} bucket
- * @returns {Array<any>}
- */
-export function recent_keys(site, n, bucket) {
-    const ptr0 = passStringToWasm0(site, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.recent_keys(ptr0, len0, n, bucket);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return takeFromExternrefTable0(ret[0]);
 }
 
 /**
