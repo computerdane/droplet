@@ -15,7 +15,9 @@
 //!                                                 # (several sites: one thread each)
 //!
 //! Disk: update, live and `nexrad prune` keep data/ under $DROPLET_QUOTA_GB (default 20) by
-//! deleting the oldest volumes and raw files (see nexrad::prune).
+//! deleting the oldest volumes and raw files outside the app's time window (data/window.json,
+//! see nexrad::prune). `fetch`/`update` also protect the scans they just fetched;
+//! `nexrad prune --keep-from T --keep-to T` protects that range instead of the file's.
 //!
 //! Basemap (state/county lines and city labels, once):
 //!     nexrad basemap                              # -> data/basemap/
@@ -31,6 +33,7 @@ use std::process::exit;
 
 use nexrad::archive::{self, Selection};
 use nexrad::net::HttpBucket;
+use nexrad::prune::Window;
 use nexrad::time::Utc;
 use nexrad::{Result, basemap, chunks, level2, prune, synth, volume};
 
@@ -38,9 +41,15 @@ fn root() -> PathBuf {
     std::env::var_os("DROPLET_ROOT").map(PathBuf::from).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
 }
 
-/// Keeps `data/` under `$DROPLET_QUOTA_GB` (see nexrad::prune); reports on stderr.
-fn enforce_quota(root: &Path) {
-    match prune::prune_data(&root.join("data"), prune::quota_bytes()) {
+/// The app's current window from `data/window.json`, if fresh (see nexrad::prune).
+fn app_window(root: &Path) -> Option<Window> {
+    Window::read_file(&root.join("data"), Utc::now())
+}
+
+/// Keeps `data/` under `$DROPLET_QUOTA_GB` (see nexrad::prune), protecting scans inside
+/// `windows`; reports on stderr.
+fn enforce_quota(root: &Path, windows: &[Window]) {
+    match prune::prune_data(&root.join("data"), prune::quota_bytes(), windows) {
         Ok(Some(summary)) => eprintln!("{summary}"),
         Ok(None) => {}
         Err(e) => eprintln!("prune: {e}"),
@@ -53,7 +62,9 @@ fn usage() -> ! {
     eprintln!("       nexrad live SITE... [--interval SECONDS]");
     eprintln!("       nexrad derive [VOLUME_DIR...]");
     eprintln!("       nexrad basemap");
-    eprintln!("       nexrad prune                  (keep data/ under $DROPLET_QUOTA_GB, default 20)");
+    eprintln!("       nexrad prune [--keep-from T --keep-to T]");
+    eprintln!("                    (keep data/ under $DROPLET_QUOTA_GB, default 20, deleting the oldest");
+    eprintln!("                     scans outside the range, else outside data/window.json)");
     eprintln!("       nexrad synth [OUT_DIR]");
     exit(2)
 }
@@ -96,6 +107,9 @@ fn run(args: &[String]) -> Result<()> {
             let (site, sel) = parse_selection(rest)?;
             let bucket = HttpBucket::new(archive::BUCKET);
             let keys = archive::resolve_keys(&bucket, &site, &sel)?;
+            // Protect what this command fetched (and the requested range) besides the app's
+            // window, so a quota tighter than the range does not delete it right away.
+            let mut fetched: Vec<Utc> = [sel.start, sel.end].into_iter().flatten().collect();
             for (i, k) in keys.iter().enumerate() {
                 let path = if cmd == "update" {
                     // "[i/n]" progress on stderr and one decoded path per line on stdout; the Godot
@@ -105,10 +119,16 @@ fn run(args: &[String]) -> Result<()> {
                 } else {
                     archive::download(&bucket, k, &raw_dir, &mut err)?
                 };
+                fetched.extend(prune::scan_time(archive::file_name(k)));
+                fetched.extend(path.file_name().and_then(|n| prune::scan_time(&n.to_string_lossy())));
                 println!("{}", path.display());
                 let _ = std::io::stdout().flush();
             }
-            enforce_quota(&root);
+            let mut windows: Vec<Window> = app_window(&root).into_iter().collect();
+            if let (Some(&from), Some(&to)) = (fetched.iter().min(), fetched.iter().max()) {
+                windows.push(Window { from, to });
+            }
+            enforce_quota(&root, &windows);
         }
         "decode" => {
             if rest.is_empty() {
@@ -165,7 +185,7 @@ fn run(args: &[String]) -> Result<()> {
                             &mut log,
                         );
                         if !keys.is_empty() {
-                            enforce_quota(&root);
+                            enforce_quota(&root, app_window(&root).as_slice());
                         }
                     }
                     Err(e) => {
@@ -191,7 +211,7 @@ fn run(args: &[String]) -> Result<()> {
                     // Provisional backfill output is explicitly excluded by find_prior().
                     let dir = volume::write_volume(v, &volumes_dir)?;
                     if v.complete {
-                        enforce_quota(&root);
+                        enforce_quota(&root, app_window(&root).as_slice());
                     }
                     Ok(dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string())
                 };
@@ -218,7 +238,26 @@ fn run(args: &[String]) -> Result<()> {
                 r?;
             }
         }
-        "prune" => enforce_quota(&root),
+        "prune" => {
+            let (mut from, mut to) = (None, None);
+            let mut i = 0;
+            while i < rest.len() {
+                let value = rest.get(i + 1).ok_or_else(|| format!("{} needs a value", rest[i]))?;
+                match rest[i].as_str() {
+                    "--keep-from" => from = Some(Utc::parse_iso(value)?),
+                    "--keep-to" => to = Some(Utc::parse_iso(value)?),
+                    other => return Err(format!("unknown option {other}").into()),
+                }
+                i += 2;
+            }
+            let windows: Vec<Window> = match (from, to) {
+                (Some(from), Some(to)) if from <= to => vec![Window { from, to }],
+                (None, None) => app_window(&root).into_iter().collect(),
+                (Some(_), Some(_)) => return Err("--keep-from is after --keep-to".into()),
+                _ => return Err("--keep-from and --keep-to go together".into()),
+            };
+            enforce_quota(&root, &windows);
+        }
         "derive" | "winds" => {
             let dirs: Vec<PathBuf> = if rest.is_empty() {
                 let mut d: Vec<PathBuf> = std::fs::read_dir(&volumes_dir)?

@@ -117,10 +117,53 @@ func test_memory_budget() -> void:
 	check_eq(mem.names(), PackedStringArray([newest]), "the added volume stays")
 
 
-static func _copy(from: VolumeSource, to, name: String) -> void:
+## With a window, eviction takes volumes outside it first (oldest first), then the oldest inside
+## it, never the one just added; an open-ended window (live) keeps later scans inside.
+func test_memory_window_eviction() -> void:
+	var src: String = lib.volumes[0]
+	var a := "KTST_20130520_193000"
+	var b := "KTST_20130520_200000"
+	var c := "KTST_20260923_110000"
+	var d := "KTST_20260923_110500"
+	var e := "KTST_20260923_111000"
+	var mem = MemorySourceScript.new()
+	_copy(lib.source, mem, src, a)
+	var one: int = mem.size_bytes()
+	if not check(one > 0, "fixture volume has sweeps"):
+		return
+	mem.remove_volume(a)
+	mem.budget_bytes = 2 * one
+	mem.set_window(RadarLibrary.unix_of(a), RadarLibrary.unix_of("KTST_20130520_204500"))
+	for n in [a, b, c]:
+		_copy(lib.source, mem, src, n)
+	check_eq(_sorted(mem.names()), [b, c], "only window volumes to evict: the oldest goes")
+	_copy(lib.source, mem, src, d)
+	check_eq(_sorted(mem.names()), [b, d], "outside the window goes before inside")
+	mem.budget_bytes = one
+	_copy(lib.source, mem, src, e)
+	check_eq(_sorted(mem.names()), [e], "inside too when still over; the added volume stays")
+	mem.budget_bytes = 2 * one
+	mem.set_window(RadarLibrary.unix_of(c), MemorySourceScript.OPEN_END)
+	_copy(lib.source, mem, src, a)
+	_copy(lib.source, mem, src, "KTST_20260923_120000")
+	check_eq(
+		_sorted(mem.names()), [e, "KTST_20260923_120000"], "open-ended window keeps later scans"
+	)
+	mem.clear_window()
+	_copy(lib.source, mem, src, a)
+	check_eq(_sorted(mem.names()), [a, "KTST_20260923_120000"], "no window: oldest first")
+
+
+static func _sorted(names: PackedStringArray) -> Array:
+	var out := Array(names)
+	out.sort()
+	return out
+
+
+static func _copy(from: VolumeSource, to, name: String, as_name := "") -> void:
 	var text := from.read_meta(name)
 	var files := {}
 	for sw in (JSON.parse_string(text) as Dictionary)["sweeps"]:
 		for fd in sw["fields"].values():
 			files[fd["file"]] = from.read_file(name, fd["file"])
-	to.add_volume(name, text, files)
+	to.add_volume(as_name if as_name else name, text, files)

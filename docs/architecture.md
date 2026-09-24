@@ -21,6 +21,7 @@ nexrad basemap                                     # once: Census states/countie
 nexrad decode data/raw/*_V06*                      # re-decode everything (e.g. after decoder/dealias changes)
 nexrad derive [data/volumes/...]                   # (re)compute AZSHR/KDP/HCA, VAD winds, storm motion, CREF/ET/VIL without re-decoding
 nexrad prune                                       # keep data/ under $DROPLET_QUOTA_GB (default 20; update and live do it too)
+nexrad prune --keep-from T --keep-to T             # ... protecting that range instead of data/window.json
 nexrad synth                                       # synthetic fixture volumes -> tests/fixtures/volumes/
 cargo test                                         # Rust tests (decoder, dealias, VAD, chunks, live, fixtures); no network, ~6 s
 cargo clippy --all-targets && cargo fmt --check    # lint (rustfmt.toml: 140 columns)
@@ -189,9 +190,18 @@ gdformat scripts tests && gdlint scripts tests
 - `nexrad/src/volume.rs` – the on-disk format Godot reads: `rasterise()` bins radials, `write_volume()` (+
   `add_dealiased()` for DVEL, VAD winds), `read_meta`/`read_field`, `add_winds()`, `add_products()`. `grid.rs` is the polar
   float32 grid; `time.rs` the UTC/Julian/ISO conversions (no chrono).
-- `nexrad/src/prune.rs` – disk quota (native): oldest volume dirs / raw files by the time in their names go first, each
-  site's newest is kept; 85 % of `$DROPLET_QUOTA_GB` for volumes. Run after `update`, after each complete `live` volume
-  and by `nexrad prune`; the summary line carries no volume names (the fetch panel would take them for new volumes).
+- `nexrad/src/prune.rs` – disk quota (native): over budget, volume dirs / raw files go oldest first by the time in their
+  names, except scans inside a protected time window and each site's newest (kept with or without a window, for live
+  safety); 85 % of `$DROPLET_QUOTA_GB` for volumes. If the protected scans alone exceed it they are all kept and the
+  summary says the quota is still exceeded. Run after `update`/`fetch`, after each complete `live` volume and by
+  `nexrad prune`; the summary line carries no volume names (the fetch panel would take them for new volumes).
+  Protected windows: the app's `data/window.json` (below) if fresh; `update`/`fetch` add the range they fetched;
+  `nexrad prune --keep-from T --keep-to T` replaces the file's window.
+- `data/window.json` – the app's current time window for prune, written atomically when it changes (writer: follow-up
+  to stage A of #37): `{"from": "2013-05-20T19:30:00Z", "to": "2013-05-20T20:45:00Z", "live": false, "written":
+  "2026-09-23T12:00:00Z"}`. ISO 8601 UTC, `from <= to`, inclusive. `live` (optional, default false): the app writes
+  `from = now - span`, `to = now`, and prune protects `[now - span, open end]`, so it rolls without rewrites.
+  Ignored when unreadable, invalid, without `written`, or `written` is more than 24 h from now (stale after a crash).
 - `nexrad/src/main.rs` – CLI (hand-rolled args, same subcommands and stdout/stderr protocol the fetch panel
   parses). `data/` and `tests/` resolve under `$DROPLET_ROOT`, else the current directory.
 - `data/raw/` – downloaded archive files (gitignored). `data/volumes/` – decoded, `data/basemap/` – basemap buffers (all gitignored).
@@ -199,6 +209,9 @@ gdformat scripts tests && gdlint scripts tests
   is rewritten), `read_file()` / `read_half()` (thread-safe; preload workers call them). `DirSource` = a directory
   (`data/volumes`, or `volumes=`); `MemorySource` = volumes handed over whole (`add_volume(name, json, {file: bytes})`,
   the shape nexrad-wasm's `decode()` returns; the web backing store). Nothing else touches volume files.
+  Over its budget a MemorySource evicts volumes outside `set_window(from_unix, to_unix)` first, oldest first, then the
+  oldest inside; never the volume just added. `to_unix = MemorySource.OPEN_END` (-1) means no upper bound (a live
+  window; the caller moves `from_unix` as it rolls); `clear_window()` restores plain oldest-first eviction.
   Volumes are identified by name (`ICAO_YYYYMMDD_HHMMSS`) everywhere, not by path.
 - `scripts/radar_library.gd` – indexes a `VolumeSource`, per-site lists, sequences (split at >30 min gaps); `open(name)`.
 - `scripts/radar_volume.gd` – one volume, lazy float16 textures; `tilts(field)` = one sweep per
@@ -280,8 +293,9 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/app_options.gd` – `key=value` options from the command line, or the query string on web.
   With no site/time/fetch/event the web app opens the national composite without starting a site job;
   an explicit web URL without `fetch=` fetches the volume at `time=`, else starts live for `site=`.
-  On web main.gd uses a MemorySource (1400 MiB budget, oldest evicted, enough for roughly ten
-  full recent scans plus a partial) and a 192 MiB texture cache within the 2 GB wasm heap.
+  On web main.gd uses a MemorySource (1400 MiB budget, oldest evicted, outside the window first once the app
+  sets one; enough for roughly ten full recent scans plus a partial) and a 192 MiB texture cache within the 2 GB
+  wasm heap.
 - `scripts/basemap.gd` + `shaders/basemap*.gdshader*` – lon/lat line meshes projected on the GPU
   (azimuthal equidistant around the site, haversine form for float32); `Basemap.project()` is the CPU twin.
 - `scripts/hodograph.gd` – HUD hodograph (W): VAD profile coloured 0–1/1–3/3–6/6+ km, RM/LM, mean wind,
