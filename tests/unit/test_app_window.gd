@@ -142,7 +142,9 @@ func test_panel_event_sets_window_and_site() -> void:
 	_close(main)
 
 
-func test_overview_then_marker_click() -> void:
+## Viewing historical data never fetches by itself: a marker picked in a fixed window shows its
+## cached in-window scans, or says there are none and how to fetch them.
+func test_marker_click_in_a_fixed_window_fetches_nothing() -> void:
 	TimeWindow.clock_override = T0 + 360
 	var main := _launch(["site=KTST", "time=20240501_220000", "live=0"])
 	var before: TimeWindow = main.window
@@ -152,13 +154,148 @@ func test_overview_then_marker_click() -> void:
 	main._select_map_site("KTST")
 	check(not main.overview and main.site == "KTST", "the marker's site")
 	check_eq(main.frames, KTST, "its scans inside the window")
-	check(not main.live and main.window == before, "not live until its live job reports")
-	var job: Fetcher.Job = main.fetcher.jobs[-1]
-	check(job.kind == "live" and job.site == "KTST", "its live fetch started")
-	job.volumes.append(KTST[1])
-	main.fetcher.job_updated.emit(job)
-	check(main.live and main.window.live, "then live")
+	main._select_map_site("KTLX")
+	check_eq(main.site, "KTLX", "an uncached site")
+	check_eq(
+		main.hud.info.text, "KTLX  no scans in this window\nPress F to fetch, L for live", "info"
+	)
+	check(not main.live and main.window == before, "still the fixed window")
+	check_eq(main.fetcher.jobs.size(), 0, "no job")
+	check_eq(main.fetcher.launched.size(), 0, "nothing downloads")
+	main._toggle_mosaic()
+	check_eq(main.fetcher.launched.size(), 0, "nor for the mosaic")
 	TimeWindow.clock_override = -1
+	_close(main)
+
+
+## In live mode a marker click fetches the site's live window (its span backfilled) and follows
+## it; with the mosaic on, its nearest neighbours' too. Clicking again starts nothing new.
+func test_live_marker_click_fetches_the_site_and_its_neighbours() -> void:
+	TimeWindow.clock_override = T0 + 360
+	var main := _launch(["site=KTST", "window=live:20"])
+	main._show_overview()
+	check(main.window.live, "the overview keeps the live window")
+	main._select_map_site("KTLX")
+	check(main.live and main.window.live, "live straight away")
+	var args := PackedStringArray(["live", "KTLX", "--since-minutes", "20"])
+	check_eq(main.fetcher.launched[0], args, "its span")
+	check_eq(main.fetcher.launched.size(), 1, "one job")
+	main._toggle_mosaic()
+	var near := Mosaic.nearest_sites("KTLX")
+	check_eq(near.size(), 4, "four neighbours")
+	var sites := PackedStringArray()
+	for job: Fetcher.Job in main.fetcher.jobs:
+		check_eq(job.kind + " " + job.args[-1], "live 20", job.site + " follows the window")
+		sites.append(job.site)
+	check_eq(Array(sites), ["KTLX"] + Array(near), "the site, then the neighbours nearest first")
+	main._select_map_site("KTLX")
+	main._toggle_mosaic()
+	main._toggle_mosaic()
+	check_eq(main.fetcher.launched.size(), 5, "repeats start no job (#31)")
+	var followed := ["KTLX"] + Array(near)
+	var more := 0
+	for s in [near[0]] + Array(Mosaic.nearest_sites(near[0])):
+		more += 0 if followed.has(s) else 1
+	main._select_map_site(near[0])
+	check_eq(main.fetcher.launched.size(), 5 + more, "a neighbour's click: its new neighbours")
+	var job: Fetcher.Job = main.fetcher.jobs[0]
+	job.volumes.append("KTLX_20240501_220000")
+	main.fetcher.job_updated.emit(job)
+	check_eq(main.site, near[0], "another site's live volume does not move the view")
+	TimeWindow.clock_override = -1
+	_close(main)
+
+
+## Changing the window stops the jobs outside it: live following when it becomes fixed (L, a
+## step back, an event), a fetch for another time when the window moves on.
+func test_changing_the_window_stops_jobs_outside_it() -> void:
+	TimeWindow.clock_override = T0 + 360
+	var main := _launch(["site=KTST"])
+	main._select_map_site("KTST")
+	var live: Fetcher.Job = main.fetcher.jobs[0]
+	check(live.kind == "live" and live.running, "live following")
+	main._toggle_live()  # L: frozen
+	check(not main.window.live and live.stopped, "a fixed window stops live following")
+	main._toggle_live()  # L: live again
+	var again: Fetcher.Job = main.fetcher.jobs[-1]
+	check(again != live and again.kind == "live" and again.running, "and L restarts it")
+	main._step(-1)
+	check(not main.window.live and again.stopped, "so does a step back")
+	var panel: FetchPanel = main.hud.fetch_panel
+	panel.event_requested.emit("moore2013")
+	var event: Fetcher.Job = main.fetcher.jobs[-1]
+	check(event.running and event.site == "KTLX", "the event's fetch")
+	panel.update_requested.emit("KTLX", "", "2013-05-20T20:00Z", "2013-05-20T20:30Z")
+	var inside: Fetcher.Job = main.fetcher.jobs[-1]
+	check(event.running and inside.running, "a range inside the event's window keeps it")
+	panel.update_requested.emit("KTLX", "2013-05-31T23:20Z", "", "")
+	check(event.stopped and inside.stopped, "another time stops both")
+	check(main.window.equals(TimeWindow.around(1370042400)), "its half hour")
+	var at: Fetcher.Job = main.fetcher.jobs[-1]
+	main._toggle_live()
+	check(at.stopped, "the live window stops an old scan's fetch")
+	check_eq(main.fetcher.jobs[-1].kind, "live", "and follows the site live")
+	for job: Fetcher.Job in main.fetcher.running_jobs():
+		check(Fetcher.within(main.window, job.kind, job.at, job.from, job.to), job.describe())
+	TimeWindow.clock_override = -1
+	_close(main)
+
+
+## The fetch panel's modes set the window (and site) before their fetch runs.
+func test_panel_modes_set_the_window() -> void:
+	TimeWindow.clock_override = T0 + 360
+	var main := _launch(["site=KTST", "time=20240501_220000", "live=0"])
+	var panel: FetchPanel = main.hud.fetch_panel
+	panel.update_requested.emit("KTST", "", "2024-05-01T21:50Z", "2024-05-01T22:02Z")
+	check_eq(main.window.to_option(), "20240501_215000/20240501_220200", "Time range")
+	check_eq(main.frames, KTST.slice(0, 1), "its scans")
+	check_eq(main.fetcher.jobs[-1].from, "2024-05-01T21:50Z", "and its fetch")
+	panel.update_requested.emit("KTSU", "2024-05-01T22:02Z", "", "")
+	check(main.window.equals(TimeWindow.around(T0 + 120)), "Volume at time: ± 30 min")
+	check_eq(main.site, "KTSU", "the request's site")
+	check_eq(main.fetcher.jobs[-1].at, "2024-05-01T22:02Z", "its fetch")
+	panel.update_requested.emit("KTST", "not a time", "", "")
+	check(main.window.equals(TimeWindow.around(T0 + 120)), "a bad time keeps the window")
+	check_eq(main.fetcher.jobs[-1].at, "not a time", "nexrad says what is wrong")
+	panel.update_requested.emit("KTST", "", "", "")
+	check(main.window.live and main.live, "Newest volume: the live window")
+	check_eq(main.fetcher.jobs[-1].key, "update KTST newest", "its fetch")
+	check_eq(main.fetcher.running_jobs().size(), 4, "the others lie in the last hour too")
+	main._set_live(false)
+	panel.live_requested.emit("KTSU")
+	check(main.window.live and main.site == "KTSU", "Live: the live window and the site")
+	check_eq(main.fetcher.jobs[-1].key, "live KTSU", "followed")
+	TimeWindow.clock_override = -1
+	_close(main)
+
+
+## #31 across the window's paths: an event picked, then Start on the range it filled in, runs
+## one job; so does picking a site's marker twice.
+func test_window_fetches_keep_dedupe() -> void:
+	var main := _launch(["site=KTST", "time=20240501_220000", "live=0"])
+	var e := Events.find("elreno2013")
+	main.hud.fetch_panel.event_requested.emit(e["id"])
+	main.hud.fetch_panel.update_requested.emit(e["site"], "", e["from"], e["to"])
+	main.hud.fetch_panel.event_requested.emit(e["id"])
+	check_eq(main.fetcher.launched.size(), 1, "one process")
+	check(main.fetcher.jobs[0].describe().contains("already running"), "said so")
+	_close(main)
+
+
+## Startup never fetches a time outside the window: window= wins over event= and fetch=.
+func test_startup_fetch_stays_inside_the_window() -> void:
+	var main := _launch(["event=moore2013", "window=20240501_215000/20240501_222000"])
+	check_eq(main.fetcher.jobs.size(), 0, "the event is outside window=")
+	_close(main)
+	main = _launch(["site=KTST", "fetch=2013-05-20T20:00Z", "window=live"])
+	check_eq(main.fetcher.jobs.size(), 0, "fetch= outside the live window")
+	_close(main)
+	main = _launch(["site=KTST", "fetch=2024-05-01T22:00Z", "window=live"])
+	check_eq(main.fetcher.jobs.size(), 0, "the fixtures' day is not the last hour")
+	_close(main)
+	main = _launch(["site=KTST", "fetch=live", "window=live:15"])
+	var args := PackedStringArray(["live", "KTST", "--since-minutes", "15"])
+	check(main.fetcher.launched == ([args] as Array[PackedStringArray]), "live:15")
 	_close(main)
 
 

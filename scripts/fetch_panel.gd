@@ -2,9 +2,10 @@ class_name FetchPanel
 extends PanelContainer
 ## Dialog for fetching radar data from the UI (F): a site, and either its newest volume,
 ## the volume at a time, every volume in a time range, or live following; or one of the
-## notable events (Events). main.gd runs the requests through Fetcher and pushes job status
-## back with set_jobs(). The text fields are the only focusable controls in the HUD; closing
-## the panel releases focus so keyboard shortcuts work again.
+## notable events (Events). Each request also sets the app's time window (the range, the half
+## hour around the time, or live: TimeWindow.of_request) before main.gd runs it through Fetcher;
+## main pushes job status back with set_jobs(). The text fields are the only focusable controls
+## in the HUD; closing the panel releases focus so keyboard shortcuts work again.
 
 signal update_requested(site: String, at: String, from: String, to: String)
 signal live_requested(site: String)
@@ -14,7 +15,10 @@ signal event_requested(id: String)
 enum Mode { LATEST, AT, RANGE, LIVE }
 
 const MODE_NAMES := ["Newest volume", "Volume at time", "Time range", "Live"]
-const HELP := "Times are UTC, e.g. 2013-05-20T20:00Z. A range fetches every volume in it."
+const HELP := (
+	"Times are UTC, e.g. 2013-05-20T20:00Z. A range fetches every volume in it.\n"
+	+ "Each request sets the time window the timeline shows."
+)
 
 var _site: LineEdit
 var _mode: OptionButton
@@ -108,8 +112,9 @@ func _ready() -> void:
 	_update_fields()
 
 
-## Opens the panel with `site` and times around `unix_time` (the frame on screen) filled in.
-func open_panel(site: String, unix_time: int) -> void:
+## Opens the panel with `site` and times around `unix_time` (the frame on screen) filled in; a
+## range is the app's fixed `window` when it has one.
+func open_panel(site: String, unix_time: int, window: TimeWindow = null) -> void:
 	if not site.is_empty():
 		_site.text = site
 	if unix_time > 0:
@@ -117,8 +122,19 @@ func open_panel(site: String, unix_time: int) -> void:
 		_t2.text = _iso(unix_time + 30 * 60)
 		if _mode.selected == Mode.RANGE:
 			_t1.text = _iso(unix_time - 30 * 60)
+	if _mode.selected == Mode.RANGE and window != null and not window.live:
+		_t1.text = _iso(window.from)
+		_t2.text = _iso(window.to)
 	visible = true
 	_site.grab_focus()
+
+
+## F: opens the panel (open_panel) or closes it.
+func toggle(site: String, unix_time: int, window: TimeWindow) -> void:
+	if visible:
+		close_panel()
+	else:
+		open_panel(site, unix_time, window)
 
 
 func close_panel() -> void:

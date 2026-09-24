@@ -102,17 +102,63 @@ func test_failed_fetch_stays_visible() -> void:
 	fetcher.free()
 
 
-func test_start_site_once() -> void:
+func test_start_window_once() -> void:
 	var fetcher := _fake()
-	fetcher.start_site("KTLX")
-	fetcher.start_site("KTLX")
+	var live := TimeWindow.live_window(30)
+	fetcher.start_window("KTLX", live)
+	fetcher.start_window("KTLX", TimeWindow.live_window(30))
 	check_eq(fetcher.jobs.size(), 1, "one job for a site picked twice")
 	check_eq(fetcher.jobs[0].kind, "live", "live when the platform allows it")
+	check_eq(fetcher.jobs[0].args[-1], "30", "backfilling the window's span")
 	fetcher.can_live = false
-	fetcher.start_site("KOUN")
-	check_eq(fetcher.jobs[-1].kind + " " + fetcher.jobs[-1].site, "update KOUN", "else newest")
+	var fallback := fetcher.start_window("KOUN", live)
+	check_eq(fallback.kind + " " + fallback.site, "update KOUN", "else the window's scans so far")
+	check_eq([fallback.from, fallback.to], [live.iso_from(), live.iso_to()], "all of them")
+	TimeWindow.clock_override = live.to + 5
+	check(fetcher.start_window("KOUN", TimeWindow.live_window(30)) == fallback, "picked again")
+	TimeWindow.clock_override = -1
+	check_eq(fetcher.jobs.size(), 2, "one job each")
 	fetcher.stop_all()
 	fetcher.free()
+
+
+## Web startup (?site=X&window=...) fetches the window; time= alone fetches that scan.
+func test_web_startup_fetches_the_window() -> void:
+	var fetcher := RecordingFetcher.new()
+	var opts := {"site": "ktlx", "window": "20130520_193000/20130520_204500"}
+	var w := TimeWindow.from_options(opts)
+	AppOptions.start_fetch(opts, fetcher, w)
+	check_eq(fetcher.calls, ["window KTLX " + w.to_option()], "window=")
+	fetcher.calls.clear()
+	opts = {"site": "KTLX"}
+	AppOptions.start_fetch(opts, fetcher, TimeWindow.from_options(opts))
+	check_eq(fetcher.calls, ["window KTLX live"], "site= alone: live")
+	fetcher.calls.clear()
+	opts = {"site": "KTLX", "time": "20130520_200359"}
+	AppOptions.start_fetch(opts, fetcher, TimeWindow.from_options(opts))
+	check_eq(fetcher.calls, ["update KTLX 2013-05-20T20:03:59Z"], "time=: that scan")
+	fetcher.calls.clear()
+	opts = {"site": "KTLX", "event": "moore2013", "window": "live"}
+	AppOptions.start_fetch(opts, fetcher, TimeWindow.from_options(opts))
+	check_eq(fetcher.calls, [], "an event outside window= is not fetched")
+	fetcher.free()
+
+
+## Records what start_fetch asks for, as a web page would run it.
+class RecordingFetcher:
+	extends "res://scripts/fetcher.gd"
+	var calls: Array = []
+
+	func _init() -> void:
+		web = true
+
+	func start_window(site: String, window: TimeWindow) -> Job:
+		calls.append("window %s %s" % [site, window.to_option()])
+		return null
+
+	func start_update(site: String, at := "", _from := "", _to := "") -> Job:
+		calls.append("update %s %s" % [site, at])
+		return null
 
 
 func _fake() -> TestFetcher.FakeFetcher:

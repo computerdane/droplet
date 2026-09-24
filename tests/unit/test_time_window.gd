@@ -271,3 +271,16 @@ func test_write_file() -> void:
 		DirAccess.remove_absolute(f)
 	DirAccess.remove_absolute(dir.path_join("data"))
 	DirAccess.remove_absolute(dir)
+
+
+## The fetch panel's requests (start_update's times) open these windows.
+func test_of_request() -> void:
+	var range := TimeWindow.of_request("", "2013-05-20T19:30Z", "2013-05-20T20:45Z")
+	check_eq(range.to_option(), "20130520_193000/20130520_204500", "a range")
+	var at := TimeWindow.of_request("2013-05-20T20:00Z", "", "")
+	check(at.equals(TimeWindow.around(TimeWindow.parse_time("2013-05-20T20:00Z"))), "± 30 min")
+	var newest := TimeWindow.of_request("", "", "", 25)
+	check(newest.live and newest.span_sec == 1500, "the newest: the live window")
+	check(TimeWindow.of_request("junk", "", "") == null, "a bad time")
+	check(TimeWindow.of_request("", "2013-05-20T21:00Z", "2013-05-20T20:00Z") == null, "reversed")
+	check(TimeWindow.of_request("", "2013-05-20T21:00Z", "") == null, "half a range")

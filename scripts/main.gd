@@ -28,8 +28,10 @@ extends Node
 ## hint expanded, as H does)
 ##
 ## On web the options come from the page's query string instead (?site=KTLX&time=...).
-## With no explicit site, time or fetch the app opens on NOAA's live US composite;
-## clicking a station fetches its recent loop and follows live updates.
+## With no explicit site, time or fetch the app opens on NOAA's live US composite. Fetches
+## follow the window (Fetcher.start_window, stop_outside): in live mode clicking a station (or L)
+## fetches its live window and follows it, with the mosaic on its nearest neighbours' too; a
+## fixed window never fetches by itself (F does), and changing the window stops jobs outside it.
 ## Readouts use sweep files; loop and mosaic volumes preload via VolumeCache.
 
 const LIVE_RESCAN_SEC := 3.0
@@ -217,7 +219,7 @@ func _ready() -> void:
 			live = false
 		_set_live(opts.get("live", "1" if live else "0") == "1")
 		_set_playing(opts.get("play", "0") == "1")
-		AppOptions.start_fetch(opts, fetcher)
+		AppOptions.start_fetch(opts, fetcher, window)
 	loop_export.setup(self, opts)
 
 
@@ -237,7 +239,7 @@ func _connect_hud() -> void:
 			_go_to(_sequence().x + i)
 	)
 	hud.speed_selected.connect(_set_fps)
-	hud.live_toggled.connect(func() -> void: _set_live(not live))
+	hud.live_toggled.connect(_toggle_live)
 	hud.site_selected.connect(_pick_site)
 	hud.field_selected.connect(_set_field)
 	hud.view_toggled.connect(func() -> void: _set_view_3d(not view_is_3d))
@@ -251,16 +253,19 @@ func _connect_hud() -> void:
 	hud.fetch_toggled.connect(_toggle_fetch_panel)
 	hud.fetch_panel.update_requested.connect(
 		func(s: String, at: String, from: String, to: String) -> void:
+			_open(s, TimeWindow.of_request(at, from, to, live_minutes))
 			fetcher.start_update(s, at, from, to)
 	)
-	hud.fetch_panel.live_requested.connect(func(s: String) -> void: fetcher.start_live(s))
+	hud.fetch_panel.live_requested.connect(
+		func(s: String) -> void:
+			_open(s, TimeWindow.live_window(live_minutes))
+			_fetch_live()
+	)
 	hud.fetch_panel.stop_requested.connect(fetcher.stop_all)
 	hud.fetch_panel.event_requested.connect(
 		func(id: String) -> void:
 			var event := Events.find(id)
-			_set_window(TimeWindow.of_event(event))
-			if site != event["site"]:
-				_select_site(event["site"])
+			_open(event["site"], TimeWindow.of_event(event))
 			Events.start(event, fetcher)
 	)
 	if not fetcher.can_live:
@@ -301,10 +306,28 @@ func _select_site(s: String) -> void:
 		_update_info()
 
 
-## Picking a marker works even before that site's first volume has been downloaded.
+## Picking a marker works even before that site's first volume has been downloaded. In live
+## mode it fetches the site's live window (_fetch_live); a fixed window shows what is cached.
 func _select_map_site(s: String) -> void:
 	_pick_site(s)
-	fetcher.start_site(s)
+	if window.live:
+		_set_live(true)
+		_fetch_live()
+
+
+## Live mode fetches what it shows: the site's live window and, with the mosaic on, its nearest
+## neighbours' (Fetcher.start_view). Never a fixed window's: F fetches that.
+func _fetch_live() -> void:
+	if not overview:
+		fetcher.start_view(site, window, mosaic)
+
+
+## A fetch the user asked for (the fetch panel) opens its window (null: it stays) and site.
+func _open(s: String, w: TimeWindow) -> void:
+	if w != null:
+		_set_window(w)
+	if site != s:
+		_select_site(s)
 
 
 func _show_overview() -> void:
@@ -385,6 +408,8 @@ func _set_section_on(on: bool) -> void:
 
 func _toggle_mosaic() -> void:
 	mosaic = not mosaic
+	if mosaic:
+		_fetch_live()
 	_refresh()
 
 
@@ -504,6 +529,12 @@ func _step_tilt(delta: int) -> void:
 	_refresh()
 
 
+## L: live on also fetches the live window (_fetch_live); off freezes it, stopping live jobs.
+func _toggle_live() -> void:
+	_set_live(not live)
+	_fetch_live()
+
+
 ## Live following is on exactly when the window is live (outside the overview, which has no
 ## site to follow): turning it on opens a fresh live window, turning it off freezes the window
 ## where it is, so the loop on screen stays (L, stepping back, a scrub, a finished update).
@@ -522,10 +553,12 @@ func _set_live(on: bool) -> void:
 	_update_playback()
 
 
-## Switches to `w`: the site's frames are those inside it (the shown scan stays if it is, else
-## the nearest inside shows), live following matches it, the HUD names it and prune learns it.
+## Switches to `w`: jobs fetching outside it stop (Fetcher.stop_outside), the site's frames are
+## those inside it (the shown scan stays if it is, else the nearest inside shows), live following
+## matches it, the HUD names it and prune learns it.
 func _set_window(w: TimeWindow) -> void:
 	window = w
+	fetcher.stop_outside(w)
 	if w.live:
 		live_minutes = w.span_sec / 60
 	hud.set_window(w.label())
@@ -580,15 +613,11 @@ func _sequence() -> Vector2i:
 
 
 func _toggle_fetch_panel() -> void:
-	if hud.fetch_panel.visible:
-		hud.fetch_panel.close_panel()
-	else:
-		var t := RadarLibrary.unix_of(volume.name) if volume != null else 0
-		hud.fetch_panel.open_panel(site, t)
+	hud.fetch_panel.toggle(site, RadarLibrary.unix_of(volume.name) if volume != null else 0, window)
 
 
-## New volumes from a running job show up in the library straight away. A live job for
-## another site takes over the view once its first volume exists.
+## New volumes from a running job show up in the library straight away. The first volume of a
+## live job for the site on screen turns live following on (a neighbour's never moves the view).
 func _on_job_updated(job: Fetcher.Job) -> void:
 	var lines := PackedStringArray()
 	for j in fetcher.jobs:
@@ -599,8 +628,7 @@ func _on_job_updated(job: Fetcher.Job) -> void:
 	if job.volumes.size() != job.get_meta("seen", 0):
 		job.set_meta("seen", job.volumes.size())
 		_rescan()
-		if job.kind == "live" and job.volumes.size() == 1:
-			_select_site(job.site)
+		if job.kind == "live" and job.volumes.size() == 1 and job.site == site and not job.stopped:
 			_set_live(true)
 	_update_info()
 
@@ -666,10 +694,13 @@ func _follow_fetch(name: String) -> bool:
 
 ## A finished update jumps to the last volume it fetched (a notable event: to its peak). What
 ## it fetched must be visible: when that lies outside the window, the window becomes the job's
-## range, else the half hour around it (fetch=latest from a radar quiet for over an hour).
+## range, else the half hour around it (fetch=latest from a radar quiet for over an hour). A
+## live window's fetch (Fetcher.start_window without live following) leaves live mode on.
 func _on_job_finished(job: Fetcher.Job) -> void:
 	print("fetch: ", job.describe())  # the web smoke test waits for this line
 	if job.kind != "update" or job.stopped or job.volumes.is_empty():
+		return
+	if job.window != null and job.window.live:  # live mode where live following cannot run
 		return
 	var t: int = job.get_meta("jump_to", RadarLibrary.unix_of(job.volumes[-1]))
 	if not window.contains(t):
@@ -844,19 +875,8 @@ func _update_winds() -> void:
 		motion = _auto_storm["storm_motion"]
 	var title := "VAD winds  %s %s  (m/s)" % [volume.icao(), RadarLibrary.clock(volume.name)]
 	var in_use := _storm_motion() if srm_on else Vector2.INF
-	hud.hodograph.show_winds(own.get("wind_profile"), motion, in_use, title, _storm_source())
-
-
-## Where the storm motion in effect comes from, for the info text and hodograph.
-func _storm_source() -> String:
-	var m := Hodograph.from_dir_speed(_storm_motion())
-	var what := "storm from %03d° at %d m/s" % [roundi(m.x) % 360, roundi(m.y)]
-	if not (srm_auto and not _auto_storm.is_empty()):
-		return what + " (manual)"
-	var src: String = _auto_storm["name"]
-	if volume != null and src == volume.name:
-		return what + " (Bunkers RM)"
-	return what + " (Bunkers RM, %s %s)" % [RadarLibrary.site_of(src), RadarLibrary.clock(src)]
+	var source := InfoText.storm_source(self)
+	hud.hodograph.show_winds(own.get("wind_profile"), motion, in_use, title, source)
 
 
 ## Readout of whatever is under the mouse: the section panel, the VWP, or the 2D view
@@ -1020,9 +1040,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_BRACKETRIGHT:
 			_cycle_speed(1)
 		KEY_L:
-			_set_live(not live)
-		KEY_S:
-			_cycle_site()
+			_toggle_live()
+		KEY_S:  # the next cached site
+			var sites := library.sites()
+			if sites.size() > 1:
+				_pick_site(sites[(sites.find(site) + 1) % sites.size()])
 		KEY_R:
 			if view_is_3d:
 				view_3d.camera.reset()
@@ -1075,9 +1097,3 @@ func _unhandled_input(event: InputEvent) -> void:
 				_cycle_fields(RadarVolume.PRODUCTS + [RotationTracks.VIEW_FIELD])
 			elif e.keycode == KEY_0:
 				_cycle_fields(["KDP", "AZSHR", "HCA"])
-
-
-func _cycle_site() -> void:
-	var sites := library.sites()
-	if sites.size() > 1:
-		_pick_site(sites[(sites.find(site) + 1) % sites.size()])

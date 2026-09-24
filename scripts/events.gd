@@ -165,10 +165,11 @@ static func unix(iso: String) -> int:
 	return Time.get_unix_time_from_datetime_string(t + ":00" if t.length() == 16 else t)
 
 
-## Starts fetching `event`'s loop; main follows it as it arrives (takes_over) and jumps to its
-## peak when the job finishes ("jump_to"). The caller sets the window (main._set_window).
+## Fetches `event`'s window (TimeWindow.of_event, Fetcher.start_window): main follows its scans
+## as they arrive (takes_over) and jumps to its peak when the job finishes ("jump_to"). Main opens
+## that window first (_open), which stops the jobs outside it.
 static func start(event: Dictionary, fetcher: Fetcher) -> Fetcher.Job:
-	var job := fetcher.start_update(event["site"], "", event["from"], event["to"])
+	var job := fetcher.start_window(event["site"], TimeWindow.of_event(event))
 	if job != null:
 		job.set_meta("jump_to", unix(event["peak"]))
 	return job

@@ -49,6 +49,20 @@ static func of_event(event: Dictionary) -> TimeWindow:
 	return fixed(Events.unix(event["from"]), Events.unix(event["to"]))
 
 
+## The window a fetch request (the fetch panel's, as start_update takes it) opens: its range,
+## the half hour around its time (as time=), or for the newest scan the live window of `minutes`
+## (as fetch=latest). Null when a time does not parse (nexrad rejects it; the window stays).
+static func of_request(
+	at: String, p_from: String, p_to: String, minutes := DEFAULT_LIVE_MIN
+) -> TimeWindow:
+	if not p_from.strip_edges().is_empty() or not p_to.strip_edges().is_empty():
+		return parse_option(p_from.strip_edges() + "/" + p_to.strip_edges())
+	if not at.strip_edges().is_empty():
+		var t := parse_time(at)
+		return around(t) if t >= 0 else null
+	return live_window(minutes)
+
+
 ## The last `minutes` up to `now` (default: the system clock).
 static func live_window(minutes := DEFAULT_LIVE_MIN, now := -1) -> TimeWindow:
 	var w := TimeWindow.new()

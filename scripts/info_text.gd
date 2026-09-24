@@ -53,7 +53,7 @@ static func build(main: Node) -> String:
 	else:
 		lines.append("zoom %.2f px/km   cache %d MB" % [main.view_2d.zoom(), cache_mb])
 	if main._storm_vector() != Vector2.ZERO:
-		lines.append("storm-relative: " + main._storm_source())
+		lines.append("storm-relative: " + storm_source(main))
 	var ml = volume.meta.get("melting_layer")
 	if Colormaps.is_categorical(field_name) and ml is Dictionary:
 		lines.append(
@@ -84,10 +84,27 @@ static func _no_volume(main: Node) -> String:
 	if fetcher.web:
 		help = "Press F to fetch radar data"
 	var library: RadarLibrary = main.library
-	if not library.for_site(main.site).is_empty():  # cached, but not in the window
+	# Cached, but not in the window; or nothing cached for a site picked in a fixed window, which
+	# never fetches by itself.
+	var cached := not library.for_site(main.site).is_empty()
+	if not main.site.is_empty() and (cached or not main.window.live):
 		var more := "" if main.window.live else ", L for live"
 		return "%s  no scans in this window\nPress F to fetch%s" % [main.site, more]
 	return "No volumes in %s\n%s" % [library.source.describe(), help]
+
+
+## Where the storm motion in effect comes from (main._storm_motion), for the info text and the
+## hodograph.
+static func storm_source(main: Node) -> String:
+	var m := Hodograph.from_dir_speed(main._storm_motion())
+	var what := "storm from %03d° at %d m/s" % [roundi(m.x) % 360, roundi(m.y)]
+	var auto: Dictionary = main._auto_storm
+	if not (main.srm_auto and not auto.is_empty()):
+		return what + " (manual)"
+	var src: String = auto["name"]
+	if main.volume != null and src == main.volume.name:
+		return what + " (Bunkers RM)"
+	return what + " (Bunkers RM, %s %s)" % [RadarLibrary.site_of(src), RadarLibrary.clock(src)]
 
 
 static func _view_3d_line(main: Node, cache_mb: int) -> String:
