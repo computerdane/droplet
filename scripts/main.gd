@@ -181,8 +181,8 @@ func _ready() -> void:
 		var event := Events.find(opts.get("event", ""))
 		# An event's site shows even before its scans exist (its fetch starts below), not the
 		# site last fetched.
-		var have: bool = sites.has(want_site) or want_site == event.get("site", "")
-		_select_site(want_site if have else library.site_of(library.latest()))
+		var pick := Events.startup_site(event, want_site, sites)
+		_select_site(pick if not pick.is_empty() else library.site_of(library.latest()))
 		if opts.has("time"):
 			var t := RadarLibrary.unix_of("X_" + opts["time"])
 			var i := RadarLibrary.nearest_in_time(frames, t)
