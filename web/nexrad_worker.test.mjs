@@ -7,14 +7,14 @@ const source = (await readFile(new URL("./nexrad_worker.js", import.meta.url), "
   .replace(/^import .* from "\.\/nexrad_wasm.js";$/m, "")
   .replaceAll("import.meta.url", '"https://example.test/nexrad_worker.js"');
 
-function harness({ keys = ["a", "b", "c"], failed = [], incomplete = [], unavailable = false, failFinal = [], pauseAt = null } = {}) {
-  const messages = [], fetched = [], references = [];
+function harness({ keys = ["a", "b", "c"], minutes = 60, failed = [], incomplete = [], unavailable = false, failFinal = [], pauseAt = null } = {}) {
+  const messages = [], fetched = [], references = [], followed = [];
   const decoded = new Map();
   const context = vm.createContext({
     URL, navigator: { hardwareConcurrency: 4 },
     postMessage: (msg) => messages.push(structuredClone(msg)),
-    recent_keys: (_site, count) => {
-      assert.equal(count, 11);
+    keys_since: (_site, since) => {
+      assert.equal(since, minutes);
       if (unavailable) throw new Error("offline");
       return keys;
     },
@@ -33,6 +33,7 @@ function harness({ keys = ["a", "b", "c"], failed = [], incomplete = [], unavail
       files: new Map([["s00_DVEL.bin", new Uint8Array(bytes)]]),
       };
     },
+    live: (...args) => { followed.push(args); },
     redealias: (meta, files, priorMeta, priorFiles) => {
       references.push([JSON.parse(meta).name, JSON.parse(priorMeta).name]);
       return { volume_json: meta, files: new Map([["s00_DVEL.bin", new Uint8Array([
@@ -40,8 +41,8 @@ function harness({ keys = ["a", "b", "c"], failed = [], incomplete = [], unavail
       ])]]) };
     },
   });
-  vm.runInContext(source + "\nfetchRaw = mockFetch; globalThis.run = backfill; globalThis.seed = () => prior;", context);
-  return { context, messages, fetched, references };
+  vm.runInContext(source + "\nfetchRaw = mockFetch; globalThis.run = backfill; globalThis.seed = () => prior; globalThis.follow = follow;", context);
+  return { context, messages, fetched, references, followed };
 }
 
 test("backfill arrives newest first, finalizes chronologically and seeds the newest final volume", async () => {
@@ -90,4 +91,25 @@ test("an unavailable archive leaves live following unseeded without throwing", a
   assert.equal(h.context.seed(), null);
   assert.match(h.messages[0].line, /backfill unavailable: offline/);
   assert.equal(h.fetched.length, 0);
+});
+
+test("live backfills the app's live window: since_minutes reaches keys_since", async () => {
+  const h = harness({ minutes: 20 });
+  await h.context.follow({ site: "KTST", since_minutes: 20 });
+  assert.deepEqual(h.fetched, ["c", "b", "a"]);
+  assert.equal(h.followed.length, 1, "then follows the chunks bucket");
+  assert.equal(JSON.parse(h.followed[0][8]).name, "c", "seeded by the backfill's newest final volume");
+  const d = harness();
+  await d.context.follow({ site: "KTST" });
+  assert.equal(d.followed.length, 1, "60 min when the request does not say");
+});
+
+test("a long live window backfills only its newest BACKFILL_MAX scans", async () => {
+  const keys = Array.from({ length: 25 }, (_, i) => `k${String(i).padStart(2, "0")}`);
+  const h = harness({ keys, minutes: 600 });
+  await h.context.run("KTST", 600);
+  assert.equal(h.fetched.length, 20);
+  assert.equal(h.fetched[0], "k24", "newest first");
+  assert.equal(h.fetched.at(-1), "k05");
+  assert.match(h.messages[0].line, /the newest 20 of 25 scans in the last 600 min/);
 });

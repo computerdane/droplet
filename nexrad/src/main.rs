@@ -11,8 +11,11 @@
 //!                                                 # the derived fields, products and HCA (alias: winds)
 //!
 //! Live (chunks bucket, seconds behind real time):
-//!     nexrad live KTLX [KFDR ...] [--interval 5]  # poll, decode partial volumes as they grow
-//!                                                 # (several sites: one thread each)
+//!     nexrad live KTLX [KFDR ...] [--interval 5] [--since-minutes 60]
+//!                                                 # backfill the scans of the last 60 min from the
+//!                                                 # archive, then poll the chunks bucket and decode
+//!                                                 # partial volumes as they grow (several sites: one
+//!                                                 # thread each)
 //!
 //! Disk: update, live and `nexrad prune` keep data/ under $DROPLET_QUOTA_GB (default 20) by
 //! deleting the oldest volumes and raw files (see nexrad::prune).
@@ -50,7 +53,7 @@ fn enforce_quota(root: &Path) {
 fn usage() -> ! {
     eprintln!("usage: nexrad latest|fetch|update SITE [--at T | --from T --to T]");
     eprintln!("       nexrad decode PATH...");
-    eprintln!("       nexrad live SITE... [--interval SECONDS]");
+    eprintln!("       nexrad live SITE... [--interval SECONDS] [--since-minutes MINUTES]");
     eprintln!("       nexrad derive [VOLUME_DIR...]");
     eprintln!("       nexrad basemap");
     eprintln!("       nexrad prune                  (keep data/ under $DROPLET_QUOTA_GB, default 20)");
@@ -126,11 +129,19 @@ fn run(args: &[String]) -> Result<()> {
                 return Err("missing SITE".into());
             }
             let mut interval = 5.0f64;
+            // The app passes its live window's length (TimeWindow.span_sec) so the backfill covers it.
+            let mut since_minutes = archive::DEFAULT_BACKFILL_MINUTES;
             let mut i = sites.len();
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--interval" => {
                         interval = rest.get(i + 1).ok_or("--interval needs a value")?.parse().map_err(|_| "--interval: not a number")?;
+                        i += 2;
+                    }
+                    "--since-minutes" => {
+                        let value = rest.get(i + 1).ok_or("--since-minutes needs a value")?;
+                        since_minutes = value.parse().map_err(|_| "--since-minutes: not a whole number of minutes")?;
+                        since_minutes = since_minutes.min(archive::MAX_BACKFILL_MINUTES);
                         i += 2;
                     }
                     other => return Err(format!("unknown option {other}").into()),
@@ -148,11 +159,14 @@ fn run(args: &[String]) -> Result<()> {
                 let mut out = std::io::LineWriter::new(std::io::stdout());
                 let mut log = std::io::LineWriter::new(std::io::stderr());
 
-                // Publish newest first, then finalize the temporal chain oldest first.
+                // The archive scans of the last `since_minutes` (the app's live window): published newest
+                // first, then the temporal chain is finalized oldest first.
                 // A temporarily unavailable mirror must not prevent chunk following.
                 let mut last_backfilled = None;
                 let archive_bucket = HttpBucket::new(archive::BUCKET);
-                match archive::recent_keys(&archive_bucket, site, archive::BACKFILL_COUNT) {
+                let now = Utc::now();
+                let since = now.add_secs(-60.0 * f64::from(since_minutes));
+                match archive::keys_since(&archive_bucket, site, since, now) {
                     Ok(keys) => {
                         last_backfilled = archive::backfill(
                             &archive_bucket,

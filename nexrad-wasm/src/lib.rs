@@ -130,12 +130,14 @@ pub fn resolve_keys(site: &str, at: &str, from: &str, to: &str, bucket: &JsValue
     Ok(keys.iter().map(|k| JsValue::from(k.as_str())).collect())
 }
 
-/// The most recent `n` complete archive volumes for `site`, oldest first (see
-/// `archive::recent_keys`): what `live()` backfills before following the chunks bucket, so a
-/// partial scan never shows up as if it were the history.
+/// The complete archive volumes of `site` from the last `minutes` (the app's live window),
+/// oldest first (see `archive::keys_since`): what `live()` backfills before following the chunks
+/// bucket, so a partial scan never shows up as if it were the history.
 #[wasm_bindgen]
-pub fn recent_keys(site: &str, n: usize, bucket: &JsValue) -> Result<Array, JsError> {
-    let keys = archive::recent_keys(&JsBucket::new(bucket)?, &site.to_uppercase(), n).map_err(|e| JsError::new(&e.to_string()))?;
+pub fn keys_since(site: &str, minutes: u32, bucket: &JsValue) -> Result<Array, JsError> {
+    let now = Utc::now();
+    let start = now.add_secs(-60.0 * f64::from(minutes.min(archive::MAX_BACKFILL_MINUTES)));
+    let keys = archive::keys_since(&JsBucket::new(bucket)?, &site.to_uppercase(), start, now).map_err(|e| JsError::new(&e.to_string()))?;
     Ok(keys.iter().map(|k| JsValue::from(k.as_str())).collect())
 }
 

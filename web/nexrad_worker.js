@@ -1,14 +1,15 @@
 // The web build's stand-in for the `nexrad` CLI (scripts/fetcher.gd starts one module worker per
 // job and terminates it to stop, as it kills a process on the desktop). Posted one JSON request:
 //   {"cmd": "update", "site": "KTLX", "at": "", "from": "", "to": ""}   (ISO times or "")
-//   {"cmd": "live", "site": "KTLX", "interval": 5, "hint": {"volume": 417, "time_ms": ...}}
+//   {"cmd": "live", "site": "KTLX", "interval": 5, "since_minutes": 60, "hint": {"volume": 417, "time_ms": ...}}
 // Answers with {type: "line", line} (the CLI's output lines, "[i/n] file" progress included),
 // {type: "volume", name, volume_json, names, buffers} (sweep file names and their float16
 // ArrayBuffers, transferred), and finally {type: "done"} or {type: "error", message}. Live also
 // sends {type: "ring", volume, time_ms} as each volume begins: where the chunks ring was, which
 // the page keeps (localStorage) and passes back as `hint` so the next visit skips the search.
-// Before following the chunks bucket, live() first backfills the newest plus 10 older complete archive
-// volumes (recent_keys(), the archive mirror, never an in-progress scan) newest first, then finalizes them chronologically
+// Before following the chunks bucket, live() first backfills the complete archive volumes of the last
+// `since_minutes` (the app's live window, default 60; keys_since(), the archive mirror, never an
+// in-progress scan, at most BACKFILL_MAX of the newest) newest first, then finalizes them chronologically
 // through the same "volume"/"line" protocol, one decode+download failure logged and skipped
 // rather than aborting the backfill (an unreachable mirror does not block live following either).
 //
@@ -25,7 +26,7 @@
 // XHR, which workers may use, because the key selection and live loop in nexrad-wasm are blocking
 // Rust. Raw archive files are immutable and kept in the Cache API (the newest RAW_CACHE_FILES),
 // so revisiting an event costs only the decode.
-import init, { decode, live, redealias, resolve_keys, recent_keys } from "./nexrad_wasm.js";
+import init, { decode, keys_since, live, redealias, resolve_keys } from "./nexrad_wasm.js";
 
 const ARCHIVE = "https://unidata-nexrad-level2.s3.amazonaws.com";
 const CHUNKS = "https://unidata-nexrad-level2-chunks.s3.amazonaws.com";
@@ -34,8 +35,11 @@ const RAW_CACHE = `droplet-raw-v1-${encodeURIComponent(new URL("./", import.meta
 const RAW_CACHE_FILES = 300; // 7 to 11 MB each
 // Decoders per update job; Godot's renderer and its worker threads need cores too.
 const POOL_SIZE = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 2));
-// Recent complete archive volumes live() backfills before following the chunks bucket.
-const BACKFILL_COUNT = 11;
+// How far back live() backfills unless the request says (TimeWindow.DEFAULT_LIVE_MIN), and the
+// most volumes it holds for that: the raw files wait in memory until finalized, and the page keeps
+// only about ten decoded scans (MemorySource's budget), so a long live window gets its newest.
+const BACKFILL_MINUTES = 60;
+const BACKFILL_MAX = 20;
 
 const line = (text) => postMessage({ type: "line", line: text });
 const fileName = (key) => key.split("/").pop();
@@ -169,15 +173,19 @@ async function update({ site, at = "", from = "", to = "", workers = POOL_SIZE }
 }
 
 // Deliver newest first without a prior, then finalize oldest first from the same raw bytes.
-// Holding raw bytes is bounded by BACKFILL_COUNT; decoded volumes are transferred immediately.
+// Holding raw bytes is bounded by BACKFILL_MAX; decoded volumes are transferred immediately.
 // Do not let provisional volumes become temporal references, even if a later decode fails.
-async function backfill(site) {
+async function backfill(site, minutes = BACKFILL_MINUTES) {
   let keys;
   try {
-    keys = recent_keys(site, BACKFILL_COUNT, bucket(ARCHIVE));
+    keys = keys_since(site, minutes, bucket(ARCHIVE));
   } catch (e) {
     line(`${site}: backfill unavailable: ${e?.message ?? e}`);
     return;
+  }
+  if (keys.length > BACKFILL_MAX) {
+    line(`${site}: backfill: the newest ${BACKFILL_MAX} of ${keys.length} scans in the last ${minutes} min`);
+    keys = keys.slice(-BACKFILL_MAX);
   }
   const raw = new Map();
   for (const [i, key] of [...keys].reverse().entries()) {
@@ -209,11 +217,11 @@ async function backfill(site) {
   }
 }
 
-async function follow({ site, interval = 5, hint = null }) {
+async function follow({ site, interval = 5, hint = null, since_minutes = BACKFILL_MINUTES }) {
   if (typeof SharedArrayBuffer === "undefined") {
     throw new Error("live needs a cross-origin isolated page (COOP/COEP headers)");
   }
-  await backfill(site);
+  await backfill(site, since_minutes);
   const nap = new Int32Array(new SharedArrayBuffer(4));
   const sleep = () => {
     Atomics.wait(nap, 0, 0, interval * 1000);

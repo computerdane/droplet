@@ -92,31 +92,27 @@ pub fn keys_between(bucket: &dyn Bucket, site: &str, start: Utc, end: Utc) -> Re
     Ok(out)
 }
 
-/// Volumes to backfill before following live chunks: enough to give history without a slow
-/// startup (`nexrad live`, `nexrad-wasm::live`).
-pub const BACKFILL_COUNT: usize = 11; // newest plus latest-1 through latest-10
+/// How far back `nexrad live` backfills by default: the app's default live window
+/// (`TimeWindow.DEFAULT_LIVE_MIN`, 60 min, about ten scans in precipitation modes).
+pub const DEFAULT_BACKFILL_MINUTES: u32 = 60;
+/// The longest backfill `nexrad live --since-minutes` takes (a week: seven daily listings).
+pub const MAX_BACKFILL_MINUTES: u32 = 7 * 24 * 60;
 
-/// The most recent `n` complete archive volumes for `site`, oldest first. The archive mirror
-/// only ever holds finished uploads, so this never returns an in-progress scan (unlike the
-/// chunks bucket). Volumes run every 4-10 min, so `n` usually needs only today's keys; scans
-/// back a further week at most (VCPs with long clear-air volumes, or just after midnight UTC).
-pub fn recent_keys(bucket: &dyn Bucket, site: &str, n: usize) -> Result<Vec<String>> {
-    let mut day = Utc::now().date();
-    let mut keys: Vec<String> = Vec::new();
-    for _ in 0..8 {
-        let mut day_keys = list_keys(bucket, site, day)?;
-        day_keys.extend(keys);
-        keys = day_keys;
-        if keys.len() >= n {
-            break;
-        }
-        day = day.add_days(-1);
+/// The complete archive volumes of `site` whose scans start at or after `start` (up to `now`,
+/// whose day is the last listed), oldest first: what live following backfills so its history
+/// covers the app's live window (`nexrad live --since-minutes`, `nexrad-wasm::keys_since`).
+/// The archive mirror only ever holds finished uploads, so this never returns an in-progress
+/// scan (unlike the chunks bucket). Keyed by the scan time in each key's name, one listing per
+/// UTC day from `start` to `now`; empty when the radar has no scan in that span (the mirror lags
+/// real time by ~5 min, so a short span often has none yet).
+pub fn keys_since(bucket: &dyn Bucket, site: &str, start: Utc, now: Utc) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut day = start.date();
+    while day <= now.date() {
+        out.extend(list_keys(bucket, site, day)?.into_iter().filter(|k| key_time(k).unwrap() >= start));
+        day = day.add_days(1);
     }
-    if keys.is_empty() {
-        return Err(format!("no volumes found for {site} in the last 8 days").into());
-    }
-    let start = keys.len().saturating_sub(n);
-    Ok(keys[start..].to_vec())
+    Ok(out)
 }
 
 /// Which keys a fetch/update asks for.
@@ -481,28 +477,34 @@ mod tests {
     }
 
     #[test]
-    fn recent_keys_spans_days_oldest_first() {
+    fn keys_since_covers_the_span_across_midnight_oldest_first() {
         let b = FakeBucket::default();
-        let today = Utc::now().date();
-        let yesterday = today.add_days(-1);
-        b.put_day(&yesterday.slashed(), &["KTST20240430_235500_V06", "KTST20240430_235900_V06"]);
-        b.put_day(&today.slashed(), &["KTST20240501_000400_V06"]);
-        let keys = recent_keys(&b, "ktst", 3).unwrap();
+        b.put_day("2024/04/30", &["KTST20240430_225500_V06", "KTST20240430_233000_V06", "KTST20240430_235900_V06"]);
+        b.put_day("2024/05/01", &["KTST20240501_000400_V06", "KTST20240501_000400_V06_MDM", "KTST20240501_002000_V06"]);
+        let now = Utc::from_ymd_hms(2024, 5, 1, 0, 30, 0);
+        // The last hour: from 23:30 (inclusive, a scan starting exactly then is in the window).
+        let keys = keys_since(&b, "ktst", now.add_secs(-3600.0), now).unwrap();
         assert_eq!(
             keys.iter().map(|k| file_name(k)).collect::<Vec<_>>(),
-            ["KTST20240430_235500_V06", "KTST20240430_235900_V06", "KTST20240501_000400_V06"]
+            ["KTST20240430_233000_V06", "KTST20240430_235900_V06", "KTST20240501_000400_V06", "KTST20240501_002000_V06"]
         );
-        // Fewer volumes exist than asked for: returns what it found, still oldest first.
-        assert_eq!(recent_keys(&b, "ktst", 10).unwrap().len(), 3);
-        // More volumes exist than asked for: keeps only the newest n.
-        let newest_only = recent_keys(&b, "ktst", 1).unwrap();
-        assert_eq!(file_name(&newest_only[0]), "KTST20240501_000400_V06");
+        assert_eq!(*b.listed.borrow(), ["2024/04/30/KTST/", "2024/05/01/KTST/"], "one listing per day, oldest first");
+        // A span inside today lists only today; the window's length, not a scan count, decides.
+        b.listed.borrow_mut().clear();
+        let keys = keys_since(&b, "KTST", now.add_secs(-20.0 * 60.0), now).unwrap();
+        assert_eq!(keys.iter().map(|k| file_name(k)).collect::<Vec<_>>(), ["KTST20240501_002000_V06"]);
+        assert_eq!(*b.listed.borrow(), ["2024/05/01/KTST/"]);
+        // A two-hour span takes every scan in it.
+        assert_eq!(keys_since(&b, "KTST", now.add_secs(-7200.0), now).unwrap().len(), 5);
     }
 
     #[test]
-    fn recent_keys_errors_when_nothing_found() {
+    fn keys_since_is_empty_when_the_radar_has_no_scan_in_the_span() {
         let b = FakeBucket::default();
-        assert!(recent_keys(&b, "KTST", 5).unwrap_err().to_string().contains("no volumes"));
+        b.put_day("2024/05/01", &["KTST20240501_000400_V06"]);
+        let now = Utc::from_ymd_hms(2024, 5, 1, 3, 0, 0);
+        assert!(keys_since(&b, "KTST", now.add_secs(-3600.0), now).unwrap().is_empty(), "quiet for over an hour");
+        assert!(keys_since(&b, "KXXX", now.add_secs(-3600.0), now).unwrap().is_empty(), "nothing listed");
     }
 
     #[test]
