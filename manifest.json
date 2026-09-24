@@ -3,20 +3,5 @@
     "sha": "b5e270ce294638ee6b2c1da05a2bc1f1f446c563",
     "run_id": 35952610214,
     "artifact_id": 10789266331
-  },
-  "pr-43": {
-    "sha": "c536956dbf441a45ed0b80b44bd6032fba1a492a",
-    "run_id": 35950216966,
-    "artifact_id": 10787768471
-  },
-  "pr-45": {
-    "sha": "4ea669649577aab3315701a6262c114d0d07ae11",
-    "run_id": 35953194425,
-    "artifact_id": 10789138606
-  },
-  "pr-48": {
-    "sha": "b75b92b791e98d35c7abaaad49f532d44118c786",
-    "run_id": 35956303029,
-    "artifact_id": 10789923914
   }
 }
