@@ -540,6 +540,23 @@ func set_info(text: String) -> void:
 	info.text = text
 
 
+## The project stretches canvas items with aspect "expand" from the 1280x800 design size, so
+## the UI grows with big windows and the canvas fills any aspect ratio. Small windows would
+## shrink the text too; instead the scale stays at least the screen's own (HiDPI) scale, times
+## the user's `user_scale` (ui_scale=), and the HUD reflows into the smaller canvas.
+func fit_ui_scale(user_scale: float) -> void:
+	var win := get_window()
+	var design := Vector2(
+		ProjectSettings.get_setting("display/window/size/viewport_width"),
+		ProjectSettings.get_setting("display/window/size/viewport_height")
+	)
+	var stretch := minf(win.size.x / design.x, win.size.y / design.y)
+	if stretch <= 0.0:
+		return
+	var screen_scale := DisplayServer.screen_get_scale(win.current_screen)
+	win.content_scale_factor = maxf(stretch, screen_scale) * user_scale / stretch
+
+
 ## `essential` keys are shown by default, `all` when the hint is expanded (H); items are
 ## [keys, label] (see KeyHint).
 func set_hint(essential: Array, all: Array = []) -> void:

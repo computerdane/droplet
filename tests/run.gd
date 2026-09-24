@@ -16,6 +16,7 @@ const UNIT_DIR := "res://tests/unit"
 var _root := FIXTURE_ROOT
 var _only := ""
 var _lib  # RadarLibrary
+var _done := false  # quit already: _process must not quit again with another code
 
 
 func _initialize() -> void:
@@ -34,10 +35,14 @@ func _initialize() -> void:
 				% [_root, " (run: nexrad synth)" if _root == FIXTURE_ROOT else ""]
 			)
 		)
+		_done = true
 		quit(1)
 
 
 func _process(_delta: float) -> bool:
+	if _done:
+		return true
+	_done = true
 	var root := _root
 	var only := _only
 	var lib = _lib

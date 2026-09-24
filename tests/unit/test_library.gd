@@ -30,6 +30,11 @@ func test_for_site_window() -> void:
 	var window := TimeWindow.fixed(RadarLibraryScript.unix_of(all[0]), newest)
 	check_eq(lib.for_site(site, window), all, "window spanning all")
 	check_eq(lib.for_site(site, window), window.filter(all), "same as TimeWindow.filter")
+	check_eq(lib.latest_site(TimeWindow.fixed(0, 1)), lib.site_of(lib.latest()), "none: newest")
+	if fixtures:
+		check_eq(lib.latest_site(window), "KTST", "the site with the newest scan inside")
+		var ktsu := RadarLibraryScript.unix_of(lib.latest("KTSU"))
+		check_eq(lib.latest_site(TimeWindow.fixed(ktsu, ktsu)), "KTSU", "only KTSU inside")
 
 
 func test_volume_quality() -> void:

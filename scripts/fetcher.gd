@@ -36,7 +36,8 @@ class Job:
 	var kind := ""  # "update" or "live"
 	var site := ""
 	var key := ""  # request_key() of the request that started it
-	var from := ""  # an update's range (ISO), if it fetches one; main widens the window to it
+	var at := ""  # an update's time (ISO) if it fetches the scan at one, else its range
+	var from := ""  # (main follows the scans it writes and widens the window to it)
 	var to := ""
 	var args := PackedStringArray()
 	var pid := -1
@@ -103,6 +104,8 @@ func start_update(site: String, at := "", from := "", to := "") -> Job:
 	if not from.is_empty() and not to.is_empty():
 		job.from = from
 		job.to = to
+	else:
+		job.at = at
 	return job
 
 

@@ -39,7 +39,7 @@ tests/golden.sh                                     # golden screenshots of the 
 tests/perf.sh                                       # frame-time + work-per-frame gate on a real loop (Xvfb, fetches data; nightly in CI)
 godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 view=3d mosaic=1
 godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 vwp=1 hover=560,380
-godot --path . --script res://tests/screenshot.gd -- out.png volumes=res://tests/fixtures/volumes site=KTST
+godot --path . --script res://tests/screenshot.gd -- out.png volumes=res://tests/fixtures/volumes site=KTST time=20240501_220500
 godot --path . -- site=KTLX fetch=2013-05-20T20:00Z  # start with a fetch (also latest, live, <from>/<to>)
 godot --path . -- site=KTLX window=2013-05-20T19:30Z/2013-05-20T20:45Z   # the time window (also live, live:<minutes>)
 godot --path . --script res://tests/frametimes.gd -- frames=1500 view=3d mosaic=1 play=1 fps=15 time=20130520_193407
@@ -227,14 +227,17 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/main.gd` – controller: the time window, site, frame, field, *target elevation* (kept across frames),
   playback, live, mosaic neighbours. `window` (a `TimeWindow`, `TimeWindow.from_options` at startup) bounds everything
   shown: `frames` are the site's scans inside it (`_refilter()`, on every rescan and live tick), so the slider,
-  playback, loop export, VWP, rotation tracks, mosaic neighbours and prefetch never reach outside; `_latest_site()`
-  prefers the site with the newest scan inside it. Live following is on exactly when the window is live: `_set_live(on)`
-  opens a fresh live window or freezes the current one where it is (L, stepping back, a scrub, a finished update), and
+  playback, loop export, VWP, rotation tracks and storm cells of mosaic neighbours, mosaic neighbours and prefetch
+  never reach outside; `RadarLibrary.latest_site(window)` prefers the site with the newest scan inside it. Live
+  following is on exactly when the window is live: `_set_live(on)` opens a fresh live window of the last span used
+  (`live_minutes`, from `window=live:<minutes>`) or *freezes* the current one where it is (`TimeWindow.freeze()`: the
+  same `from`, ending now, so the loop on screen stays; L, stepping back, a scrub, a finished update), and
   `_set_window()` refilters, updates the HUD's label and tells prune (`_write_window()`: `data/window.json` on every
   change and hourly, only on the desktop showing the data root it manages; on web the MemorySource's `set_window`,
-  once it has one, #41) and the live timer. An update's scans take over as they arrive while the view is on its site
-  and not live (`_follow_fetch`: nearer the job's target, an event's peak or else the window's end, see
-  `Events.takes_over`); scans outside the window are never frames. A finished update whose scan lies outside the
+  once it has one, #41) and the live timer. An update's scans take over as they arrive while the view is on its site,
+  not live, not playing and untouched by the user since the job started (`_follow_fetch`, `_user_moves`: nearer the
+  job's target, an event's peak, the time it was asked for, else the window's end, see `Events.takes_over`); scans
+  outside the window are never frames. A finished update whose scan lies outside the
   window re-targets it (the job's range, else ± 30 min around the scan: `fetch=latest` from a radar quiet for over an
   hour). With no site/time/fetch/window, starts on the live US composite (the window stays live; nothing is followed);
   clicking a radar selects it and fetches its recent live loop. Parses `key=value` user args (see its header) –
@@ -284,7 +287,8 @@ gdformat scripts tests && gdlint scripts tests
   subtracts its radial component × cos(elev). Included by ppi, cone, section and volume shaders. `main._storm_vector()`
   is non-zero only for VEL/DVEL with SRM on (T, HUD row, `srm=from_deg,speed_ms` or `srm=auto`, meteorological
   "from"). Auto (default) = Bunkers RM from `RadarLibrary.storm_motion_near()`: this volume's, else the same
-  site's nearest within 60 min, else another site's (used unrotated); nudging < > - + switches to manual.
+  site's nearest within 60 min, else another site's (used unrotated), from any cached scan: an estimate is not
+  a frame, so `storm_motion_near()` is deliberately not bounded by the time window; nudging < > - + switches to manual.
   mosaic neighbours get it rotated into their frame (`storm_motion.rotated(rotation)`).
 - `scripts/fetcher.gd` + `scripts/fetch_panel.gd` – fetch from the UI (F): runs `nexrad update|live` (the binary
   from `DROPLET_NEXRAD`, else PATH) via `OS.execute_with_pipe` (non-blocking), sets `DROPLET_ROOT` to the

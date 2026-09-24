@@ -85,7 +85,8 @@ static func _no_volume(main: Node) -> String:
 		help = "Press F to fetch radar data"
 	var library: RadarLibrary = main.library
 	if not library.for_site(main.site).is_empty():  # cached, but not in the window
-		return "%s  no scans in this window\nPress F to fetch, L for live" % main.site
+		var more := "" if main.window.live else ", L for live"
+		return "%s  no scans in this window\nPress F to fetch%s" % [main.site, more]
 	return "No volumes in %s\n%s" % [library.source.describe(), help]
 
 

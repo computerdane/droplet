@@ -72,13 +72,13 @@ static func clock() -> int:
 	return clock_override if clock_override >= 0 else int(Time.get_unix_time_from_system())
 
 
-## This window's extent as of `now`, fixed: what turning live off (L) leaves on the timeline.
-## A fixed window comes back as an equal copy.
+## This window fixed where it is, as of `now`: what turning live off (L) leaves on the
+## timeline. It keeps `from` as of the last tick (rather than now - span) so no frame the
+## timeline holds drops out, and ends at `now`. A fixed window comes back as an equal copy.
 func freeze(now := -1) -> TimeWindow:
 	if not live:
 		return fixed(from, to)
-	var t := now if now >= 0 else clock()
-	return fixed(t - span_sec, t)
+	return fixed(from, maxi(to, now if now >= 0 else clock()))
 
 
 ## The last scan start time inside the window, or -1 when it is open-ended (live): what a
@@ -124,7 +124,7 @@ func iso_to() -> String:
 ## rewrites it on every change and hourly. False if it could not be written.
 func write_file(path: String, now := -1) -> bool:
 	var t := now if now >= 0 else clock()
-	var w := freeze(t)
+	var w := fixed(t - span_sec, t) if live else self
 	var doc := {
 		"from": w.iso_from(),
 		"to": w.iso_to(),

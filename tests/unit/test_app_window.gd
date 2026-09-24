@@ -88,6 +88,95 @@ func test_arriving_scans_converge_inside_the_window() -> void:
 	_remove_dir(dir)
 
 
+## A fetch follows only a view the user has not touched: a step, a scrub or playback since
+## the job started keeps its scans from taking over. `--at` fetches aim at their time.
+func test_fetch_does_not_move_a_view_the_user_moved() -> void:
+	var dir := _temp_dir()
+	var main := _launch(["volumes=" + dir, "site=KTST", "window=20240501_215000/20240501_222000"])
+	main._select_site("KTST")
+	var job: Fetcher.Job = main.fetcher.start_update("KTST", "2024-05-01T22:00Z")
+	_arrive(main, dir, KTST[1], KTST[1])
+	check_eq(main.volume.name, KTST[1], "the first scan shows")
+	_arrive(main, dir, KTST[0], KTST[0])
+	check_eq(main.volume.name, KTST[0], "the scan at the time asked for takes over")
+	main._step(1)
+	check_eq(main.frame, 1, "the user stepped")
+	_arrive(main, dir, KTST[0], KTST[0])
+	check_eq(main.frame, 1, "a scan nearer the target no longer moves the view")
+	main.fetcher._finish(job, 0)
+	job = main.fetcher.start_update("KTST", "2024-05-01T22:00Z")
+	main._set_playing(true)
+	_arrive(main, dir, KTST[0], KTST[0])
+	check(main.playing and main.frame == 1, "nor while playing")
+	main._set_playing(false)
+	_arrive(main, dir, KTST[0], KTST[0])
+	check_eq(main.frame, 0, "a job started after the move follows again")
+	main.fetcher._finish(job, 0)
+	_close(main)
+	_remove_dir(dir)
+
+
+func test_live_job_first_volume_switches_to_live() -> void:
+	TimeWindow.clock_override = T0 + 360
+	var main := _launch(["site=KTST", "time=20240501_220000", "live=0"])
+	check(not main.window.live and main.frame == 0, "a fixed window, on time=")
+	var job: Fetcher.Job = main.fetcher.start_live("KTST")
+	job.volumes.append(KTST[1])
+	main.fetcher.job_updated.emit(job)
+	check(main.window.live and main.live, "its first volume: live")
+	check_eq(main.volume.name, KTST[1], "following the newest")
+	check_eq(main.hud.window_label.text, "LIVE (last 60 min)", "the label")
+	TimeWindow.clock_override = -1
+	_close(main)
+
+
+func test_panel_event_sets_window_and_site() -> void:
+	var main := _launch(["site=KTST", "time=20240501_220000", "live=0"])
+	main.hud.fetch_panel.event_requested.emit("moore2013")
+	check(main.window.equals(TimeWindow.of_event(Events.find("moore2013"))), "the event's window")
+	check_eq(main.site, "KTLX", "and its site")
+	check(main.frame == -1 and main.volume == null, "nothing of it cached: no frame")
+	check_eq(main.hud.window_label.text, "2013-05-20 19:30–20:45Z", "the label")
+	var job: Fetcher.Job = main.fetcher.jobs[-1]
+	check(job.kind == "update" and job.site == "KTLX" and job.has_meta("jump_to"), "its fetch")
+	_close(main)
+
+
+func test_overview_then_marker_click() -> void:
+	TimeWindow.clock_override = T0 + 360
+	var main := _launch(["site=KTST", "time=20240501_220000", "live=0"])
+	var before: TimeWindow = main.window
+	main._show_overview()  # the US Map button
+	check(main.overview and not main.live and main.site.is_empty(), "the overview")
+	check(main.window == before, "the window stays")
+	main._select_map_site("KTST")
+	check(not main.overview and main.site == "KTST", "the marker's site")
+	check_eq(main.frames, KTST, "its scans inside the window")
+	check(not main.live and main.window == before, "not live until its live job reports")
+	var job: Fetcher.Job = main.fetcher.jobs[-1]
+	check(job.kind == "live" and job.site == "KTST", "its live fetch started")
+	job.volumes.append(KTST[1])
+	main.fetcher.job_updated.emit(job)
+	check(main.live and main.window.live, "then live")
+	TimeWindow.clock_override = -1
+	_close(main)
+
+
+func test_live_span_survives_l_and_events() -> void:
+	TimeWindow.clock_override = T0 + 360
+	var main := _launch(["site=KTST", "window=live:20"])
+	check_eq(main.frames, KTST, "the last 20 min")
+	main._set_live(false)
+	check(main.window.equals(TimeWindow.fixed(T0 + 360 - 1200, T0 + 360)), "frozen")
+	main._set_live(true)
+	check_eq(main.window.span_sec, 1200, "L: still 20 min")
+	main.hud.fetch_panel.event_requested.emit("moore2013")
+	main._set_live(true)
+	check_eq(main.hud.window_label.text, "LIVE (last 20 min)", "after an event too")
+	TimeWindow.clock_override = -1
+	_close(main)
+
+
 ## fetch=latest opens live, but the newest scan may be older than the last hour: the finished
 ## job re-targets the window so what it fetched is visible (its range when it has one).
 func test_finished_update_outside_the_window_retargets_it() -> void:
@@ -188,6 +277,7 @@ func _launch(args: Array) -> Node:
 
 
 func _close(main: Node) -> void:
+	main.fetcher.stop_all()  # the fake's stop reports at once: not from inside main's deletion
 	main.get_parent().remove_child(main)
 	main.free()
 

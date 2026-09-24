@@ -51,6 +51,16 @@ func latest(site: String = "") -> String:
 	return list[-1] if not list.is_empty() else ""
 
 
+## The site with the newest scan inside `window`, else with the newest at all ("" if none).
+func latest_site(window: TimeWindow) -> String:
+	var best := ""
+	for s in sites():
+		var list := for_site(s, window)
+		if not list.is_empty() and (best.is_empty() or unix_of(list[-1]) > unix_of(best)):
+			best = list[-1]
+	return site_of(best if not best.is_empty() else latest())
+
+
 ## The VAD wind profile and Bunkers storm motion the sidecar stored in volume.json
 ## (nexrad/src/vad.rs): {"wind_profile": Dictionary or null, "storm_motion": Dictionary or null}.
 ## Memoised per volume until volume.json changes.

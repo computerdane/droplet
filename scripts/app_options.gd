@@ -69,3 +69,20 @@ static func start_fetch(opts: Dictionary, fetcher: Fetcher) -> void:
 ## 20130520_200359 (as in time= and volume names) -> 2013-05-20T20:03:59Z.
 static func iso_of_name_time(t: String) -> String:
 	return Time.get_datetime_string_from_unix_time(RadarLibrary.unix_of("X_" + t)) + "Z"
+
+
+## The 3D view's options: yaw= pitch= dist= exag= isolate= render=cones|volume density=
+## threshold= (of `field_name`).
+static func apply_3d(opts: Dictionary, view_3d: VolumeView3D, field_name: String) -> void:
+	var cam := view_3d.camera
+	cam.set_view(
+		float(opts.get("yaw", cam.yaw)),
+		float(opts.get("pitch", cam.pitch)),
+		float(opts.get("dist", cam.distance))
+	)
+	view_3d.set_exaggeration(float(opts.get("exag", view_3d.exaggeration)))
+	view_3d.isolate = int(opts.get("isolate", view_3d.isolate)) as ConeSet.Isolate
+	view_3d.volume_render = opts.get("render", "cones") == "volume"
+	view_3d.density = float(opts.get("density", view_3d.density))
+	if opts.has("threshold"):
+		view_3d.thresholds[field_name] = float(opts["threshold"])

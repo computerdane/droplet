@@ -219,10 +219,11 @@ func test_upper() -> void:
 func test_freeze() -> void:
 	var live := TimeWindow.live_window(60, T)
 	var frozen := live.freeze(T + 600)
-	check(not frozen.live and frozen.equals(TimeWindow.fixed(T + 600 - 3600, T + 600)), "as of now")
+	check(not frozen.live and frozen.equals(TimeWindow.fixed(T - 3600, T + 600)), "as of now")
 	check(live.live and live.to == T, "the live window is untouched")
+	check(live.freeze(T - 5).equals(TimeWindow.fixed(T - 3600, T)), "never before its last tick")
 	TimeWindow.clock_override = T + 60
-	check(live.freeze().equals(TimeWindow.fixed(T + 60 - 3600, T + 60)), "the clock by default")
+	check(live.freeze().equals(TimeWindow.fixed(T - 3600, T + 60)), "the clock by default")
 	check(TimeWindow.live_window(60).to == T + 60, "live_window reads the same clock")
 	TimeWindow.clock_override = -1
 	var fixed := TimeWindow.fixed(1, 2)
