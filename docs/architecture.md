@@ -153,9 +153,13 @@ gdformat scripts tests && gdlint scripts tests
   for now: turning it on (G / Location) calls `navigator.geolocation.getCurrentPosition` through a JavaScriptBridge
   callback kept in a member (`window.droplet_location_done`), so the browser's permission prompt appears only then;
   denied / unavailable / timed out (codes 1-3) and no API or a non-secure page (geolocation needs https or 127.0.0.1)
-  show a short notice and leave it off. Each turn-on asks again (`maximumAge` 60 s). The desktop build hides the
-  button and G says location comes later (no OS location services, no `location=` option, no IP lookup yet). The
-  position stays in memory: never stored, logged or sent anywhere. Drawn at constant screen size in 2D (projected by
+  show a short notice and leave it off. Each turn-on asks again (`maximumAge` 60 s). A request is pending (button
+  pressed) until the browser answers, a second press cancels it, or 30 s pass (a GDScript timer: the browser's own
+  timeout excludes an open permission prompt); requests carry ids, so a late answer to a cancelled, timed-out or
+  superseded one is ignored. The desktop build hides the button and G says location comes later (no OS location
+  services, no `location=` option, no IP lookup yet). The position stays in memory: never stored, logged or sent
+  anywhere, though a loop export (E) made while it is on includes the marker and the info line like the rest of the
+  screen. Drawn at constant screen size in 2D (projected by
   PpiView around the site or the overview centre like the station markers), as a ground diamond with a short stalk in
   3D, as "your location: R km @ B° from SITE" in the info text and in the readout near the mouse.
 - `scripts/outlooks.gd` – SPC day 1 categorical outlook (TSTM..HIGH) from the IEM API
