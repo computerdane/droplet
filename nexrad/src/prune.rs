@@ -14,7 +14,8 @@
 //! When the protected entries alone exceed the budget they are all kept and the summary says the
 //! quota is exceeded; prune never deletes inside the window to make room.
 //!
-//! `data/window.json` (written atomically by the app whenever its window changes):
+//! `data/window.json` (written atomically by the app whenever its window changes, and at least
+//! hourly while it runs so that `written` stays fresh for a window left open for days):
 //!
 //! ```json
 //! {"from": "2013-05-20T19:30:00Z", "to": "2013-05-20T20:45:00Z", "live": false, "written": "2026-09-23T12:00:00Z"}

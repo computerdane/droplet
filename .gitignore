@@ -18,6 +18,8 @@ result
 data/raw/
 data/volumes/
 data/basemap/
+data/window.json
+data/live_ring.json
 
 # Synthetic test volumes (nexrad synth)
 tests/fixtures/volumes/
