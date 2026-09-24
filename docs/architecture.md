@@ -249,7 +249,10 @@ gdformat scripts tests && gdlint scripts tests
   frame when it changed; live following stays on the newest frame while older backfill arrives. New
   volumes are rescanned immediately; a finished
   update jumps to its last volume, a live job takes over the view on its first volume. Processes are killed
-  on exit. The fetch panel's LineEdits are the only focusable controls (focus released on close).
+  on exit. An identical request to one already running (same kind, site, and resolved time/range) is not
+  started a second time: the existing job is returned and its line shows "already running" until its next
+  output; a finished, failed, or stopping job does not block a restart. The fetch panel's LineEdits are the
+  only focusable controls (focus released on close).
 - `scripts/events.gd` – `Events.LIST`: notable events (site, UTC from/to/peak, note; tornadoes and hurricanes 1997–2023,
   times checked against the archive listing). The fetch panel's "Notable events" list and `event=<id>` fetch the loop
   (`Events.start()`) and the finished job jumps to the peak (`jump_to` meta); `event=` also defaults `site=` and `time=`.

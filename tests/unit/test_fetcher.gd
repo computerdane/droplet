@@ -117,5 +117,18 @@ func test_request_runs_again_after_job_ends() -> void:
 	fetcher.free()
 
 
+func test_request_runs_again_while_stopping() -> void:
+	var fetcher := _fake()
+	# Real stop() sets stopped = true and kills the process, but the job has not finished yet
+	# (unlike FakeFetcher.stop, which finishes it immediately): set that up directly.
+	var first: FetcherScript.Job = fetcher.start_live("KTLX")
+	first.stopped = true
+	var second: FetcherScript.Job = fetcher.start_live("KTLX")
+	check(second != first and second.running, "a job still stopping does not block a restart")
+	check_eq(fetcher.launched.size(), 2, "the repeat launches its own process")
+	fetcher.stop_all()
+	fetcher.free()
+
+
 func _key(kind: String, site: String, at := "", from := "", to := "") -> String:
 	return FetcherScript.request_key(kind, site, at, from, to)
