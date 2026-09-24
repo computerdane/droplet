@@ -16,7 +16,7 @@ cargo build --release                              # the nexrad CLI -> nexrad/ta
 nexrad update KTLX                                 # newest archive volume -> data/volumes/
 nexrad update KTLX --at 2013-05-20T20:00Z          # historical volume (Moore, OK tornado)
 nexrad update KTLX --from ... --to ...             # a range of volumes
-nexrad live KTLX [KFDR ...]                        # poll chunks bucket, rewrite partial volumes as they grow (a thread per site)
+nexrad live KTLX [KFDR ...] [--since-minutes 60]   # backfill the last 60 min from the archive, then poll the chunks bucket, rewrite partial volumes as they grow (a thread per site)
 nexrad basemap                                     # once: Census states/counties + cities -> data/basemap/
 nexrad decode data/raw/*_V06*                      # re-decode everything (e.g. after decoder/dealias changes)
 nexrad derive [data/volumes/...]                   # (re)compute AZSHR/KDP/HCA, VAD winds, storm motion, CREF/ET/VIL without re-decoding
@@ -55,12 +55,13 @@ gdformat scripts tests && gdlint scripts tests
 - `nexrad-wasm/` – wasm-bindgen wrapper (workspace member, `nexrad` without `native`): `decode(bytes)` →
   `{name, volume_json, files: Map<sNN_FIELD.bin, Uint8Array>}` via `volume::encode_volume()`, byte-identical to
   `nexrad decode` without a prior volume on disk; `redealias()` redoes the dealiasing of a decoded volume against the
-  previous one (`Encoded::redealias`, from its float16 VEL, which is exact) for the update pool; `resolve_keys(site, at, from, to, bucket)` and `live(site, bucket, sleep, emit, log)` run the
-  CLI's key selection and live loop over a `Bucket` whose `list`/`get` are synchronous JS functions. On wasm32 the
+  previous one (`Encoded::redealias`, from its float16 VEL, which is exact) for the update pool; `resolve_keys(site, at, from, to, bucket)`, `keys_since(site, minutes, bucket)` (live backfill) and
+  `live(site, bucket, sleep, emit, log)` run the CLI's key selection and live loop over a `Bucket` whose `list`/`get` are synchronous JS functions. On wasm32 the
   record loop is serial (rayon is a non-wasm dependency). `bench/` = Web Worker page + a Node driver that serves
   it to headless Chromium and writes the results to disk.
 - `web/` – the static web app. `nexrad_worker.js` = the browser's `nexrad` CLI: one module worker per job
-  (`{"cmd": "update"|"live", ...}` in; `line`/`volume`/`done`/`error` messages out, sweep buffers transferred),
+  (`{"cmd": "update"|"live", ...}` in, live with `since_minutes`, the live window's span, which it backfills from the
+  archive first, at most the newest 20 scans; `line`/`volume`/`done`/`error` messages out, sweep buffers transferred),
   sync XHR for listings (workers allow it; the Rust is blocking), raw archive files kept in the Cache API (newest
   300), live sleeps via `Atomics.wait` (needs cross-origin isolation; `Fetcher.can_live` greys out Live without it).
   An update of several volumes decodes on a pool of nested workers (`{"cmd": "decode"}`, min(4, cores − 2)) and
@@ -239,10 +240,17 @@ gdformat scripts tests && gdlint scripts tests
   job's target, an event's peak, the time it was asked for, else the window's end, see `Events.takes_over`); scans
   outside the window are never frames. A finished update whose scan lies outside the
   window re-targets it (the job's range, else ± 30 min around the scan: `fetch=latest` from a radar quiet for over an
-  hour). With no site/time/fetch/window, starts on the live US composite (the window stays live; nothing is followed);
-  clicking a radar selects it and fetches its recent live loop. Parses `key=value` user args (see its header) –
+  hour). With no site/time/fetch/window, starts on the live US composite (the window stays live; nothing is followed).
+  Fetches follow the window (#40): `_set_window()` stops the jobs outside it (`Fetcher.stop_outside`: live following
+  unless the window is live, updates whose time or range misses it), so freezing (L, a step back, a scrub) stops live
+  following and turning L on fetches again. In live mode clicking a radar selects it and fetches its live window
+  (`_fetch_live`, `Fetcher.start_view`: live following that backfills the window's span; with the mosaic on, its
+  `Mosaic.nearest_sites()`, 4 within 900 km, too; turning the mosaic on does the same). In a fixed window nothing is
+  fetched by itself: a click shows the cached in-window scans, or "no scans in this window / Press F to fetch". The
+  fetch panel's requests set the window first (`_open`: `TimeWindow.of_request`, the range, ± 30 min around a time,
+  the live window for the newest scan or Live; an event's loop), then run. Parses `key=value` user args (see its header) –
   screenshot.gd passes them through. `scripts/info_text.gd` builds its top-left info text ("no scans in this window"
-  when the site has scans only outside it), `scripts/playback.gd` its loop arithmetic (next frame, dwell, sequence
+  when the site has scans only outside it, or none in a fixed window), `scripts/playback.gd` its loop arithmetic (next frame, dwell, sequence
   jumps, speed steps, loop volumes, VWP columns).
 - `scripts/volume_update_policy.gd` – picks the live target among the window's frames after new or rewritten volumes
   arrive, keeps the newest pinned through older backfill, and labels growing versus provisional scans.
@@ -299,14 +307,20 @@ gdformat scripts tests && gdlint scripts tests
   rewrites reload. Every native/web replacement invalidates the texture cache and refreshes the current
   frame when it changed; live following stays on the newest frame while older backfill arrives. New
   volumes are rescanned immediately; a finished
-  update jumps to its last volume, a live job takes over the view on its first volume. Processes are killed
+  update jumps to its last volume (a live window's update, where live cannot run, keeps live on), a live job for the
+  site on screen turns live on with its first volume (a mosaic neighbour's never moves the view). Processes are killed
   on exit. An identical request to one already running (same kind, site, and resolved time/range) is not
   started a second time: the existing job is returned and its line shows "already running" until its next
-  output; a finished, failed, or stopping job does not block a restart. The fetch panel's LineEdits are the
+  output (times compare as instants, so an event's window and the panel's range for it are one request; a live
+  following of any span is one per site); a finished, failed, or stopping job does not block a restart.
+  `start_window(site, window)` fetches a window: `nexrad live SITE --since-minutes <span>` (web: `since_minutes`) for a
+  live one, where live cannot run (`can_live`) an update of its extent so far (deduplicated by site and window), and
+  `update --from --to` for a fixed one. `within(window, kind, at, from, to)` decides what `stop_outside` stops. The fetch panel's LineEdits are the
   only focusable controls (focus released on close).
 - `scripts/events.gd` – `Events.LIST`: notable events (site, UTC from/to/peak, note; tornadoes and hurricanes 1997–2023,
   times checked against the archive listing). The fetch panel's "Notable events" list and `event=<id>` fetch the loop
-  (`Events.start()`) and the finished job jumps to the peak (`jump_to` meta); `event=` also defaults `site=` and `time=`.
+  (`Events.start()`, which fetches the event's window with `start_window` after main opens it) and the finished job
+  jumps to the peak (`jump_to` meta); `event=` also defaults `site=` and `time=`.
   An event sets the window to its loop (`TimeWindow.of_event`; the panel's list and `event=` alike), so the site's
   other days are never on the timeline. While the view is on the event's site (not live), each scan the fetch writes
   takes over if nearer the peak (`Events.takes_over`, `main._follow_fetch`), so the view converges on the peak even if
@@ -317,7 +331,9 @@ gdformat scripts tests && gdlint scripts tests
   stands in for tests). `window=live|live:<minutes>|<from>/<to>` is the time window; without it `fetch=`, `event=` and
   `time=` (± 30 min) imply one, else live (`TimeWindow.from_options`).
   With no site/time/fetch/event/window the web app opens the national composite without starting a site job;
-  an explicit web URL without `fetch=` fetches the volume at `time=`, else starts live for `site=`.
+  an explicit web URL without `fetch=` fetches the volume at `time=` alone, else the window for `site=`
+  (`Fetcher.start_window`: live following for the default live window, `window=`'s scans). `start_fetch` never starts
+  a job outside the window (`window=` wins over `fetch=` and `event=`; `Fetcher.within`).
   On web main.gd uses a MemorySource (1400 MiB budget, oldest evicted, enough for roughly ten
   full recent scans plus a partial) and a 192 MiB texture cache within the 2 GB wasm heap.
 - `scripts/basemap.gd` + `shaders/basemap*.gdshader*` – lon/lat line meshes projected on the GPU
@@ -386,8 +402,9 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 
 - Decoder reads both archive layouts: bzip2 LDM records (current) and the older gzip-wrapped uncompressed stream (~pre-2016, `.gz` keys), and both radial formats: Message 31 (Build 10+, ~mid-2008 onward) and legacy Message 1 (8-bit REF on 1 km gates to 460 km, VEL/SW on 250 m gates, 1° radials, no dual-pol). Message 1 files carry no site location (`nexrad/src/sites.rs`, the NCEI station list) and the oldest (`ARCHIVE2.nnn` headers) not even the ICAO (`level2::with_site()` takes it from the file name or key). Checked on KTLX 1995, 1999-05-03 (Bridge Creek-Moore), 2005, 2007.
 - Verified against KTLX 2026-09-22 (VCP 212, bz2) and KTLX 2013-05-20 20:03Z (VCP 12, gz, the Moore tornado).
-- `live` backfills the newest plus up to 10 older complete scans from the archive mirror before following
-  the in-progress volume (skipping that partial if joined after its first chunk), then follows each new one.
+- `live` backfills the complete scans of the live window (the last `--since-minutes`, default 60, the app's
+  `window=live:<minutes>`; `archive::keys_since` by the scan time in each key; on web at most the newest 20)
+  from the archive mirror before following the in-progress volume (skipping that partial if joined after its first chunk), then follows each new one.
   Recent archive scans first appear newest-first as provisional previews so the live view reaches the
   newest available time promptly. The same raw scans are then finalized oldest-first, replacing their
   previews under the same names. Temporal dealiasing must use only the latest earlier complete,
