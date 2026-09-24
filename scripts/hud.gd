@@ -563,12 +563,13 @@ func set_overlays_on(warnings_on: bool, cells_on: bool, outlook_on: bool) -> voi
 	outlook_button.set_pressed_no_signal(outlook_on)
 
 
-## The Location toggle. Hidden where the platform has no location yet (desktop), where G
-## explains instead.
-func set_location(on: bool, available: bool, tip: String) -> void:
+## The Location toggle (`on`: shown or asking). Hidden where the platform has no location yet
+## (desktop), where G explains instead.
+func set_location(on: bool, available: bool) -> void:
 	location_button.set_pressed_no_signal(on)
-	location_button.visible = available
-	location_button.tooltip_text = tip
+	if location_button.visible != available:
+		location_button.visible = available
+		_queue_layout()
 
 
 func set_mosaic(on: bool, available: bool) -> void:

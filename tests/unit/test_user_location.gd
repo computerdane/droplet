@@ -50,3 +50,49 @@ func test_toggle_state() -> void:
 		check(not loc.enabled, "desktop cannot turn it on")
 		check_eq(emitted[0], 2, "no change on desktop")
 	loc.free()
+
+
+## The request state machine without the browser: begin_request() stands in for the turn-on
+## that asks it, answer() / expire() for its callback and the GDScript timeout.
+func test_pending_requests() -> void:
+	var loc := UserLocation.new()
+	var emitted := [0]
+	loc.changed.connect(func() -> void: emitted[0] += 1)
+	var here := Vector2(35.2, -97.4)
+
+	var a := loc.begin_request()
+	check(loc.pending() and not loc.shown(), "pending, not shown yet")
+	loc.answer(a, 0, here, 50.0)
+	check(loc.shown() and not loc.pending(), "an answer turns it on")
+	check_eq(loc.accuracy_m, 50.0, "accuracy kept")
+	check_eq(emitted[0], 1, "changed on the answer")
+	loc.answer(a, 0, here + Vector2(1, 0))
+	check_eq(loc.latlon, here, "a second answer to the same request is ignored")
+	loc.request_toggle()
+	check(not loc.enabled, "off")
+
+	var b := loc.begin_request()
+	loc.request_toggle()  # pressed again while pending: cancels
+	check(not loc.pending() and not loc.enabled, "a press while pending cancels")
+	loc.answer(b, 0, here)
+	check(not loc.enabled, "a late answer after cancelling does not turn it on")
+
+	var c := loc.begin_request()
+	loc.expire(c)
+	check(not loc.pending() and not loc.enabled, "the timeout clears the request")
+	loc.answer(c, 0, here)
+	check(not loc.enabled, "an answer after the timeout is ignored")
+
+	var d := loc.begin_request()
+	var e := loc.begin_request()
+	check(e != d, "each request has its own id")
+	loc.expire(d)
+	check(loc.pending(), "the superseded request's timeout leaves the new one pending")
+	loc.answer(d, 0, here)
+	check(not loc.enabled and loc.pending(), "the superseded request's answer is ignored")
+	loc.answer(e, 1)
+	check(not loc.enabled and not loc.pending(), "denied: stays off, nothing pending")
+	loc.answer(e, 0, here)
+	check(not loc.enabled, "nothing after the denial")
+	check_eq(emitted[0], 2, "changed only on turning on and off")
+	loc.free()
