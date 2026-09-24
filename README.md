@@ -113,4 +113,5 @@ at, so links are permalinks: `?site=KTLX&time=20130520_200359` (the Moore tornad
 
 Location (G, or the Location button) marks your position on the map. It is off by default; the
 browser asks for permission when you turn it on, and the position stays in the page (never
-stored or sent). The desktop build does not have it yet.
+stored or sent). A loop export (E) made while it is on includes the marker and the distance line,
+as they are on screen. The desktop build does not have it yet.
