@@ -85,8 +85,17 @@
             export DROPLET_NEXRAD="${nexrad}/bin/nexrad"
             export DROPLET_BASEMAP="${basemap}"
             mkdir -p "$DROPLET_ROOT/data/volumes" "$DROPLET_EXPORT_DIR"
+          '' + (if isDarwin then ''
+            # Godot 4.7's Metal driver crashes (SIGBUS) compiling its built-in shaders on
+            # Apple Silicon, so default to Vulkan (MoltenVK) unless a driver is given.
+            driver=(--rendering-driver vulkan)
+            for arg in "$@"; do
+              case "$arg" in --rendering-driver | --rendering-driver=*) driver=() ;; esac
+            done
+            exec ${pkgs.godot}/bin/godot --path ${project} "''${driver[@]}" "$@"
+          '' else ''
             exec ${pkgs.godot}/bin/godot --path ${project} "$@"
-          '';
+          '');
         };
         droplet = pkgs.symlinkJoin {
           name = "droplet-0.1.0";
