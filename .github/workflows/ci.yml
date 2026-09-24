@@ -37,7 +37,7 @@ jobs:
       - name: Lint
         run: nix develop -c bash -c 'cargo fmt --check && cargo clippy --all-targets -- -D warnings && gdformat --check scripts tests && gdlint scripts tests'
       - name: Workflow and shell lint
-        run: nix develop -c bash -c 'actionlint && shellcheck tools/automation/start web/build.sh nexrad-wasm/build.sh tests/golden.sh tests/perf.sh'
+        run: nix develop -c bash -c 'actionlint && shellcheck tools/automation/start tools/automation/watch-until-change web/build.sh nexrad-wasm/build.sh tests/golden.sh tests/perf.sh'
       - name: Automation and export tests
         run: nix develop -c node --test tools/automation/*.test.mjs tools/pages/*.test.mjs web/*.test.mjs
       - name: Rust tests
