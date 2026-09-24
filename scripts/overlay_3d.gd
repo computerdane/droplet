@@ -2,7 +2,8 @@ class_name Overlay3D
 extends MeshInstance3D
 ## Lines over the 3D view, in the selected radar's frame (km, +x east, -z north, y = height x
 ## exaggeration): the cross-section's A-B curtain, NWS warning polygons on the ground, and
-## storm cells as a stalk up to their echo top over their ground track and forecast. One
+## storm cells as a stalk up to their echo top over their ground track and forecast, and the
+## viewer's position (UserLocation) as a green diamond on the ground with a short stalk. One
 ## ImmediateMesh with vertex colours, rebuilt when anything changes.
 
 const SECTION_COLOR := Color(1, 1, 1, 0.8)
@@ -10,11 +11,15 @@ const SECTION_TOP_KM := 20.0
 const GROUND_Y := 0.08
 const TRACK_COLOR := Color(1, 1, 1, 0.7)
 const FORECAST_COLOR := Color(0.55, 0.85, 1.0, 0.9)
+const USER_COLOR := PpiView.USER_COLOR
+const USER_SIZE_KM := 3.0  # the ground diamond's half-diagonal
+const USER_STALK_KM := 3.0
 
 var exaggeration := 4.0
 var _section := []  # [a, b] (Vector2 km, +x east, +y south) or empty
 var _warnings: Array = []  # Warnings.project()
 var _cells: Array = []  # StormCells.track() entries
+var _user := Vector2.INF  # the viewer's position (km, +x east, +y south), INF when not shown
 var _labels: Array[Label3D] = []
 
 
@@ -48,6 +53,12 @@ func set_overlays(warning_polys: Array, cells: Array) -> void:
 	_warnings = warning_polys
 	_cells = cells
 	_rebuild()
+
+
+func set_user_location(p: Vector2) -> void:
+	if p != _user:
+		_user = p
+		_rebuild()
 
 
 func set_exaggeration(v: float) -> void:
@@ -100,6 +111,16 @@ func _rebuild() -> void:
 		add.call(
 			_at(pos, 0.0, exaggeration), _at(pos, maxf(float(c["top_km"]), 1.0), exaggeration), col
 		)
+	if _user != Vector2.INF:
+		var d := USER_SIZE_KM
+		var corners := [Vector2(0, -d), Vector2(d, 0), Vector2(0, d), Vector2(-d, 0)]
+		for k in corners.size():
+			add.call(
+				_at(_user + corners[k], ground, exaggeration),
+				_at(_user + corners[(k + 1) % corners.size()], ground, exaggeration),
+				USER_COLOR
+			)
+		add.call(_at(_user, 0.0, exaggeration), _at(_user, USER_STALK_KM, exaggeration), USER_COLOR)
 	var show_section := not _section.is_empty()
 	if show_section:
 		var a: Vector2 = _section[0]

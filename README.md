@@ -72,8 +72,9 @@ L live · Up/Down tilt · 1-8 field (REF VEL SW ZDR PHI RHO CFP DVEL) · 9 colum
 (composite reflectivity, echo tops, VIL, low-level rotation, rotation tracks) · 0 KDP, azimuthal
 shear, hydrometeor classes · S next site · M mosaic · V 2D/3D · R reset view · X cross-section ·
 T storm-relative velocity · W hodograph · P wind profile over the loop (VWP; click a column to
-jump there) · A warnings · C storm cells · O SPC outlook · E export the loop (animated PNG) · F fetch ·
-H show all keys in the bottom-left hint (it shows the essentials by default).
+jump there) · A warnings · C storm cells · O SPC outlook · G your location (browser) · E export the
+loop (animated PNG) · F fetch · H show all keys in the bottom-left hint (it shows the essentials by
+default).
 2D: wheel zoom, drag pan; in cross-section mode left drag draws the line A→B, right drag pans.
 Hovering the map, the cross-section or the VWP shows the value under the mouse.
 3D: left drag orbit, right drag pan, wheel zoom, B cones/volume rendering, I isolate tilts,
@@ -109,3 +110,7 @@ Unidata's public buckets and decodes them with the same Rust code compiled to We
 The query string takes the same options as the command line, and a URL fetches what it points
 at, so links are permalinks: `?site=KTLX&time=20130520_200359` (the Moore tornado),
 `?site=KTLX&fetch=2013-05-20T19:30Z/2013-05-20T20:40Z&play=1` (a loop), `?site=KTLX` (live).
+
+Location (G, or the Location button) marks your position on the map. It is off by default; the
+browser asks for permission when you turn it on, and the position stays in the page (never
+stored or sent). The desktop build does not have it yet.

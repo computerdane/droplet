@@ -3,6 +3,8 @@
 // preview scopes on one origin. Without it this remains the live archive smoke test.
 // nix develop -c node web/smoke.mjs [DIR] [SCREENSHOT] [QUERY]
 // SMOKE_PAGES=1 omits isolation headers, exactly as GitHub Pages does.
+// Offline, it also toggles the viewer's location (G) with geolocation denied, then granted
+// and emulated by DevTools (no network: the position never leaves the browser).
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -37,6 +39,7 @@ function send(method, params = {}, sessionId) {
   }));
 }
 let completed;
+let located; // resolves on the app's "location: ..." console line
 let errors = [];
 let downloads = 0;
 const fixtureKey = "2024/05/01/KTLX/KTLX20240501_220000_V06";
@@ -129,6 +132,7 @@ try {
       console.log(`[${msg.params.type}] ${text}`);
       if (msg.params.type === "error") errors.push(text);
       if (text.startsWith("fetch: ")) completed?.(text);
+      if (text.startsWith("location: ")) located?.(text);
     } else if (msg.method === "Runtime.exceptionThrown") {
       errors.push(msg.params.exceptionDetails.exception?.description ?? msg.params.exceptionDetails.text);
     }
@@ -200,6 +204,26 @@ try {
       assert.notEqual(velocity.pixels.hash, shot.pixels.hash, "switching to velocity must change radar rendering");
       writeFileSync(destination.replace(/\.png$/, "-velocity.png"), Buffer.from(velocity.data, "base64"));
       assert.deepEqual(errors, [], "browser errors after switching fields");
+      // The viewer's location: denied first (a notice, no marker), then granted at a fixed
+      // position ~21 km southwest of KTLX, which must draw a marker in the viewport.
+      const toggleLocation = async () => {
+        const line = new Promise((ok) => { located = ok; });
+        await send("Input.dispatchKeyEvent", { type: "keyDown", key: "g", code: "KeyG", windowsVirtualKeyCode: 71 });
+        await send("Input.dispatchKeyEvent", { type: "keyUp", key: "g", code: "KeyG", windowsVirtualKeyCode: 71 });
+        return wait(line);
+      };
+      await send("Browser.setPermission", { origin, permission: { name: "geolocation" }, setting: "denied" });
+      assert.equal(await toggleLocation(), "location: Location permission denied");
+      await send("Browser.grantPermissions", { origin, permissions: ["geolocation"] });
+      await send("Emulation.setGeolocationOverride", { latitude: 35.2, longitude: -97.45, accuracy: 50 });
+      assert.equal(await toggleLocation(), "location: shown");
+      await wait(new Promise((ok) => setTimeout(ok, 1000)));
+      const marked = await capture(500);
+      assert.notEqual(marked.pixels.hash, velocity.pixels.hash, "the location marker must draw");
+      writeFileSync(destination.replace(/\.png$/, "-location.png"), Buffer.from(marked.data, "base64"));
+      assert.deepEqual(errors, [], "browser errors after showing the location");
+      await send("Browser.resetPermissions", {});
+      await send("Emulation.clearGeolocationOverride");
       const keys = await evaluate("caches.keys()");
       const prefix = `Droplet-sw-cache-${encodeURIComponent(`${origin}/${path}/`)}-`;
       assert(keys.some((key) => key.startsWith(prefix)), "scope-specific PWA cache missing");

@@ -141,6 +141,7 @@ func test_cells_overlay_option_and_toggles() -> void:
 	hud.warnings_button = Button.new()
 	hud.cells_button = Button.new()
 	hud.outlook_button = Button.new()
+	hud.location_button = Button.new()
 	hud.cells_button.toggle_mode = true
 	var ov := Overlays.new()
 	check(not ov.cells_on, "cells start off before setup")

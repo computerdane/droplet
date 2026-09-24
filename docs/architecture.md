@@ -146,8 +146,18 @@ gdformat scripts tests && gdlint scripts tests
   With mosaic on, each neighbour site's loop is tracked too and its cells shown where it is the nearest radar
   (`StormCells.from_neighbor` turns them into the selected frame; twins within 6 km across a boundary keep the nearer radar's).
   `scripts/overlays.gd` (`Overlays`, owned by main) holds Warnings, Outlooks + the tracked cells of the frame on screen and
-  feeds PpiView (`set_warnings`, `set_cells`), the info text and the readout. It owns the toggles: A / C / O keys, the
-  Warnings / Cells / SPC buttons, `warnings=` `cells=` `outlook=` (default 1, 0, 0); a toggle emits `changed`.
+  feeds PpiView (`set_warnings`, `set_cells`, `set_user_latlon`), Overlay3D, the info text and the readout. It owns the
+  toggles: A / C / O / G keys, the Warnings / Cells / SPC / Location buttons, `warnings=` `cells=` `outlook=` (default 1, 0,
+  0; location has no option and is always off at start); a toggle emits `changed`.
+- `scripts/user_location.gd` – `UserLocation` (child of Overlays): the viewer's own position, off by default. Web only
+  for now: turning it on (G / Location) calls `navigator.geolocation.getCurrentPosition` through a JavaScriptBridge
+  callback kept in a member (`window.droplet_location_done`), so the browser's permission prompt appears only then;
+  denied / unavailable / timed out (codes 1-3) and no API or a non-secure page (geolocation needs https or 127.0.0.1)
+  show a short notice and leave it off. Each turn-on asks again (`maximumAge` 60 s). The desktop build hides the
+  button and G says location comes later (no OS location services, no `location=` option, no IP lookup yet). The
+  position stays in memory: never stored, logged or sent anywhere. Drawn at constant screen size in 2D (projected by
+  PpiView around the site or the overview centre like the station markers), as a ground diamond with a short stalk in
+  3D, as "your location: R km @ B° from SITE" in the info text and in the readout near the mouse.
 - `scripts/outlooks.gd` – SPC day 1 categorical outlook (TSTM..HIGH) from the IEM API
   (`api/1/nws/spc_outlook.geojson?day=1&valid=&cycle=`, back to 2002): `issued_by(t)` = the convective day (12Z-12Z)
   and its cycles (06, 13, 1630, 20, 01Z) out by then, latest first; `active_at(t)` = the latest with categorical areas.
@@ -163,8 +173,8 @@ gdformat scripts tests && gdlint scripts tests
   the readout (`Readout`). A / the Warnings button toggles; `warnings=0` for offline runs (goldens use it). The archive has only each
   warning's first polygon, so it stays up until the warning expires.
 - `scripts/overlay_3d.gd` – `Overlay3D` (child of VolumeView3D): one ImmediateMesh of coloured lines for the A-B section
-  curtain (with A/B labels), warning polygons on the ground and cell stalks (up to the echo top, coloured by rotation/TDS)
-  over their ground track and forecast. Fed by `main._update_section()` and `Overlays.update()`.
+  curtain (with A/B labels), warning polygons on the ground, cell stalks (up to the echo top, coloured by rotation/TDS)
+  over their ground track and forecast, and the viewer's position (`set_user_location`). Fed by `main._update_section()` and `Overlays.update()`.
 - `scripts/readout.gd` – `Readout.plan_view()`: the 2D hover text (nearest radar's value, range/bearing, beam height,
   lat/lon, warnings containing the point).
 - `scripts/mosaic.gd` – `Mosaic.neighbors()` (other sites within 10 min / 900 km, projected + rotated),

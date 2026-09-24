@@ -4,8 +4,9 @@ extends Node
 ## (Warnings), the SPC day 1 outlook (Outlooks, 2D only) and the storm cells tracked through the
 ## loop (StormCells; in a mosaic each radar's cells where it is the nearest radar, tracked through
 ## that site's own volumes), with their lines in the info text and the hover
-## readout. Owns their toggles: A / C / O and the HUD's Warnings / Cells / SPC buttons, and the
-## warnings= cells= outlook= options. main.gd calls update() on every refresh.
+## readout, and the viewer's own position (UserLocation, off by default). Owns their toggles:
+## A / C / O / G and the HUD's Warnings / Cells / SPC / Location buttons, and the warnings= cells=
+## outlook= options. main.gd calls update() on every refresh.
 
 ## A download landed or a toggle changed; main refreshes the overlays.
 signal changed
@@ -14,9 +15,12 @@ signal changed
 const READOUT_CELL_KM := 6.0
 ## Cells of two radars closer than this are one storm seen twice (mosaic).
 const MOSAIC_TWIN_KM := 6.0
+## The viewer's position is named in the readout within this of the mouse.
+const READOUT_LOCATION_KM := 6.0
 
 var warnings := Warnings.new()
 var outlooks := Outlooks.new()
+var location := UserLocation.new()
 var cells_on := false
 var active_warnings: Array = []  # Warnings.active_at() the volume's time
 var active_outlook: Array = []  # Outlooks.active_at() the volume's time
@@ -26,6 +30,8 @@ var _cell_frames: Array = []
 var _cell_names: Array[String] = []  # the loop _cell_frames was tracked for
 var _neighbor_cells := {}  # site -> {"names": Array[String], "frames": StormCells.track()}
 var _hud: Hud
+var _center := Vector2.INF  # (lat, lon) the views are projected around; INF with no context
+var _site := ""  # the selected radar, for the location line; empty in the overview
 
 
 ## A scan was replaced under the same name. Its derived cells, including a mosaic
@@ -42,8 +48,10 @@ func invalidate_volume(name: String) -> void:
 func _ready() -> void:
 	add_child(warnings)
 	add_child(outlooks)
+	add_child(location)
 	warnings.changed.connect(changed.emit)
 	outlooks.changed.connect(changed.emit)
+	location.changed.connect(changed.emit)
 
 
 func setup(hud: Hud, opts: Dictionary) -> void:
@@ -54,6 +62,7 @@ func setup(hud: Hud, opts: Dictionary) -> void:
 	hud.warnings_toggled.connect(toggle.bind("warnings"))
 	hud.cells_toggled.connect(toggle.bind("cells"))
 	hud.outlook_toggled.connect(toggle.bind("outlook"))
+	location.setup(hud)
 	_sync_hud()
 
 
@@ -65,6 +74,9 @@ func toggle(what: String) -> void:
 			cells_on = not cells_on
 		"outlook":
 			outlooks.enabled = not outlooks.enabled
+		"location":
+			location.request_toggle()  # emits changed itself when the state changes
+			return
 	_sync_hud()
 	changed.emit()
 
@@ -78,7 +90,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	var e := event as InputEventKey
 	if not e.pressed or e.echo:
 		return
-	var keys := {KEY_A: "warnings", KEY_C: "cells", KEY_O: "outlook"}
+	var keys := {KEY_A: "warnings", KEY_C: "cells", KEY_O: "outlook", KEY_G: "location"}
 	if keys.has(e.keycode):
 		toggle(keys[e.keycode])
 		get_viewport().set_input_as_handled()
@@ -115,13 +127,22 @@ func update(
 			cells = _mosaic_cells(cells, loop, neighbors)
 	var polys := []
 	var outlook_polys := []
+	_center = Vector2.INF
+	_site = "" if overview or volume == null else RadarLibrary.site_of(volume.name)
+	var user_3d := Vector2.INF
 	if not context.is_empty():
 		var center: Vector2 = context["center"]
+		_center = center
 		polys = Warnings.project(active_warnings, center.x, center.y)
 		outlook_polys = Warnings.project(active_outlook, center.x, center.y)
+		if location.shown() and not overview:
+			user_3d = UserLocation.world_of(location.latlon, center)
 	view.set_warnings(polys, outlook_polys)
 	view.set_cells(cells)
+	# PpiView projects the position itself, around whatever centre it shows (site or overview).
+	view.set_user_latlon(location.latlon if location.shown() else Vector2.INF)
 	view_3d.overlay.set_overlays(polys, cells)
+	view_3d.overlay.set_user_location(user_3d)
 
 
 ## Context for either a historical site frame or the live national map.
@@ -208,6 +229,11 @@ func info_lines() -> PackedStringArray:
 		if tds > 0:
 			what += ", %d with a debris signature" % tds
 		lines.append(what)
+	if location.shown():
+		if _site.is_empty() or _center == Vector2.INF:
+			lines.append("your location shown")
+		else:
+			lines.append(UserLocation.describe(location.latlon, _center, _site))
 	return lines
 
 
@@ -222,6 +248,11 @@ func readout_lines(lonlat: Vector2, pos: Vector2) -> PackedStringArray:
 	var area := Outlooks.at_point(active_outlook, lonlat)
 	if not area.is_empty():
 		lines.append("SPC day 1: " + area["name"].to_lower())
+	if location.shown():
+		var ll := location.latlon
+		if Basemap.project(ll.x, ll.y, lonlat.y, lonlat.x).length() <= READOUT_LOCATION_KM:
+			var acc := location.accuracy_m
+			lines.append("your location" + (" (±%d m)" % roundi(acc) if acc > 0.0 else ""))
 	return lines
 
 
