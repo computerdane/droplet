@@ -1,8 +1,8 @@
 {
   "production": {
-    "sha": "352126de33aa6deaccb7fe9baebb3e94c83297f7",
-    "run_id": 35951075580,
-    "artifact_id": 10788454189
+    "sha": "b5e270ce294638ee6b2c1da05a2bc1f1f446c563",
+    "run_id": 35952610214,
+    "artifact_id": 10789266331
   },
   "pr-43": {
     "sha": "c536956dbf441a45ed0b80b44bd6032fba1a492a",
