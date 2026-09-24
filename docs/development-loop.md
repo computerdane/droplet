@@ -96,15 +96,21 @@ bash tools/automation/watch-until-change --since FINGERPRINT --out FILE
 
 It repeats bounded `watch` calls until the fingerprint changes, writes the full
 JSON to `.automation/watch-last.json` (or `--out`), and prints one summary line per
-activity item plus the new fingerprint. Without `--since` or a previous result it
-returns the current status. It backs off after errors and exits 1 with
-`PERSISTENT_ERROR` after five consecutive failures. Claude Code notifies the
-coordinator when the background command exits. The coordinator must read every
-activity item, including human comments on issues and PRs, inline comments,
-reviews, approvals, checks, and merges, and act on or acknowledge each before
-restarting the watcher. A maintainer comment posted just before `/approve` refines
-the approved scope and must be read before dispatch. Restart the watcher as a new
-background command, never inside a foreground command with `&`.
+activity item plus the new fingerprint. `--out` accepts any path; the default
+stays under the ignored `.automation/`. Without `--since` or a valid previous
+result it returns the current status. It backs off after errors and exits 1 with
+`PERSISTENT_ERROR` after five consecutive failures. GitHub rate limits do not count
+as failures: it waits until the reported reset and logs `RATE_LIMITED`. Claude Code
+notifies the coordinator when the background command exits.
+
+The coordinator must read every activity item, including human comments on issues
+and PRs, inline comments, reviews, approvals, checks, merges, and items marked
+`self`, and act on or acknowledge each before restarting the watcher. Summary lines
+are truncated; read the full `activity[].body` in the JSON before acting. A
+maintainer comment posted just before `/approve` refines the approved scope and
+must be read before dispatch. A new session reviews a full `status` first, since a
+crashed session may have left `watch-last.json` unread. Restart the watcher as a
+new background command, never inside a foreground command with `&`.
 
 Ask questions and request refinements on issues, including unapproved discoveries.
 The active coordinator answers while the loop runs and catches up after restarting.
@@ -246,7 +252,16 @@ merged/closed, per-check state changes, Pages previews, stacks, and local jobs.
 Recent snapshots are kept in `.automation/snapshots/`. `baseline` is `since` when
 the fingerprint was found, `last` for plain `status`, `stale` when it was not found
 (compared with the latest stored snapshot), or `none`; the last two require a full
-review of the snapshot fields, which are unchanged.
+review of the snapshot fields, which are unchanged. `self` marks the helper
+account's own items, never an approver's. An issue or PR leaving the open lists is
+checked once more for its final state, comments, inline comments, and reviews;
+later comments on already-closed items are not watched.
+
+Each snapshot costs about `2 + 3 × open issues + open PRs` REST calls and
+`open issues + 1` GraphQL calls. `watch` polls every 30 seconds, so ten issues and
+three PRs use roughly 4,000 of the 5,000 hourly REST requests. Itemizing adds one
+`/user` call, plus two calls for each issue and four for each PR that left the
+open lists.
 `claim` checks approval, limits, conflicts, dependencies, and existing work before
 creating an issue worktree. `check` guards further work/pushes against revoked or
 changed scope. `checkpoint` is local and still works after a hold; update visible

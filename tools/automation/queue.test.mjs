@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { approval, scopeHash, reply, claim, checkpoint, checkJob, loadState, saveState, parseArgs, GitHub, sync, LABELS,
   normalizePaths, pathsOverlap, reconcile, stack, activity, observe, findBaseline, storeSnapshot, summarize,
-  watchUntilChange, PREVIEW_MARKER } from './queue.mjs';
+  watchUntilChange, PREVIEW_MARKER, ghComment, ghReview } from './queue.mjs';
 
 const policy = { approvers: [{ login: 'owner', id: 7 }], max_repair_attempts: 3,
   max_active_issues: 1, max_open_prs: 3, default_branch: 'main' };
@@ -734,12 +734,17 @@ test('observe flags missing and stale baselines, then itemizes changes since a s
   assert.equal(findBaseline('../../etc/passwd', root).baseline, 'stale');
 }));
 
-test('stored snapshots are pruned to a bounded index', () => temp(root => {
-  for (let i = 0; i < 35; i++) storeSnapshot({ fingerprint: i.toString(16).padStart(64, '0') }, root);
-  const index = JSON.parse(readFileSync(join(root, '.automation/snapshots/index.json'), 'utf8'));
-  assert.equal(index.length, 30);
-  assert.equal(existsSync(join(root, `.automation/snapshots/${'0'.repeat(64)}.json`)), false);
-  assert.equal(findBaseline(index[0], root).baseline, 'since');
+test('stored snapshots are pruned from the directory listing without a shared index', () => temp(root => {
+  const fp = i => i.toString(16).padStart(64, '0');
+  for (let i = 0; i < 35; i++) storeSnapshot({ fingerprint: fp(i) }, root);
+  const files = readdirSync(join(root, '.automation/snapshots'));
+  assert.equal(files.length, 30);
+  assert.equal(files.includes('index.json'), false);
+  assert.equal(existsSync(join(root, `.automation/snapshots/${fp(0)}.json`)), false);
+  assert.equal(findBaseline(fp(5), root).baseline, 'since');
+  const latest = findBaseline(undefined, root);
+  assert.deepEqual([latest.baseline, latest.previous.fingerprint], ['last', fp(34)]);
+  assert.ok(latest.previous.observed_at);
 }));
 
 test('watch-until-change loops until the fingerprint changes and writes the full JSON', () => temp(root => {
@@ -800,3 +805,75 @@ test('watch-until-change wrapper refuses to run from a worker worktree', t => {
   });
   assert.equal(existsSync(join(job.worktree, '.automation/watch-last.json')), false);
 });
+
+test('closing and merging still itemize the final comments, inline comments and reviews', () => {
+  const before = baseSnapshot();
+  const after = { ...structuredClone(before), issues: [], pull_requests: [] };
+  const closing = restComment(9, 'Closing: superseded by #13', 7, 'owner', '2026-09-23T13:00:00Z');
+  const rest = (id, nodeId, body, userId, login, at) => ({ id, node_id: nodeId, body, user: { id: userId, login },
+    created_at: at, updated_at: at, html_url: `h${id}` });
+  const items = activity(before, after, context({
+    lookupIssue: () => ({ state: 'closed', state_reason: 'not_planned', closed_at: '2026-09-23T13:00:01Z',
+      comments: [...before.issues[0].comments, closing] }),
+    lookupPull: () => ({ state: 'closed', merged_at: '2026-09-23T13:05:00Z',
+      comments: [rest(1, 'IC_1', 'Looks close', 7, 'owner', '2026-09-23T12:00:00Z'),
+        rest(2, 'IC_2', 'Merging now', 7, 'owner', '2026-09-23T13:04:00Z')].map(ghComment),
+      inline_comments: [restComment(41, 'Last nit', 7, 'owner', '2026-09-23T13:03:00Z', { path: 'a.js', line: 1 })],
+      reviews: [{ id: 5, node_id: 'PRR_5', user: { id: 7, login: 'owner' }, state: 'APPROVED', body: 'Ship it',
+        submitted_at: '2026-09-23T13:03:30Z', commit_id: 'aaaaaaaa' }].map(ghReview) }),
+  }));
+  assert.deepEqual(items.map(i => [i.type, i.change, i.id ?? null]), [
+    ['comment', 'new', 9], ['issue', 'closed', null], ['inline_comment', 'new', 41], ['review', 'new', 'PRR_5'],
+    ['comment', 'new', 'IC_2'], ['pull_request', 'merged', null]]);
+  assert.equal(items.find(i => i.id === 'IC_2').approver, true);
+  const partial = activity(before, after, context({ lookupIssue: () => ({ state: 'closed', comments_error: 'HTTP 502' }),
+    lookupPull: () => ({ state: 'closed' }) }));
+  assert.equal(partial.find(i => i.type === 'issue').error, 'HTTP 502');
+});
+
+test('approver comments are never marked self when the viewer is the maintainer', () => {
+  const before = baseSnapshot();
+  const after = structuredClone(before);
+  after.issues[0].comments.push(restComment(2, 'My own note', 7, 'owner', '2026-09-23T12:01:00Z'));
+  after.pull_requests[0].comments.push({ id: 'IC_9', author: { login: 'owner' }, body: 'mine', createdAt: '2026-09-23T12:02:00Z', viewerDidAuthor: true });
+  const items = activity(before, after, context({ viewer: { id: 7, login: 'owner' } }));
+  assert.deepEqual(items.map(i => [i.approver, i.self]), [[true, false], [true, false]]);
+});
+
+test('duplicate and removed checks, head branch changes and reopened issues are itemized', () => {
+  const before = baseSnapshot();
+  before.observed_at = '2026-09-23T12:30:00Z';
+  const run = (conclusion, url) => ({ __typename: 'CheckRun', workflowName: 'CI', name: 'test', status: 'COMPLETED', conclusion, detailsUrl: url });
+  before.pull_requests[0].statusCheckRollup.push({ __typename: 'StatusContext', context: 'old', state: 'SUCCESS' });
+  const after = structuredClone(before);
+  after.pull_requests[0].statusCheckRollup = [run('SUCCESS', 'r1'), run('FAILURE', 'r2')];
+  after.pull_requests[0].headRefName = 'ai/issue-3b';
+  after.issues.push({ ...structuredClone(before.issues[0]), number: 13, created_at: '2026-09-01T00:00:00Z', comments: [] });
+  const items = activity(before, after, context());
+  const checks = items.filter(i => i.type === 'check').map(i => [i.name, i.from, i.to]);
+  assert.deepEqual(checks.sort(), [['CI/test#2', null, 'fail'], ['CI/test', 'pending', 'pass'], ['old', 'pass', null]]);
+  assert.equal(items.find(i => i.change === 'head_ref').previous_head, 'ai/issue-3');
+  assert.equal(items.find(i => i.type === 'issue' && i.number === 13).change, 'reopened');
+  assert.equal(summarize(items.find(i => i.name === 'old')), 'check #57 old pass -> removed');
+  const removedReview = structuredClone(after);
+  after.pull_requests[0].reviews = [{ id: 'PRR_1', author: { login: 'owner' }, state: 'COMMENTED', body: 'x' }];
+  assert.deepEqual(activity(after, removedReview, context()).map(i => [i.type, i.change]), [['review', 'deleted']]);
+});
+
+test('rate limits wait for the reset without consuming retries', () => temp(root => {
+  const out = join(root, 'watch-last.json');
+  const sleeps = [];
+  const warnings = [];
+  let n = 0;
+  const execute = () => {
+    n++;
+    if (n <= 6) throw new Error('gh: API rate limit exceeded for user ID 1. (HTTP 403)');
+    if (n === 7) throw new Error('HTTP 502');
+    return JSON.stringify({ fingerprint: 'new', baseline: 'since', activity: [] });
+  };
+  const code = watchUntilChange({ since: 'old', out }, { execute, sleep: ms => sleeps.push(ms), log: () => {},
+    warn: w => warnings.push(w), now: () => 1_000_000, rateLimitReset: () => (n === 1 ? 1_600_000 : null) });
+  assert.equal(code, 0);
+  assert.deepEqual(sleeps, [605000, 300000, 300000, 300000, 300000, 300000, 60000]);
+  assert.match(warnings[0], /^RATE_LIMITED: waiting 605s/);
+}));
