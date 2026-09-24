@@ -55,6 +55,7 @@ const HINT_ALL := [
 	[["A"], "warnings"],
 	[["O"], "SPC outlook"],
 	[["C"], "cells"],
+	[["G"], "location"],
 	[["X"], "section"],
 	[["T"], "storm-relative"],
 	[["W"], "hodograph"],
