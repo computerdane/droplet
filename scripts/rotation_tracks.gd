@@ -93,10 +93,10 @@ class Loops:
 		return _own
 
 	## Gives each of `neighbors` (Mosaic.neighbors entries) the tracks of its site's volumes
-	## over `loop`'s span ("tracks", "tracks_vols") and how many of its frames reach the one it
-	## shows ("n_tracks").
+	## over `loop`'s span, inside `window` when given ("tracks", "tracks_vols"), and how many
+	## of its frames reach the one it shows ("n_tracks").
 	func add_to_neighbors(
-		neighbors: Array, library: RadarLibrary, loop: Array[RadarVolume]
+		neighbors: Array, library: RadarLibrary, loop: Array[RadarVolume], window: TimeWindow = null
 	) -> void:
 		if loop.is_empty():
 			return
@@ -105,7 +105,7 @@ class Loops:
 		for n: Dictionary in neighbors:
 			var site: String = n["site"]
 			var names: Array[String] = []
-			for name in library.for_site(site):
+			for name in library.for_site(site, window):
 				var t := RadarLibrary.unix_of(name)
 				if t >= t0 and t <= t1:
 					names.append(name)

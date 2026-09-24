@@ -130,5 +130,127 @@ func test_request_runs_again_while_stopping() -> void:
 	fetcher.free()
 
 
+## The same instants spelled differently are the same request: an event's window fetched by
+## start_window (2013-05-20T19:30:00Z) and Start on the range the panel filled in (…19:30Z).
+func test_request_keys_compare_times_as_instants() -> void:
+	var e := Events.find("moore2013")
+	var w := TimeWindow.of_event(e)
+	check_eq(
+		_key("update", "KTLX", "", w.iso_from(), w.iso_to()),
+		_key("update", "KTLX", "", e["from"], e["to"]),
+		"ISO forms"
+	)
+	check_eq(
+		_key("update", "KTLX", "20130520_200000"), _key("update", "KTLX", "2013-05-20T20Z"), "at"
+	)
+	check(_key("update", "KTLX", "bad") != _key("update", "KTLX"), "a bad time stays itself")
+	var fetcher := _fake()
+	var job: FetcherScript.Job = Events.start(e, fetcher)
+	check(fetcher.start_update("KTLX", "", e["from"], e["to"]) == job, "one job")
+	check(fetcher.start_window("KTLX", w) == job, "the window again")
+	check_eq(fetcher.launched.size(), 1, "one process")
+	fetcher.stop_all()
+	fetcher.free()
+
+
+func test_within_the_window() -> void:
+	TimeWindow.clock_override = 1714600800 + 360
+	var fixed := TimeWindow.fixed(1714600800 - 1800, 1714600800 + 300)  # 21:30-22:05Z; now 22:06
+	var live := TimeWindow.live_window(20)  # 21:46Z on
+	var cases := [
+		# [kind, at, from, to, in fixed, in live]
+		["live", "", "", "", false, true],
+		["update", "", "", "", false, true],  # the newest scan: now
+		["update", "2024-05-01T22:00Z", "", "", true, true],
+		["update", "2024-05-01T21:40Z", "", "", true, false],
+		["update", "2013-05-20T20:00Z", "", "", false, false],
+		["update", "", "2024-05-01T20:00Z", "2024-05-01T21:30Z", false, false],  # only touches
+		["update", "", "2024-05-01T20:00Z", "2024-05-01T21:29Z", false, false],
+		["update", "", "2024-05-01T22:05Z", "2024-05-02T00:00Z", false, true],
+		["update", "", "2024-05-01T22:06Z", "2024-05-02T00:00Z", false, true],
+		["update", "bad", "", "", true, true],  # nexrad rejects it
+	]
+	for c in cases:
+		var what := "%s %s %s-%s" % [c[0], c[1], c[2], c[3]]
+		check_eq(FetcherScript.within(fixed, c[0], c[1], c[2], c[3]), c[4], what + " (fixed)")
+		check_eq(FetcherScript.within(live, c[0], c[1], c[2], c[3]), c[5], what + " (live)")
+	TimeWindow.clock_override = -1
+
+
+func test_stop_outside() -> void:
+	TimeWindow.clock_override = 1714600800 + 360
+	var fetcher := _fake()
+	var live: FetcherScript.Job = fetcher.start_live("KTLX")
+	var newest: FetcherScript.Job = fetcher.start_update("KOUN")
+	var event: FetcherScript.Job = Events.start(Events.find("moore2013"), fetcher)
+	var stopped := fetcher.stop_outside(TimeWindow.live_window())
+	check(stopped == ([event] as Array[FetcherScript.Job]), "live: the event's fetch")
+	check(live.running and not live.stopped and newest.running, "live and the newest keep on")
+	stopped = fetcher.stop_outside(TimeWindow.around(1714600800 - 7200))
+	check(stopped == ([live, newest] as Array[FetcherScript.Job]), "a past window: the rest")
+	check_eq(fetcher.running_jobs().size(), 0, "none left")
+	check_eq(fetcher.stop_outside(TimeWindow.live_window()).size(), 0, "nothing to stop")
+	TimeWindow.clock_override = -1
+	fetcher.free()
+
+
+func test_live_backfills_its_span() -> void:
+	var fetcher := _fake()
+	fetcher.start_live("KTLX")
+	fetcher.start_live("KOUN", 25)
+	check_eq(
+		fetcher.launched[0], PackedStringArray(["live", "KTLX", "--since-minutes", "60"]), "60"
+	)
+	check_eq(
+		fetcher.launched[1], PackedStringArray(["live", "KOUN", "--since-minutes", "25"]), "25"
+	)
+	check(fetcher.start_live("KOUN", 60) == fetcher.jobs[1], "one follower per site, any span")
+	fetcher.stop_all()
+	fetcher.free()
+
+
 func _key(kind: String, site: String, at := "", from := "", to := "") -> String:
 	return FetcherScript.request_key(kind, site, at, from, to)
+
+
+## Live mode follows the site on screen and (desktop only) its mosaic neighbours; followers of
+## other sites stop when the view moves on; updates are left alone.
+func test_start_view_follows_only_the_view() -> void:
+	var fetcher := _fake()
+	var live := TimeWindow.live_window()
+	check_eq(fetcher.view_sites("KTLX", true).size(), 5, "desktop: the site and 4 neighbours")
+	fetcher.web = true
+	check_eq(fetcher.view_sites("KTLX", true), ["KTLX"] as Array[String], "web: no neighbours")
+	fetcher.web = false
+	var update: FetcherScript.Job = fetcher.start_update("KOUN")
+	fetcher.start_view("KTLX", live, true)
+	check_eq(fetcher.launched.size(), 6, "5 followers and the update")
+	fetcher.start_view("KTLX", live, true)
+	check_eq(fetcher.launched.size(), 6, "again: nothing new, nothing flagged")
+	check(not fetcher.jobs[1].repeated, "not 'already running'")
+	fetcher.start_view("KAMA", live)
+	var following := fetcher.running_jobs().filter(
+		func(j: FetcherScript.Job) -> bool: return j.kind == "live"
+	)
+	check_eq(following.size(), 1, "only KAMA is followed now")
+	check_eq(following[0].site, "KAMA", "the new site")
+	check(update.running, "the update keeps on")
+	fetcher.start_view("KTLX", TimeWindow.around(0))
+	check_eq(fetcher.launched.size(), 7, "a fixed window: nothing")
+	fetcher.stop_all()
+	fetcher.free()
+
+
+func test_site_switch_stops_live_fallback_backfill() -> void:
+	var fetcher := _fake()
+	fetcher.can_live = false
+	var window := TimeWindow.live_window()
+	fetcher.start_view("KTLX", window)
+	var first: FetcherScript.Job = fetcher.jobs[0]
+	check_eq(first.kind, "update", "no live support: archive backfill")
+	fetcher.start_view("KINX", window)
+	check(first.stopped, "switching sites stops the previous live-window backfill")
+	check_eq(fetcher.running_jobs().size(), 1, "only the active site downloads")
+	check_eq(fetcher.jobs[-1].site, "KINX", "the selected site")
+	fetcher.stop_all()
+	fetcher.free()

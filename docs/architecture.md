@@ -279,7 +279,8 @@ gdformat scripts tests && gdlint scripts tests
   rewrites reload. Every native/web replacement invalidates the texture cache and refreshes the current
   frame when it changed; live following stays on the newest frame while older backfill arrives. New
   volumes are rescanned immediately; a finished
-  update jumps to its last volume, a live job takes over the view on its first volume. Processes are killed
+  update can move the view only while its site/window are current and the user has not navigated
+  since it started; job notifications never resume suspended following. Processes are killed
   on exit. An identical request to one already running (same kind, site, and resolved time/range) is not
   started a second time: the existing job is returned and its line shows "already running" until its next
   output; a finished, failed, or stopping job does not block a restart. The fetch panel's LineEdits are the
@@ -289,8 +290,16 @@ gdformat scripts tests && gdlint scripts tests
   (`Events.start()`) and the finished job jumps to the peak (`jump_to` meta); `event=` also defaults `site=` and `time=`.
   While the view is on the event's site (not live), each scan the fetch writes takes over if nearer the peak
   (`Events.takes_over`), so the view converges on the peak even if the fetch fails or stops part way. At launch,
-  `event=` selects its site even when uncached and shows only a cached scan inside the event's loop
-  (`Events.frame_within`), else no frame until its scans arrive; a failed last job stays in the info text.
+  `event=` selects its site even when uncached and shows only a cached scan inside the event's
+  window, else no frame until its scans arrive; a failed last job stays in the info text.
+- `scripts/time_window.gd` defines the shared UTC range. Live ranges roll with the clock;
+  fixed ranges come from `time=` (±30 minutes), events, explicit fetch ranges, or `window=`.
+  The HUD names it; timeline, playback, VWP, export and mosaic filter scan start times through it.
+  Manual navigation suspends following without freezing the live range or stopping downloads;
+  an expired selection advances to the oldest remaining scan. Explicit Live resumes latest.
+  Historical site browsing uses cached scans only. Range changes stop requests extending outside
+  the new range. The app writes `data/window.json` and updates MemorySource's window for quota
+  eviction; changing the window does not itself delete cached scans.
 - `scripts/app_options.gd` – `key=value` options from the command line, or the query string on web.
   With no site/time/fetch/event the web app opens the national composite without starting a site job;
   an explicit web URL without `fetch=` fetches the volume at `time=`, else starts live for `site=`.
@@ -363,13 +372,16 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
 
 - Decoder reads both archive layouts: bzip2 LDM records (current) and the older gzip-wrapped uncompressed stream (~pre-2016, `.gz` keys), and both radial formats: Message 31 (Build 10+, ~mid-2008 onward) and legacy Message 1 (8-bit REF on 1 km gates to 460 km, VEL/SW on 250 m gates, 1° radials, no dual-pol). Message 1 files carry no site location (`nexrad/src/sites.rs`, the NCEI station list) and the oldest (`ARCHIVE2.nnn` headers) not even the ICAO (`level2::with_site()` takes it from the file name or key). Checked on KTLX 1995, 1999-05-03 (Bridge Creek-Moore), 2005, 2007.
 - Verified against KTLX 2026-09-22 (VCP 212, bz2) and KTLX 2013-05-20 20:03Z (VCP 12, gz, the Moore tornado).
-- `live` backfills the newest plus up to 10 older complete scans from the archive mirror before following
+- `live` backfills complete archive scans in its rolling duration (`--since-minutes`, default 60,
+  maximum 1440) before following
   the in-progress volume (skipping that partial if joined after its first chunk), then follows each new one.
   Recent archive scans first appear newest-first as provisional previews so the live view reaches the
   newest available time promptly. The same raw scans are then finalized oldest-first, replacing their
   previews under the same names. Temporal dealiasing must use only the latest earlier complete,
   non-provisional scan from the same site within 15 minutes, and must preserve float arithmetic and
-  native/browser output consistency. Provisional previews never become temporal priors.
+  native/browser output consistency. Backfill starts from the raw archive scan immediately before
+  the window and advances its prior only after a selected complete scan finalizes; cached output
+  and provisional previews never become backfill priors. An empty backfill gives live no seed.
   If the archive is unavailable it still follows live chunks. It remembers the ring position in
   `data/live_ring.json` (`chunks::Start::Newest` hint: a binary search over the numbers the ring can
   have moved since, a few listings) and falls back to the ~20-listing search. On web the worker posts

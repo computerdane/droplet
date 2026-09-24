@@ -5,23 +5,52 @@ extends RefCounted
 
 const MAX_SKEW_SEC := 10 * 60
 const MAX_KM := 900.0
+## Sites live mode fetches along with the one on screen when the mosaic is on (nearest_sites).
+const FETCH_NEIGHBORS := 4
 
 
-## Volume of `s` nearest in time to `t`, or "" if none is within MAX_SKEW_SEC.
-static func path_near(library: RadarLibrary, s: String, t: int) -> String:
-	var list := library.for_site(s)
+## Volume of `s` nearest in time to `t` (inside `window`, when given), or "" if none is
+## within MAX_SKEW_SEC.
+static func path_near(
+	library: RadarLibrary, s: String, t: int, window: TimeWindow = null
+) -> String:
+	var list := library.for_site(s, window)
 	var i := RadarLibrary.nearest_in_time(list, t)
 	if i < 0 or absi(RadarLibrary.unix_of(list[i]) - t) > MAX_SKEW_SEC:
 		return ""
 	return list[i]
 
 
-## Other sites' volumes nearest in time to `volume`, with the tilt of `field_name` nearest
-## `elev` (loaded through `cache`), each with the positions of all the other radars in its
-## own frame (`others`, see _assign_others):
+## The `n` known sites (RadarSites) nearest `site` within MAX_KM, nearest first: the neighbours
+## live mode fetches with it for the mosaic, few enough that clicking around does not fan out.
+static func nearest_sites(site: String, n := FETCH_NEIGHBORS) -> Array[String]:
+	var out: Array[String] = []
+	var here := RadarSites.location(site)
+	if here == Vector2.INF:
+		return out
+	var by_km := []
+	for s in RadarSites.ids():
+		var ll := RadarSites.location(s)
+		var km := Basemap.project(ll.x, ll.y, here.x, here.y).length()
+		if s != site and km <= MAX_KM:
+			by_km.append([km, s])
+	by_km.sort_custom(func(a: Array, b: Array) -> bool: return a[0] < b[0])
+	for e in by_km.slice(0, n):
+		out.append(e[1])
+	return out
+
+
+## Other sites' volumes nearest in time to `volume` (inside `window`, when given), with the
+## tilt of `field_name` nearest `elev` (loaded through `cache`), each with the positions of all
+## the other radars in its own frame (`others`, see _assign_others):
 ## [{site, volume, sweep, offset_km (+y north), rotation (rad, clockwise), skew_sec, others}]
 static func neighbors(
-	library: RadarLibrary, cache: VolumeCache, volume: RadarVolume, field_name: String, elev: float
+	library: RadarLibrary,
+	cache: VolumeCache,
+	volume: RadarVolume,
+	field_name: String,
+	elev: float,
+	window: TimeWindow = null
 ) -> Array:
 	var out := []
 	var t := RadarLibrary.unix_of(volume.name)
@@ -30,7 +59,7 @@ static func neighbors(
 	for s in library.sites():
 		if s == volume.icao():
 			continue
-		var path := path_near(library, s, t)
+		var path := path_near(library, s, t, window)
 		if path.is_empty():
 			continue
 		var skew := RadarLibrary.unix_of(path) - t

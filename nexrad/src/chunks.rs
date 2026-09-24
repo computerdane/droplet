@@ -259,7 +259,7 @@ mod tests {
     use crate::archive::fakes::FakeBucket;
     use crate::synth::{self, Layout};
 
-    /// A `live` sink writing to `dir`, as the CLI does.
+    /// A simple `live` sink writing to `dir` for chunk polling tests.
     fn write_to(dir: &std::path::Path) -> impl FnMut(&Volume) -> Result<String> + '_ {
         move |v| Ok(crate::volume::write_volume(v, dir)?.file_name().unwrap().to_string_lossy().into_owned())
     }

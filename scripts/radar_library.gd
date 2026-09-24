@@ -37,10 +37,11 @@ func sites() -> Array[String]:
 	return out
 
 
-func for_site(site: String) -> Array[String]:
+## The volumes of `site`, oldest first; only those inside `window` (a TimeWindow) if given.
+func for_site(site: String, window: TimeWindow = null) -> Array[String]:
 	var out: Array[String] = []
 	for v in volumes:
-		if site_of(v) == site:
+		if site_of(v) == site and (window == null or window.contains(unix_of(v))):
 			out.append(v)
 	return out
 
@@ -48,6 +49,16 @@ func for_site(site: String) -> Array[String]:
 func latest(site: String = "") -> String:
 	var list := volumes if site.is_empty() else for_site(site)
 	return list[-1] if not list.is_empty() else ""
+
+
+## The site with the newest scan inside `window`, else with the newest at all ("" if none).
+func latest_site(window: TimeWindow) -> String:
+	var best := ""
+	for s in sites():
+		var list := for_site(s, window)
+		if not list.is_empty() and (best.is_empty() or unix_of(list[-1]) > unix_of(best)):
+			best = list[-1]
+	return site_of(best if not best.is_empty() else latest())
 
 
 ## The VAD wind profile and Bunkers storm motion the sidecar stored in volume.json

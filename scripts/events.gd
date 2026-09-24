@@ -165,39 +165,34 @@ static func unix(iso: String) -> int:
 	return Time.get_unix_time_from_datetime_string(t + ":00" if t.length() == 16 else t)
 
 
-## Starts fetching `event`'s loop; main follows it as it arrives (takes_over) and jumps to its
-## peak when the job finishes ("jump_to").
-static func start(event: Dictionary, fetcher: Fetcher) -> Fetcher.Job:
-	var job := fetcher.start_update(event["site"], "", event["from"], event["to"])
+## Fetches `event`'s window (TimeWindow.of_event, Fetcher.start_window), clipped to the app's
+## `window` when given (nothing, null, when they do not overlap): main follows its scans as they
+## arrive (takes_over) and jumps to its peak when the job finishes ("jump_to"). Main opens the
+## event's window first (_open), which stops the jobs outside it.
+static func start(event: Dictionary, fetcher: Fetcher, window: TimeWindow = null) -> Fetcher.Job:
+	var w := TimeWindow.of_event(event)
+	if window != null:
+		w = w.clip(window)
+	var job := fetcher.start_window(event["site"], w) if w != null else null
 	if job != null:
 		job.set_meta("jump_to", unix(event["peak"]))
 	return job
 
 
-## The site to open on: `want` (site=, defaulted from event=) if cached or the event's own
-## (whose fetch is about to start), else "" for the caller's fallback, the latest site.
+## Open an explicitly requested known/cached site even before its scans arrive.
 static func startup_site(event: Dictionary, want: String, sites: Array[String]) -> String:
-	if sites.has(want) or (not want.is_empty() and want == event.get("site", "")):
+	if sites.has(want) or RadarSites.location(want) != Vector2.INF:
+		return want
+	if not want.is_empty() and want == event.get("site", ""):
 		return want
 	return ""
 
 
-## The frame to open on for event=: the one of `frames` (the event's site, ascending) nearest
-## `unix` (the peak, or an explicit time=) if it lies within the event's loop, else -1: the
-## site's other scans (yesterday's live view) are not the event, so nothing shows until its
-## own scans arrive.
-static func frame_within(event: Dictionary, frames: Array[String], unix: int) -> int:
-	var i := RadarLibrary.nearest_in_time(frames, unix)
-	if i < 0:
-		return -1
-	var t := RadarLibrary.unix_of(frames[i])
-	return i if t >= Events.unix(event["from"]) and t <= Events.unix(event["to"]) else -1
-
-
-## Whether the scan `name` just written by an event's fetch (oldest first) takes over from the
-## frame on screen (`shown`, "" for none): it does when it is nearer the event's `peak`, so the
-## view converges on the peak even if the fetch fails or is stopped part way, and a fetch that
-## re-reports cached scans never moves it off the peak.
+## Whether the scan `name` just written by a fetch (oldest first) takes over from the frame on
+## screen (`shown`, "" for none): it does when it is nearer the fetch's target (`peak`: an
+## event's peak, else the window's end), so the view converges on it even if the fetch fails
+## or is stopped part way, and a fetch that re-reports cached scans never moves it off the
+## target. The event's own window (TimeWindow.of_event) keeps the site's other scans out.
 static func takes_over(peak: int, name: String, shown: String) -> bool:
 	if shown.is_empty():
 		return true

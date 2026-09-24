@@ -13,14 +13,14 @@ static func shown_in_loop(
 	return index >= seq.x and index <= seq.y
 
 
-## Empty means the current frame should remain pinned. Newest wins even if an older
-## provisional scan arrives later; a rewritten newest scan must reload when it is stale.
-static func live_target(
-	library: RadarLibrary, site: String, current: RadarVolume, playing: bool
-) -> String:
-	var newest := library.latest(site)
-	if newest.is_empty() or playing:
+## The scan live following should show: the newest of `frames` (the site's scans inside the
+## window, ascending). Empty means the current frame should remain pinned. Newest wins even
+## if an older provisional scan arrives later; a rewritten newest scan must reload when it is
+## stale.
+static func live_target(frames: Array[String], current: RadarVolume, playing: bool) -> String:
+	if frames.is_empty() or playing:
 		return ""
+	var newest := frames[-1]
 	if current != null and current.name == newest and not current.is_stale():
 		return ""
 	return newest

@@ -26,6 +26,7 @@ var active_warnings: Array = []  # Warnings.active_at() the volume's time
 var active_outlook: Array = []  # Outlooks.active_at() the volume's time
 var cells: Array = []  # this frame's tracked cells (StormCells.track())
 var library: RadarLibrary  # set by main: the mosaic neighbours' loops
+var window: TimeWindow  # set by main: the neighbours' loops stay inside it
 var _cell_frames: Array = []
 var _cell_names: Array[String] = []  # the loop _cell_frames was tracked for
 var _neighbor_cells := {}  # site -> {"names": Array[String], "frames": StormCells.track()}
@@ -175,7 +176,7 @@ func _mosaic_cells(own: Array, loop: Array[RadarVolume], neighbors: Array) -> Ar
 		var shown: RadarVolume = n["volume"]
 		var site: String = n["site"]
 		var names: Array[String] = []
-		for name in library.for_site(site):
+		for name in library.for_site(site, window):
 			var t := RadarLibrary.unix_of(name)
 			if t >= t0 and t <= t1:
 				names.append(name)
