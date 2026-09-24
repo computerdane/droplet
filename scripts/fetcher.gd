@@ -12,6 +12,10 @@ extends Node
 ## Web: one Web Worker per job (web/nexrad_worker.js, running nexrad-wasm next to index.html),
 ## which fetches straight from the Unidata buckets and hands each decoded volume over whole;
 ## volume_received passes it on for a MemorySource.
+##
+## A request identical to a running job's (same `request_key`: kind, site and times) does not
+## start another job: start_update/start_live return the running one, flagged "already running"
+## in its status line until its next output. Once it has finished, the request runs again.
 
 signal job_updated(job: Job)
 signal job_finished(job: Job)
@@ -31,6 +35,7 @@ class Job:
 	extends RefCounted
 	var kind := ""  # "update" or "live"
 	var site := ""
+	var key := ""  # request_key() of the request that started it
 	var args := PackedStringArray()
 	var pid := -1
 	var stdio: FileAccess
@@ -41,6 +46,7 @@ class Job:
 	var running := true
 	var stopped := false  # killed from the UI
 	var exit_code := 0
+	var repeated := false  # the same request was made again while running (until the next line)
 	var worker: JavaScriptObject  # web
 	var on_message: JavaScriptObject  # web: callbacks must outlive the worker
 	var on_error: JavaScriptObject
@@ -52,6 +58,8 @@ class Job:
 			state = " stopped"
 		elif not running:
 			state = " done" if exit_code == 0 else " failed (%d)" % exit_code
+		elif repeated:
+			state = " already running"
 		var p := progress + " " if running and not progress.is_empty() else ""
 		return "%s %s%s: %s%s" % [site, kind, state, p, last_line.get_file()]
 
@@ -74,26 +82,70 @@ func _ready() -> void:
 
 ## Fetch history for `site`: the newest volume, the one at/before `at`, or `from`..`to`
 ## (ISO times, e.g. 2013-05-20T20:00Z).
+## Returns the already running job instead when the same request is running.
 func start_update(site: String, at := "", from := "", to := "") -> Job:
+	var key := request_key("update", site, at, from, to)
+	var running := _repeat(key)
+	if running != null:
+		return running
 	if web:
-		return _start_worker("update", site, {"at": at, "from": from, "to": to})
+		return _start_worker("update", site, key, {"at": at, "from": from, "to": to})
 	var args := PackedStringArray(["update", site])
 	if not from.is_empty() and not to.is_empty():
 		args.append_array(["--from", from, "--to", to])
 	elif not at.is_empty():
 		args.append_array(["--at", at])
-	return _start("update", site, args)
+	return _start("update", site, key, args)
 
 
+## Returns the already running job instead when `site` is already being followed.
 func start_live(site: String) -> Job:
+	var key := request_key("live", site)
+	var running := _repeat(key)
+	if running != null:
+		return running
 	if web:
 		var request := {}
 		var stored := _storage_get(RING_KEY + site)
 		var hint = JSON.parse_string(stored) if not stored.is_empty() else null
 		if hint is Dictionary:
 			request["hint"] = hint
-		return _start_worker("live", site, request)
-	return _start("live", site, PackedStringArray(["live", site]))
+		return _start_worker("live", site, key, request)
+	return _start("live", site, key, PackedStringArray(["live", site]))
+
+
+## Identifies a request's dataset: the kind, the site, and for `update` what it selects, as
+## the CLI reads it (a range needs both ends, else the volume at `at`, else the newest).
+static func request_key(kind: String, site: String, at := "", from := "", to := "") -> String:
+	var parts := PackedStringArray([kind, site.strip_edges().to_upper()])
+	if kind == "update":
+		var a := at.strip_edges()
+		var f := from.strip_edges()
+		var t := to.strip_edges()
+		if not f.is_empty() and not t.is_empty():
+			parts.append_array(["range", f, t])
+		elif not a.is_empty():
+			parts.append_array(["at", a])
+		else:
+			parts.append("newest")
+	return " ".join(parts)
+
+
+## The running job started for `key`, or null (one being stopped does not count).
+func running_job(key: String) -> Job:
+	for job in jobs:
+		if job.running and not job.stopped and job.key == key:
+			return job
+	return null
+
+
+## A repeated request: flags the running job for `key` and returns it (null if none).
+func _repeat(key: String) -> Job:
+	var job := running_job(key)
+	if job != null:
+		job.repeated = true
+		job_updated.emit(job)
+	return job
 
 
 func stop(job: Job) -> void:
@@ -115,16 +167,13 @@ func running_jobs() -> Array[Job]:
 	return jobs.filter(func(j: Job) -> bool: return j.running)
 
 
-func _start(kind: String, site: String, args: PackedStringArray) -> Job:
+func _start(kind: String, site: String, key: String, args: PackedStringArray) -> Job:
 	var job := Job.new()
 	job.kind = kind
 	job.site = site
+	job.key = key
 	job.args = args
-	# The CLI resolves data/ under DROPLET_ROOT.
-	if OS.get_environment("DROPLET_ROOT").is_empty():
-		OS.set_environment("DROPLET_ROOT", ProjectSettings.globalize_path("res://"))
-	var exe := OS.get_environment("DROPLET_NEXRAD")
-	var p := OS.execute_with_pipe(exe if not exe.is_empty() else "nexrad", args, false)
+	var p := _launch(args)
 	if p.is_empty():
 		job.running = false
 		job.exit_code = -1
@@ -141,10 +190,21 @@ func _start(kind: String, site: String, args: PackedStringArray) -> Job:
 	return job
 
 
-func _start_worker(kind: String, site: String, request: Dictionary) -> Job:
+## Runs the nexrad CLI with `args`: OS.execute_with_pipe's {stdio, stderr, pid}, or {} if it
+## could not start. (Tests override this to run without a process.)
+func _launch(args: PackedStringArray) -> Dictionary:
+	# The CLI resolves data/ under DROPLET_ROOT.
+	if OS.get_environment("DROPLET_ROOT").is_empty():
+		OS.set_environment("DROPLET_ROOT", ProjectSettings.globalize_path("res://"))
+	var exe := OS.get_environment("DROPLET_NEXRAD")
+	return OS.execute_with_pipe(exe if not exe.is_empty() else "nexrad", args, false)
+
+
+func _start_worker(kind: String, site: String, key: String, request: Dictionary) -> Job:
 	var job := Job.new()
 	job.kind = kind
 	job.site = site
+	job.key = key
 	request["cmd"] = kind
 	request["site"] = site
 	job.args = PackedStringArray([JSON.stringify(request)])
@@ -269,6 +329,7 @@ func _read(job: Job, pipe: FileAccess) -> bool:
 
 func _add_line(job: Job, line: String) -> void:
 	job.last_line = line
+	job.repeated = false
 	var pm := _progress_re.search(line)
 	if pm != null:
 		job.progress = pm.get_string()
