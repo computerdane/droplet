@@ -167,6 +167,30 @@ func running_jobs() -> Array[Job]:
 	return jobs.filter(func(j: Job) -> bool: return j.running)
 
 
+## Status lines of the running jobs, or of the last job if it failed: a fetch that ended without
+## a scan must say so in the HUD rather than leave the view silently where it was.
+func status_lines() -> PackedStringArray:
+	var out := PackedStringArray()
+	for job in running_jobs():
+		out.append(job.describe())
+	var last: Job = jobs.back() if not jobs.is_empty() else null
+	if out.is_empty() and last != null and last.exit_code != 0 and not last.stopped:
+		out.append(last.describe())
+	return out
+
+
+## Fetches a site the user just picked on the map: live following when possible, else its
+## newest scan; nothing when a job for it is already running.
+func start_site(site: String) -> void:
+	for j in running_jobs():
+		if j.site == site:
+			return
+	if can_live:
+		start_live(site)
+	else:
+		start_update(site)
+
+
 func _start(kind: String, site: String, key: String, args: PackedStringArray) -> Job:
 	var job := Job.new()
 	job.kind = kind

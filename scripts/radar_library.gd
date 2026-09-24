@@ -120,6 +120,12 @@ static func site_of(name: String) -> String:
 	return name.get_file().get_slice("_", 0)
 
 
+## "HH:MMZ" of a volume name.
+static func clock(name: String) -> String:
+	var t := name.get_file().get_slice("_", 2)
+	return "%s:%sZ" % [t.substr(0, 2), t.substr(2, 2)]
+
+
 ## Scan start time encoded in the volume name, as unix seconds (UTC).
 static func unix_of(name: String) -> int:
 	var n := name.get_file()

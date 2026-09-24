@@ -178,9 +178,15 @@ func _ready() -> void:
 	else:
 		var sites := library.sites()
 		var want_site: String = opts.get("site", "").to_upper()
-		_select_site(want_site if sites.has(want_site) else library.site_of(library.latest()))
+		var event := Events.find(opts.get("event", ""))
+		# An event's site shows even before its scans exist (its fetch starts below), not the
+		# site last fetched.
+		var have: bool = sites.has(want_site) or want_site == event.get("site", "")
+		_select_site(want_site if have else library.site_of(library.latest()))
 		if opts.has("time"):
-			_go_to(RadarLibrary.nearest_in_time(frames, RadarLibrary.unix_of("X_" + opts["time"])))
+			var t := RadarLibrary.unix_of("X_" + opts["time"])
+			var i := RadarLibrary.nearest_in_time(frames, t)
+			_go_to(Events.frame_within(event, frames, t) if not event.is_empty() else i)
 			live = false
 		_set_live(opts.get("live", "1" if live else "0") == "1")
 		_set_playing(opts.get("play", "0") == "1")
@@ -291,13 +297,7 @@ func _select_site(s: String) -> void:
 ## Picking a marker works even before that site's first volume has been downloaded.
 func _select_map_site(s: String) -> void:
 	_select_site(s)
-	for j in fetcher.running_jobs():
-		if j.site == s:
-			return
-	if fetcher.can_live:
-		fetcher.start_live(s)
-	else:
-		fetcher.start_update(s)
+	fetcher.start_site(s)
 
 
 func _show_overview() -> void:
@@ -319,8 +319,9 @@ func _show_overview() -> void:
 	hud.set_sites(library.sites(), "")
 
 
+## A negative index shows no frame (an event's site before its scans arrive).
 func _go_to(i: int) -> void:
-	if frames.is_empty():
+	if frames.is_empty() or i < 0:
 		frame = -1
 		volume = null
 		_refresh()
@@ -575,6 +576,8 @@ func _on_volume_changed(name: String) -> void:
 	overlays.invalidate_volume(name)
 	_tracks.invalidate_volume(name)
 	_rescan()
+	if _follow_event(name):
+		return
 	if volume != null and volume.name == name:
 		_go_to(frame)
 	elif (
@@ -584,6 +587,20 @@ func _on_volume_changed(name: String) -> void:
 		_refresh()
 	if live and not playing:
 		_on_live_tick()
+
+
+## An event's loop shows as it arrives while the view is on its site (Events.takes_over), so
+## the launch that fetches it ends on the event even if the fetch does not finish cleanly.
+func _follow_event(name: String) -> bool:
+	if live or site != RadarLibrary.site_of(name) or not frames.has(name):
+		return false
+	for job in fetcher.running_jobs():
+		if job.site != site or not job.has_meta("jump_to"):
+			continue
+		if Events.takes_over(job.get_meta("jump_to"), name, volume.name if volume != null else ""):
+			_go_to(frames.find(name))
+			return true
+	return false
 
 
 ## A finished update jumps to the last volume it fetched (a notable event: to its peak).
@@ -755,15 +772,9 @@ func _update_winds() -> void:
 	var motion = own.get("storm_motion")
 	if motion == null and not _auto_storm.is_empty():
 		motion = _auto_storm["storm_motion"]
-	var title := "VAD winds  %s %s  (m/s)" % [volume.icao(), _clock(volume.name)]
+	var title := "VAD winds  %s %s  (m/s)" % [volume.icao(), RadarLibrary.clock(volume.name)]
 	var in_use := _storm_motion() if srm_on else Vector2.INF
 	hud.hodograph.show_winds(own.get("wind_profile"), motion, in_use, title, _storm_source())
-
-
-## "HH:MMZ" of a volume name.
-static func _clock(path: String) -> String:
-	var t := path.get_file().get_slice("_", 2)
-	return "%s:%sZ" % [t.substr(0, 2), t.substr(2, 2)]
 
 
 ## Where the storm motion in effect comes from, for the info text and hodograph.
@@ -775,7 +786,7 @@ func _storm_source() -> String:
 	var src: String = _auto_storm["name"]
 	if volume != null and src == volume.name:
 		return what + " (Bunkers RM)"
-	return what + " (Bunkers RM, %s %s)" % [RadarLibrary.site_of(src), _clock(src)]
+	return what + " (Bunkers RM, %s %s)" % [RadarLibrary.site_of(src), RadarLibrary.clock(src)]
 
 
 ## Readout of whatever is under the mouse: the section panel, the VWP, or the 2D view
@@ -903,12 +914,12 @@ func _update_info() -> void:
 		hud.set_info("\n".join(lines))
 		return
 	if volume == null:
-		var running := fetcher.running_jobs()
-		if not running.is_empty():
-			var lines := PackedStringArray()
-			for job in running:
-				lines.append(job.describe())
-			hud.set_info("%s  waiting for first scan\n%s" % [site, "\n".join(lines)])
+		var jobs := fetcher.status_lines()
+		if not jobs.is_empty():
+			var state := (
+				"waiting for first scan" if fetcher.running_jobs().size() > 0 else "fetch failed"
+			)
+			hud.set_info("%s  %s\n%s" % [site, state, "\n".join(jobs)])
 			return
 		var help := "Run:  nexrad update KTLX   (or: nexrad live KTLX)"
 		if fetcher.web:
@@ -982,8 +993,8 @@ func _update_info() -> void:
 	if mosaic:
 		lines.append("mosaic: " + Mosaic.summary(_neighbors))
 	lines.append_array(overlays.info_lines())
-	for job in fetcher.running_jobs():
-		lines.append("fetch: " + job.describe())
+	for l in fetcher.status_lines():
+		lines.append("fetch: " + l)
 	hud.set_info("\n".join(lines))
 
 
