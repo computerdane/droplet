@@ -877,3 +877,9 @@ test('rate limits wait for the reset without consuming retries', () => temp(root
   assert.deepEqual(sleeps, [605000, 300000, 300000, 300000, 300000, 300000, 60000]);
   assert.match(warnings[0], /^RATE_LIMITED: waiting 605s/);
 }));
+
+test('summarize shows how a review changed', () => {
+  const base = { type: 'review', number: 9, author: 'owner', approver: true, body: 'x' };
+  assert.equal(summarize({ ...base, change: 'deleted', state: null, previous_state: 'COMMENTED' }), 'review #9 owner (approver) deleted COMMENTED: x');
+  assert.equal(summarize({ ...base, change: 'new', state: 'APPROVED' }), 'review #9 owner (approver) new APPROVED: x');
+});
