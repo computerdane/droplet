@@ -16,9 +16,13 @@ extends RefCounted
 const DEFAULT_LIVE_MIN := 60
 const AROUND_SEC := 30 * 60  # time=T opens T ± 30 min, like the fetch panel's prefill
 
+static var _compact_re: RegEx  # parse_time's, compiled once
+static var _iso_re: RegEx
+
 var live := false
 var span_sec := 0  # live only: how far back from now the window reaches
 var from := 0
+## The end. A live window is open-ended: `to` is only its last tick (use upper()).
 var to := 0
 
 
@@ -58,6 +62,12 @@ func tick(now := -1) -> void:
 	from = to - span_sec
 
 
+## The last scan start time inside the window, or -1 when it is open-ended (live): what a
+## prune window or `nexrad --to` should use rather than `to`.
+func upper() -> int:
+	return -1 if live else to
+
+
 func contains(unix: int) -> bool:
 	return unix >= from and (live or unix <= to)
 
@@ -82,6 +92,7 @@ func iso_from() -> String:
 	return Time.get_datetime_string_from_unix_time(from) + "Z"
 
 
+## A live window's is only its last tick: use upper() for a bound (prune, --to).
 func iso_to() -> String:
 	return Time.get_datetime_string_from_unix_time(to) + "Z"
 
@@ -108,7 +119,7 @@ func to_option() -> String:
 
 
 ## A window= value, or null if it is not one. Times may be as in time= (20130520_193000) or
-## ISO as in fetch= (2013-05-20T19:30Z, seconds optional); from must not be after to.
+## ISO as anything parse_time takes (2013-05-20T19:30Z); from must not be after to.
 static func parse_option(s: String) -> TimeWindow:
 	if s == "live":
 		return live_window()
@@ -127,57 +138,77 @@ static func parse_option(s: String) -> TimeWindow:
 	return fixed(a, b)
 
 
-## The window the app opens on for its options (AppOptions.parse): window= first, then
-## event=, fetch=<from>/<to> (or fetch=<time>, ± AROUND_SEC), time=, else live. An option that
-## does not parse is skipped.
+## The window the app opens on for its options (AppOptions.parse), in AppOptions.start_fetch's
+## order: window=; else fetch= (<from>/<to> as is, <time> ± AROUND_SEC, live or latest the live
+## window); else event=; else time= (± AROUND_SEC); else live. A value that does not parse is
+## skipped (start_fetch would hand a bad fetch= to nexrad, which fails).
+## fetch=latest opens the live window, but the newest scan may be older than it: stage B must
+## widen or re-target the window to that scan once it arrives.
 static func from_options(opts: Dictionary) -> TimeWindow:
 	var w := parse_option(opts.get("window", ""))
 	if w != null:
 		return w
+	var what: String = opts.get("fetch", "")
+	if what == "live" or what == "latest":
+		return live_window()
+	if "/" in what:
+		w = parse_option(what)
+		if w != null:
+			return w
+	elif parse_time(what) >= 0:
+		return around(parse_time(what))
 	var event := Events.find(opts.get("event", ""))
 	if not event.is_empty():
 		return of_event(event)
-	var what: String = opts.get("fetch", "")
-	if "/" in what:
-		var a := parse_time(what.get_slice("/", 0))
-		var b := parse_time(what.get_slice("/", 1))
-		if a >= 0 and b >= a:
-			return fixed(a, b)
-	elif parse_time(what) >= 0:
-		return around(parse_time(what))
 	var t := parse_time(opts.get("time", ""))
 	if t >= 0:
 		return around(t)
 	return live_window()
 
 
-## Unix time of 20130520_193000 (time=, volume names) or 2013-05-20T19:30[:00][Z], or -1.
+## Unix time of 20130520_193000 (time=, volume names) or of any ISO time nexrad's
+## Utc::parse_iso takes (fetch=, --at/--from/--to): 2013-05-20, 2013-05-20T20Z, 2013-05-20 20:10,
+## 2013-05-20T20:10:30.5z, 2013-05-20T15:10-05:00 (converted to UTC); fractional seconds are
+## dropped. -1 if it is not one, including impossible dates (2013-02-30), which nexrad
+## would roll over.
 static func parse_time(s: String) -> int:
-	var re := RegEx.create_from_string(
-		(
-			"^(\\d{4})(?:(\\d{2})(\\d{2})_(\\d{2})(\\d{2})(\\d{2})"
-			+ "|-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2})(?::(\\d{2}))?Z?)$"
+	if _compact_re == null:
+		_compact_re = RegEx.create_from_string(
+			"^(\\d{4})(\\d{2})(\\d{2})_(\\d{2})(\\d{2})(\\d{2})$"
 		)
-	)
-	var m := re.search(s)
+		_iso_re = RegEx.create_from_string(
+			(
+				"^(\\d{4})-(\\d{1,2})-(\\d{1,2})(?:[T ](?:(\\d{1,2})(?::(\\d{1,2})"
+				+ "(?::(\\d{1,2}(?:\\.\\d*)?))?)?)?(?:([Zz])|([+-])(\\d{1,2})(?::(\\d{1,2}))?)?)?$"
+			)
+		)
+	s = s.strip_edges()
+	var m := _compact_re.search(s)
+	var zone := 0  # seconds east of UTC
 	if m == null:
-		return -1
-	var iso := m.get_string(2).is_empty()
-	var g := func(compact: int, dashed: int) -> int:
-		return m.get_string(dashed if iso else compact).to_int()
+		m = _iso_re.search(s)
+		if m == null:
+			return -1
+		zone = (m.get_string(9).to_int() * 60 + m.get_string(10).to_int()) * 60
+		if m.get_string(8) == "-":
+			zone = -zone
+		if m.get_string(9).to_int() > 23 or m.get_string(10).to_int() > 59:
+			return -1
 	var dt := {
 		"year": m.get_string(1).to_int(),
-		"month": g.call(2, 7),
-		"day": g.call(3, 8),
-		"hour": g.call(4, 9),
-		"minute": g.call(5, 10),
-		"second": g.call(6, 11),
+		"month": m.get_string(2).to_int(),
+		"day": m.get_string(3).to_int(),
+		"hour": m.get_string(4).to_int(),
+		"minute": m.get_string(5).to_int(),
+		"second": 0,
 	}
+	var sec := m.get_string(6).to_float()  # up to 60.999: nexrad allows a leap second
 	if dt["month"] < 1 or dt["month"] > 12 or dt["day"] < 1 or dt["day"] > _days_in(dt):
 		return -1
-	if dt["hour"] > 23 or dt["minute"] > 59 or dt["second"] > 59:
+	if dt["hour"] > 23 or dt["minute"] > 59 or sec >= 61.0:
 		return -1
-	return Time.get_unix_time_from_datetime_dict(dt)
+	var unix := Time.get_unix_time_from_datetime_dict(dt) + floori(sec) - zone
+	return unix if unix >= 0 else -1
 
 
 static func _days_in(dt: Dictionary) -> int:

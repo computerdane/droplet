@@ -79,6 +79,16 @@ func test_parse_time() -> void:
 	check_eq(TimeWindow.parse_time("2013-05-20T20:10Z"), T, "fetch= format")
 	check_eq(TimeWindow.parse_time("2013-05-20T20:10:00Z"), T, "with seconds")
 	check_eq(TimeWindow.parse_time("2013-05-20T20:10"), T, "without Z")
+	check_eq(TimeWindow.parse_time("2013-05-20"), T - 72600, "date only")
+	check_eq(TimeWindow.parse_time("2013-05-20T20Z"), T - 600, "hour only")
+	check_eq(TimeWindow.parse_time("2013-05-20 20:10z"), T, "space, lowercase z")
+	check_eq(TimeWindow.parse_time("2013-5-20T20:10"), T, "one-digit month")
+	check_eq(TimeWindow.parse_time(" 2013-05-20T20:10Z "), T, "surrounding space")
+	check_eq(TimeWindow.parse_time("2013-05-20T20:10:05.9Z"), T + 5, "fraction dropped")
+	check_eq(TimeWindow.parse_time("2013-05-20T15:10-05:00"), T, "negative offset")
+	check_eq(TimeWindow.parse_time("2013-05-21T01:40+05:30"), T, "positive offset")
+	check_eq(TimeWindow.parse_time("2013-05-20T21:10+01"), T, "offset hours only")
+	check_eq(TimeWindow.parse_time("2000-02-29"), 951782400, "2000 is a leap year")
 	check_eq(TimeWindow.parse_time("20240229_000000"), 1709164800, "leap day")
 	for bad in [
 		"",
@@ -90,8 +100,19 @@ func test_parse_time() -> void:
 		"20230229_000000",
 		"20130520_241000",
 		"20130520_206000",
-		"2013-05-20 20:10Z",
-		"2013-05-20T20:10+01:00",
+		"19000229_000000",
+		"1900-02-29",
+		"2100-02-29",
+		"2013-02-30T00:00Z",
+		"2013-05-20T24:00Z",
+		"2013-05-20T20:60Z",
+		"2013-05-20T20:10:61Z",
+		"2013-05-20T20:10+24:00",
+		"2013-05-20T:10Z",
+		"2013-05-20Z",
+		"2013-05-20T20:10ZZ",
+		"2013-05-20T20:10:00:00Z",
+		"2013/05/20",
 		"x20130520_201000",
 		"20130520_201000x",
 	]:
@@ -152,6 +173,7 @@ func test_equals() -> void:
 
 func test_option_precedence() -> void:
 	var moore := TimeWindow.of_event(Events.find("moore2013"))
+	var tusc := TimeWindow.parse_option("2011-04-27T21:45Z/2011-04-27T23:45Z")
 	var all := {
 		"window": "20240501_220000/20240501_230000",
 		"event": "moore2013",
@@ -163,21 +185,32 @@ func test_option_precedence() -> void:
 	)
 	check(TimeWindow.from_options(all).equals(want), "window= first")
 	all["window"] = "bogus"
-	check(TimeWindow.from_options(all).equals(moore), "invalid window= skipped, then event=")
+	check(TimeWindow.from_options(all).equals(tusc), "invalid window= skipped, then fetch=")
 	all.erase("window")
-	check(TimeWindow.from_options(all).equals(moore), "event= before fetch=")
-	all["event"] = "nope"
-	var tusc := TimeWindow.parse_option("2011-04-27T21:45Z/2011-04-27T23:45Z")
-	check(TimeWindow.from_options(all).equals(tusc), "unknown event skipped, then fetch=")
-	all.erase("event")
-	check(TimeWindow.from_options(all).equals(tusc), "fetch= range before time=")
+	check(TimeWindow.from_options(all).equals(tusc), "fetch= range before event=")
+	all["fetch"] = "2013-05-20/2013-05-21"
+	var day := TimeWindow.fixed(T - 72600, T + 13800)
+	check(TimeWindow.from_options(all).equals(day), "fetch= date range")
 	all["fetch"] = "2011-04-27T22:13Z"
 	var at := TimeWindow.around(TimeWindow.parse_time("2011-04-27T22:13Z"))
 	check(TimeWindow.from_options(all).equals(at), "fetch=<time> ± 30 min")
-	all["fetch"] = "live"
-	var peak := TimeWindow.around(TimeWindow.parse_time("20200810_164500"))
-	check(TimeWindow.from_options(all).equals(peak), "fetch=live defers to time=")
+	for live in ["live", "latest"]:
+		all["fetch"] = live
+		check(TimeWindow.from_options(all).equals(TimeWindow.live_window()), "fetch=%s" % live)
+	for bad in ["bogus", "2013-05-21/2013-05-20", "a/b"]:
+		all["fetch"] = bad
+		check(TimeWindow.from_options(all).equals(moore), "fetch=%s skipped, then event=" % bad)
 	all.erase("fetch")
+	check(TimeWindow.from_options(all).equals(moore), "event= before time=")
+	all["event"] = "nope"
+	var peak := TimeWindow.around(TimeWindow.parse_time("20200810_164500"))
+	check(TimeWindow.from_options(all).equals(peak), "unknown event skipped, then time=")
+	all.erase("event")
 	check(TimeWindow.from_options(all).equals(peak), "time= ± 30 min")
 	check(TimeWindow.from_options({"site": "KTLX"}).equals(TimeWindow.live_window()), "else live")
 	check(TimeWindow.from_options({"window": "live:20"}).span_sec == 1200, "window=live:20")
+
+
+func test_upper() -> void:
+	check_eq(TimeWindow.fixed(1, 2).upper(), 2, "fixed: to")
+	check_eq(TimeWindow.live_window(60, T).upper(), -1, "live: open-ended")
