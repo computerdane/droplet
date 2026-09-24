@@ -3,7 +3,7 @@
 // Labels are presentation, never authorization. Issue text is never shell code.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -68,7 +68,7 @@ export class GitHub {
 
   pulls() {
     return JSON.parse(this.execute(['gh', 'pr', 'list', '--repo', this.repo, '--state', 'open', '--limit', '100',
-      '--json', 'number,url,title,body,baseRefName,headRefName,headRefOid,updatedAt,isDraft,reviewDecision,statusCheckRollup,comments,reviews']));
+      '--json', 'number,url,title,body,author,baseRefName,headRefName,headRefOid,updatedAt,isDraft,reviewDecision,statusCheckRollup,comments,reviews']));
   }
 
   pull(number) { return this.api(this.endpoint(`pulls/${number}`)); }
@@ -128,13 +128,14 @@ export function saveState(state, root = ROOT) {
 
 function compactComment(c) {
   return { id: c.id, body: c.body, user: { id: c.user?.id, login: c.user?.login },
-    created_at: c.created_at, updated_at: c.updated_at, url: c.html_url, path: c.path, line: c.line };
+    created_at: c.created_at, updated_at: c.updated_at, url: c.html_url, path: c.path, line: c.line,
+    in_reply_to: c.in_reply_to_id };
 }
 
 export function snapshot(github, root = ROOT) {
   const issues = github.issues().map(brief => {
     const { issue, decision } = github.issue(brief.number);
-    return { number: issue.number, title: issue.title, body: issue.body, url: issue.html_url,
+    return { number: issue.number, title: issue.title, body: issue.body, url: issue.html_url, author: issue.user?.login,
       updated_at: issue.updated_at, approval: decision, comments: issue.comments.map(compactComment),
       labels: issue.labels.map(l => l.name) };
   });
@@ -145,6 +146,301 @@ export function snapshot(github, root = ROOT) {
   const value = { issues, pull_requests: pulls, stacks: github.stacks(), jobs: loadState(root).jobs };
   value.fingerprint = digest(value);
   return value;
+}
+
+// Recent snapshots are kept locally so status/watch can itemize what changed since
+// the fingerprint a caller last saw. They are a reading aid, never authorization.
+const SNAPSHOT_DIR = '.automation/snapshots';
+const KEEP_SNAPSHOTS = 30;
+const FINGERPRINT = /^[0-9a-f]{64}$/;
+export const PREVIEW_MARKER = '<!-- droplet-pages-preview -->';
+
+function writeAtomic(path, text) {
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, text);
+  renameSync(temporary, path);
+}
+
+function readJson(path, fallback) {
+  try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return fallback; }
+}
+
+export function storeSnapshot(value, root = ROOT) {
+  const folder = join(root, SNAPSHOT_DIR);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(root, '.automation/.gdignore'), '');
+  writeAtomic(join(folder, `${value.fingerprint}.json`), JSON.stringify(value));
+  const index = readJson(join(folder, 'index.json'), []).filter(f => FINGERPRINT.test(f) && f !== value.fingerprint);
+  index.push(value.fingerprint);
+  for (const old of index.splice(0, Math.max(0, index.length - KEEP_SNAPSHOTS))) rmSync(join(folder, `${old}.json`), { force: true });
+  writeAtomic(join(folder, 'index.json'), JSON.stringify(index));
+}
+
+// baseline: "since" (the caller's fingerprint), "last" (status without --since: the
+// most recent stored snapshot), "stale" (--since unknown or pruned; compared with the
+// most recent stored snapshot instead), or "none" (nothing stored; review everything).
+export function findBaseline(since, root = ROOT) {
+  const folder = join(root, SNAPSHOT_DIR);
+  if (since && FINGERPRINT.test(since)) {
+    const previous = readJson(join(folder, `${since}.json`), null);
+    if (previous) return { baseline: 'since', previous };
+  }
+  for (const fingerprint of readJson(join(folder, 'index.json'), []).filter(f => FINGERPRINT.test(f)).reverse()) {
+    const previous = readJson(join(folder, `${fingerprint}.json`), null);
+    if (previous) return { baseline: since ? 'stale' : 'last', previous };
+  }
+  return { baseline: 'none', previous: null };
+}
+
+function person(user, context, viewerDidAuthor) {
+  const login = user?.login ?? null;
+  const approver = Boolean(user) && context.policy.approvers.some(a => (user.id != null ? a.id === user.id : a.login === login));
+  const self = Boolean(viewerDidAuthor) || Boolean(context.viewer && user
+    && (user.id != null ? user.id === context.viewer.id : login === context.viewer.login));
+  return { author: login, approver, self };
+}
+
+const byKey = (values = [], key = v => v.id) => new Map(values.map(v => [key(v), v]));
+
+function checkState(check) {
+  if (check.__typename === 'StatusContext' || (check.state && !check.status)) {
+    return { SUCCESS: 'pass', FAILURE: 'fail', ERROR: 'fail', PENDING: 'pending', EXPECTED: 'pending' }[check.state] || String(check.state).toLowerCase();
+  }
+  if (check.status !== 'COMPLETED') return 'pending';
+  return { SUCCESS: 'pass', NEUTRAL: 'pass', SKIPPED: 'skipped', FAILURE: 'fail', TIMED_OUT: 'fail', ACTION_REQUIRED: 'fail',
+    STARTUP_FAILURE: 'fail', CANCELLED: 'cancelled', STALE: 'stale' }[check.conclusion] || String(check.conclusion).toLowerCase();
+}
+const checkName = c => [c.workflowName, c.name || c.context].filter(Boolean).join('/');
+
+function commentChanges(items, kind, number, before, after, context, { type = 'comment', gh = false, fallbackAt } = {}) {
+  const old = byKey(before);
+  const current = byKey(after);
+  for (const c of after || []) {
+    const previous = old.get(c.id);
+    const body = c.body ?? '';
+    if (previous && previous.body === c.body && previous.updated_at === c.updated_at) continue;
+    const change = previous ? 'edited' : 'new';
+    const created = gh ? c.createdAt : c.created_at;
+    const item = { type, kind, number, id: c.id, change,
+      ...person(gh ? c.author : c.user, context, c.viewerDidAuthor),
+      at: change === 'edited' ? (c.updated_at || fallbackAt || created) : created,
+      created_at: created, updated_at: gh ? null : c.updated_at, body, url: c.url };
+    if (type === 'inline_comment') Object.assign(item, { path: c.path, line: c.line, in_reply_to: c.in_reply_to });
+    if (type === 'comment' && body.includes(PREVIEW_MARKER)) {
+      item.type = 'preview';
+      item.sha = /Deployed commit: `([0-9a-f]{7,40})`/.exec(body)?.[1] ?? null;
+    }
+    items.push(item);
+  }
+  for (const c of before || []) {
+    if (!current.has(c.id)) {
+      items.push({ type, kind, number, id: c.id, change: 'deleted', ...person(gh ? c.author : c.user, context, c.viewerDidAuthor),
+        at: fallbackAt ?? null, body: c.body ?? '', url: c.url });
+    }
+  }
+}
+
+function approvalChange(before, after) {
+  if (after.approved && !before.approved) return 'approved';
+  if (!after.approved && before.approved) return after.reason === 'held by maintainer' ? 'held' : 'revoked';
+  if (after.approved && (after.comment_id !== before.comment_id || after.scope !== before.scope)) return 'reapproved';
+  if (!after.approved && after.reason !== before.reason) return 'reason';
+  return null;
+}
+
+// Returns every observable change between two snapshots, oldest first. Items are
+// self-contained so the coordinator can act on them without diffing snapshots.
+// Nothing is dropped: the caller's own comments are marked self: true.
+export function activity(previous, current, context) {
+  const items = [];
+  const lookup = (fn, number) => { try { return fn(number); } catch (error) { return { error: error.message }; } };
+  const oldIssues = byKey(previous.issues, i => i.number);
+  const newIssues = byKey(current.issues, i => i.number);
+  for (const issue of current.issues) {
+    const old = oldIssues.get(issue.number);
+    const base = { type: 'issue', number: issue.number, title: issue.title, url: issue.url, at: issue.updated_at };
+    if (!old) items.push({ ...base, change: 'opened', author: issue.author ?? null, labels: issue.labels, body: issue.body ?? '' });
+    else {
+      if (old.title !== issue.title || (old.body ?? '') !== (issue.body ?? '')) {
+        items.push({ ...base, change: 'edited', previous_title: old.title, body: issue.body ?? '' });
+      }
+      const added = issue.labels.filter(l => !old.labels.includes(l));
+      const removed = old.labels.filter(l => !issue.labels.includes(l));
+      if (added.length || removed.length) items.push({ ...base, change: 'labels', added, removed });
+    }
+    const beforeApproval = old?.approval || { approved: false, reason: null };
+    const change = approvalChange(beforeApproval, issue.approval);
+    if (change && (old || issue.approval.approved)) {
+      const command = issue.comments.find(c => c.id === issue.approval.comment_id)
+        || issue.comments.filter(c => context.policy.approvers.some(a => a.id === c.user?.id)
+          && ['/approve', '/hold'].includes((c.body || '').trim())).at(-1);
+      items.push({ type: 'approval', number: issue.number, change, approved: issue.approval.approved,
+        reason: issue.approval.reason, previous_reason: beforeApproval.reason ?? null, comment_id: issue.approval.comment_id ?? command?.id ?? null,
+        url: issue.approval.url ?? command?.url ?? issue.url, at: command?.created_at ?? issue.updated_at });
+    }
+    commentChanges(items, 'issue', issue.number, old?.comments, issue.comments, context, { fallbackAt: issue.updated_at });
+  }
+  for (const old of previous.issues) {
+    if (newIssues.has(old.number)) continue;
+    const live = lookup(context.lookupIssue, old.number) || {};
+    items.push({ type: 'issue', number: old.number, title: old.title, url: old.url,
+      change: live.state === 'closed' ? 'closed' : 'gone', state: live.state ?? null, state_reason: live.state_reason ?? null,
+      closed_by: live.closed_by?.login ?? null, error: live.error, at: live.closed_at ?? live.updated_at ?? null });
+  }
+
+  const oldPulls = byKey(previous.pull_requests, p => p.number);
+  const newPulls = byKey(current.pull_requests, p => p.number);
+  for (const pr of current.pull_requests) {
+    const old = oldPulls.get(pr.number);
+    const base = { type: 'pull_request', number: pr.number, title: pr.title, url: pr.url, head_sha: pr.headRefOid, at: pr.updatedAt };
+    if (!old) {
+      items.push({ ...base, change: 'opened', author: pr.author?.login ?? null, base: pr.baseRefName, head: pr.headRefName,
+        draft: pr.isDraft, body: pr.body ?? '' });
+    } else {
+      if (old.headRefOid !== pr.headRefOid) items.push({ ...base, change: 'head', previous_head_sha: old.headRefOid });
+      if (old.baseRefName !== pr.baseRefName) items.push({ ...base, change: 'base', base: pr.baseRefName, previous_base: old.baseRefName });
+      if (old.title !== pr.title || (old.body ?? '') !== (pr.body ?? '')) items.push({ ...base, change: 'edited', previous_title: old.title, body: pr.body ?? '' });
+      if (old.isDraft !== pr.isDraft) items.push({ ...base, change: pr.isDraft ? 'draft' : 'ready_for_review' });
+      if (old.reviewDecision !== pr.reviewDecision) {
+        items.push({ ...base, change: 'review_decision', review_decision: pr.reviewDecision || null, previous: old.reviewDecision || null });
+      }
+    }
+    const oldChecks = byKey(old?.statusCheckRollup, checkName);
+    for (const check of pr.statusCheckRollup || []) {
+      const name = checkName(check);
+      const from = oldChecks.has(name) ? checkState(oldChecks.get(name)) : null;
+      const to = checkState(check);
+      if (from !== to) {
+        items.push({ type: 'check', number: pr.number, name, from, to, head_sha: pr.headRefOid,
+          url: check.detailsUrl || check.targetUrl || null, at: check.completedAt || check.startedAt || pr.updatedAt });
+      }
+    }
+    commentChanges(items, 'pull_request', pr.number, old?.comments, pr.comments, context, { gh: true, fallbackAt: pr.updatedAt });
+    commentChanges(items, 'pull_request', pr.number, old?.inline_comments, pr.inline_comments, context,
+      { type: 'inline_comment', fallbackAt: pr.updatedAt });
+    const oldReviews = byKey(old?.reviews);
+    for (const review of pr.reviews || []) {
+      const prior = oldReviews.get(review.id);
+      if (prior && prior.state === review.state && prior.body === review.body) continue;
+      items.push({ type: 'review', kind: 'pull_request', number: pr.number, id: review.id, change: prior ? 'edited' : 'new',
+        ...person(review.author, context), state: review.state, previous_state: prior?.state ?? null,
+        commit: review.commit?.oid ?? null, body: review.body ?? '', at: review.submittedAt || pr.updatedAt, url: pr.url });
+    }
+  }
+  for (const old of previous.pull_requests) {
+    if (newPulls.has(old.number)) continue;
+    const live = lookup(context.lookupPull, old.number) || {};
+    const change = live.merged_at ? 'merged' : live.state === 'closed' ? 'closed' : live.state === 'open' ? 'unlisted' : 'gone';
+    items.push({ type: 'pull_request', number: old.number, title: old.title, url: old.url, change,
+      head_sha: live.head?.sha ?? old.headRefOid, merged_by: live.merged_by?.login ?? null,
+      merge_commit_sha: live.merged_at ? live.merge_commit_sha ?? null : null, error: live.error,
+      at: live.merged_at || live.closed_at || live.updated_at || null });
+  }
+
+  const stackKey = s => s.number ?? s.id;
+  const describe = s => ({ open: s.open, base: s.base?.ref ?? null, pull_requests: (s.pull_requests || []).map(p => p.number) });
+  const oldStacks = byKey(previous.stacks, stackKey);
+  const newStacks = byKey(current.stacks, stackKey);
+  for (const s of current.stacks || []) {
+    const before = oldStacks.get(stackKey(s));
+    const now = describe(s);
+    if (!before) items.push({ type: 'stack', number: stackKey(s), change: 'created', ...now, at: s.updated_at ?? s.created_at ?? null });
+    else if (JSON.stringify(describe(before)) !== JSON.stringify(now)) {
+      items.push({ type: 'stack', number: stackKey(s), change: 'changed', ...now, previous: describe(before), at: s.updated_at ?? null });
+    }
+  }
+  for (const s of previous.stacks || []) {
+    if (!newStacks.has(stackKey(s))) items.push({ type: 'stack', number: stackKey(s), change: 'removed', ...describe(s), at: null });
+  }
+
+  const oldJobs = previous.jobs || {};
+  const newJobs = current.jobs || {};
+  for (const [number, job] of Object.entries(newJobs)) {
+    const before = oldJobs[number];
+    if (!before || before.phase !== job.phase || before.recovery_reason !== job.recovery_reason || before.pr !== job.pr) {
+      items.push({ type: 'job', number: Number(number), change: before ? 'updated' : 'added', from: before?.phase ?? null,
+        to: job.phase, reason: job.recovery_reason ?? null, pr: job.pr ?? null, at: null });
+    }
+  }
+  for (const [number, job] of Object.entries(oldJobs)) {
+    if (!(number in newJobs)) items.push({ type: 'job', number: Number(number), change: 'removed', from: job.phase, to: null, at: null });
+  }
+  // Stable sort: timed items oldest first; untimed local changes last.
+  return items.sort((a, b) => (a.at == null) - (b.at == null) || String(a.at ?? '').localeCompare(String(b.at ?? '')));
+}
+
+// Adds activity since the caller's fingerprint to a snapshot and stores it as the
+// next baseline. The snapshot fields are unchanged for existing callers.
+export function observe(github, value, since, root = ROOT) {
+  const { baseline, previous } = findBaseline(since, root);
+  let viewer = null;
+  try { const user = github.api('user'); viewer = { id: user.id, login: user.login }; } catch { /* self marks fall back to viewerDidAuthor */ }
+  const items = previous ? activity(previous, value, { policy: github.policy, viewer,
+    lookupPull: number => github.pull(number),
+    lookupIssue: number => github.api(github.endpoint(`issues/${number}`)) }) : [];
+  storeSnapshot(value, root);
+  return { fingerprint: value.fingerprint, generated_at: new Date().toISOString(), baseline,
+    baseline_fingerprint: previous?.fingerprint ?? null, viewer: viewer?.login ?? null, activity: items, ...value };
+}
+
+const firstLine = text => {
+  const line = String(text ?? '').split('\n').map(l => l.trim()).find(l => l && !l.startsWith('<!--')) ?? '';
+  return line.length > 100 ? `${line.slice(0, 99)}…` : line;
+};
+
+export function summarize(item) {
+  const who = item.author ? ` ${item.author}${item.approver ? ' (approver)' : ''}${item.self ? ' (self)' : ''}` : '';
+  const ref = `#${item.number}`;
+  switch (item.type) {
+    case 'comment': case 'inline_comment':
+      return `${item.type} ${ref}${who} ${item.change}${item.path ? ` ${item.path}:${item.line ?? ''}` : ''}: ${firstLine(item.body)}`;
+    case 'preview': return `preview ${ref}${who} ${item.change}: ${item.sha ?? 'unknown sha'}`;
+    case 'review': return `review ${ref}${who} ${item.state}: ${firstLine(item.body)}`;
+    case 'approval': return `approval ${ref} ${item.change}: ${item.reason}`;
+    case 'check': return `check ${ref} ${item.name} ${item.from ?? 'new'} -> ${item.to}`;
+    case 'issue': case 'pull_request': {
+      const detail = { labels: `+[${(item.added || []).join(',')}] -[${(item.removed || []).join(',')}]`,
+        head: `${item.previous_head_sha?.slice(0, 7)} -> ${item.head_sha?.slice(0, 7)}`,
+        base: `${item.previous_base} -> ${item.base}`, review_decision: `${item.previous} -> ${item.review_decision}`,
+        closed: item.state_reason || '', merged: item.merged_by ? `by ${item.merged_by}` : '' }[item.change] ?? firstLine(item.title);
+      return `${item.type} ${ref}${who} ${item.change}${item.error ? ` (lookup failed: ${item.error})` : ''}: ${detail}`;
+    }
+    case 'stack': return `stack ${ref} ${item.change}: [${item.pull_requests.join(',')}]${item.open === false ? ' closed' : ''}`;
+    case 'job': return `job ${ref} ${item.change}: ${item.from ?? '-'} -> ${item.to ?? '-'}${item.reason ? ` (${item.reason})` : ''}`;
+    default: return `${item.type} ${ref}`;
+  }
+}
+
+// Repeats bounded `watch` calls until the fingerprint changes. Designed for a
+// background command: stdout is a short summary, the full JSON goes to `out`.
+export function watchUntilChange({ since, out }, { execute, sleep, log = console.log, warn = console.error, maxFailures = 5 }) {
+  let failures = 0;
+  for (;;) {
+    try {
+      const text = execute(since ? ['watch', '--since', since, '--seconds', '60'] : ['status']);
+      const value = JSON.parse(text);
+      if (typeof value.fingerprint !== 'string' || !Array.isArray(value.activity)) throw new Error('watch output lacks fingerprint/activity');
+      failures = 0;
+      if (since && value.fingerprint === since) continue;
+      writeAtomic(out, `${text.trimEnd()}\n`);
+      log(`CHANGED baseline=${value.baseline} items=${value.activity.length} json=${out}`);
+      if (value.baseline !== 'since') log(`BASELINE ${value.baseline}: itemized activity may be incomplete; review the full snapshot`);
+      for (const item of value.activity) log(summarize(item));
+      if (!value.activity.length) log('(no itemized activity; inspect the snapshot)');
+      log(`fingerprint ${value.fingerprint}`);
+      return 0;
+    } catch (error) {
+      failures++;
+      const message = String(error.message || error).split('\n').slice(0, 5).join(' ');
+      if (failures >= maxFailures) {
+        log(`PERSISTENT_ERROR after ${failures} consecutive failures: ${message}`);
+        return 1;
+      }
+      warn(`watch failed (${failures}/${maxFailures}), retrying in ${60 * failures}s: ${message}`);
+      sleep(60_000 * failures);
+    }
+  }
 }
 
 export function requireApproval(github, number) {
@@ -496,8 +792,11 @@ export function reply(github, number, commentId, body, { issueBody = false } = {
 }
 
 const HELP = `Usage: node tools/automation/queue.mjs COMMAND [options]
-  status                         Read issues, approvals, questions, PR feedback/checks and checkpoints
+  status [--since HASH]          Read issues, approvals, questions, PR feedback/checks and checkpoints
   watch --since HASH [--seconds 50] Wait for changed GitHub state, for at most 60 seconds
+                                 Both add \`activity\`: itemized changes since HASH (or the last stored snapshot)
+  watch-until-change [--since HASH] [--out FILE]
+                                 Repeat watch until the fingerprint changes (tools/automation/watch-until-change)
   check NUMBER [--recovery]       Verify implementation authorization, or restricted local Git recovery
   claim NUMBER [--paths CSV] [--base-issue NUMBER] [--recover]
                                  Claim independent paths or build atop an approved in-review PR
@@ -516,7 +815,7 @@ Run this helper from the canonical controller checkout, never its linked worker 
 export function parseArgs(argv) {
   const [command, ...rest] = argv;
   const specs = {
-    status: [], watch: ['since', 'seconds'], check: ['recovery'], claim: ['paths', 'base-issue', 'recover'], reconcile: [], stack: ['prs'],
+    status: ['since'], watch: ['since', 'seconds'], 'watch-until-change': ['since', 'out'], check: ['recovery'], claim: ['paths', 'base-issue', 'recover'], reconcile: [], stack: ['prs'],
     checkpoint: ['phase', 'notes-file', 'session', 'pr', 'repair'],
     reply: ['comment', 'issue-body', 'body-file'], propose: ['title', 'body-file'], 'sync-labels': ['number'], 'setup-labels': [],
   };
@@ -568,17 +867,32 @@ function main() {
     });
     return;
   }
+  const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  if (args.command === 'watch-until-change') {
+    const out = resolve(args.out ?? join(ROOT, '.automation/watch-last.json'));
+    const since = args.since ?? readJson(out, {}).fingerprint;
+    const self = fileURLToPath(import.meta.url);
+    const execute = argv => {
+      try {
+        return execFileSync(process.execPath, [self, ...argv], {
+          encoding: 'utf8', timeout: 600_000, maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (error) { throw new Error(error.stderr?.toString().trim() || `watch failed: ${error.code || error.status}`); }
+    };
+    process.exitCode = watchUntilChange({ since, out }, { sleep, execute });
+    return;
+  }
   const github = new GitHub(JSON.parse(readFileSync(join(ROOT, '.github/automation.json'), 'utf8')));
   let value;
   switch (args.command) {
-    case 'status': value = snapshot(github); break;
+    case 'status': value = observe(github, snapshot(github), args.since); break;
     case 'watch': {
       const deadline = Date.now() + args.seconds * 1000;
       do {
         value = snapshot(github);
         if (value.fingerprint !== args.since || Date.now() >= deadline) break;
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(30_000, deadline - Date.now()));
+        sleep(Math.min(30_000, deadline - Date.now()));
       } while (Date.now() <= deadline);
+      value = observe(github, value, args.since);
       break;
     }
     case 'check': value = checkJob(github, args.number, ROOT, args); break;
