@@ -7,9 +7,12 @@
   };
 
   outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+    # nixpkgs' Godot builds for Linux and Apple Silicon; the pinned nixpkgs has
+    # dropped x86_64-darwin entirely.
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        inherit (pkgs.stdenv.hostPlatform) isDarwin isLinux;
         # The NEXRAD pipeline CLI (fetch, decode, dealias, VAD, basemap, fixtures).
         nexrad = pkgs.rustPlatform.buildRustPackage {
           pname = "nexrad";
@@ -71,11 +74,14 @@
             cp -r project.godot scenes scripts shaders .godot "$out/"
           '';
         };
+        # XDG variables win when set; otherwise each platform's usual locations.
+        cacheHome = if isDarwin then "$HOME/Library/Caches" else "$HOME/.cache";
+        dataHome = if isDarwin then "$HOME/Library/Application Support" else "$HOME/.local/share";
         launcher = pkgs.writeShellApplication {
           name = "droplet";
           text = ''
-            export DROPLET_ROOT="''${DROPLET_ROOT:-''${XDG_CACHE_HOME:-$HOME/.cache}/droplet}"
-            export DROPLET_EXPORT_DIR="''${DROPLET_EXPORT_DIR:-''${XDG_DATA_HOME:-$HOME/.local/share}/droplet/exports}"
+            export DROPLET_ROOT="''${DROPLET_ROOT:-''${XDG_CACHE_HOME:-${cacheHome}}/droplet}"
+            export DROPLET_EXPORT_DIR="''${DROPLET_EXPORT_DIR:-''${XDG_DATA_HOME:-${dataHome}}/droplet/exports}"
             export DROPLET_NEXRAD="${nexrad}/bin/nexrad"
             export DROPLET_BASEMAP="${basemap}"
             mkdir -p "$DROPLET_ROOT/data/volumes" "$DROPLET_EXPORT_DIR"
@@ -84,18 +90,19 @@
         };
         droplet = pkgs.symlinkJoin {
           name = "droplet-0.1.0";
-          paths = [ launcher (pkgs.makeDesktopItem {
+          # The .desktop menu entry is a freedesktop (Linux) convention.
+          paths = [ launcher ] ++ pkgs.lib.optional isLinux (pkgs.makeDesktopItem {
             name = "droplet";
             desktopName = "Droplet";
             comment = "Weather radar visualizer";
             exec = "droplet";
             terminal = false;
             categories = [ "Science" "Geoscience" ];
-          }) ];
+          });
           meta = {
             description = "NEXRAD weather radar visualizer";
             mainProgram = "droplet";
-            platforms = pkgs.lib.platforms.linux;
+            platforms = pkgs.lib.platforms.linux ++ [ "aarch64-darwin" ];
           };
         };
       in
@@ -117,19 +124,26 @@
             lld
             wasm-bindgen-cli_0_2_127
             binaryen
+          ] ++ lib.optionals isLinux [
             # golden screenshots (tests/golden.sh): software GL under a virtual X server, with
             # this flake's Mesa rather than the host driver, so every machine renders alike.
             xvfb-run
+          ] ++ [
             # PR automation and offline Chromium smoke tests use this same locked toolset.
             nodejs_24
+          ] ++ lib.optionals isLinux [
+            # nixpkgs' Chromium is Linux-only.
             chromium
+          ] ++ [
             actionlint
             shellcheck
           ];
 
           shellHook = ''
             export GODOT_EXPORT_TEMPLATES="${pkgs.godot-export-templates-bin}/share/godot/export_templates"
+          '' + pkgs.lib.optionalString isLinux ''
             export DROPLET_GL_LIBS="${pkgs.libglvnd}/lib:${pkgs.mesa}/lib"
+          '' + ''
             # `cargo build --release` puts the nexrad CLI here; the fetch panel runs it from PATH.
             export PATH="$PWD/nexrad/target/release:$PATH"
             echo "droplet dev shell — godot $(godot --version 2>/dev/null | head -n1)"
