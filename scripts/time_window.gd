@@ -1,8 +1,8 @@
 class_name TimeWindow
 extends RefCounted
 ## The app's one time window [from, to] (unix seconds, UTC): the scans every site's timeline,
-## playback and fetches use (issue #37). Pure: nothing here reads the clock except the
-## `now` defaults of live() and tick().
+## playback and fetches use (issue #37). Pure: nothing here reads the clock (clock()) except
+## the `now` defaults of live_window(), tick(), freeze() and write_file().
 ##
 ## A fixed window comes from event=, time= (± AROUND_SEC), a fetch range or window=<from>/<to>.
 ## A live window covers the last `span_sec` (default 60 min, the same for every site whatever its
@@ -10,12 +10,17 @@ extends RefCounted
 ## window=live:<minutes>.
 ##
 ## Scan names carry the volume *start* time, so a scan belongs to the window when it starts
-## inside it: contains() is inclusive at both ends with no slack, as Events.frame_within was.
-## A live window has no upper bound (a scan that starts after the last tick is still live).
+## inside it: contains() is inclusive at both ends with no slack (as #35's Events.frame_within
+## was, which window filtering replaced). A live window has no upper bound (a scan that starts
+## after the last tick is still live).
+##
+## The app writes the window to data/window.json (write_file) for `nexrad prune` to protect.
 
 const DEFAULT_LIVE_MIN := 60
 const AROUND_SEC := 30 * 60  # time=T opens T ± 30 min, like the fetch panel's prefill
 
+## Tests: when >= 0, the clock tick(), live_window(), freeze() and write_file() read.
+static var clock_override := -1
 static var _compact_re: RegEx  # parse_time's, compiled once
 static var _iso_re: RegEx
 
@@ -58,8 +63,22 @@ static func live_window(minutes := DEFAULT_LIVE_MIN, now := -1) -> TimeWindow:
 func tick(now := -1) -> void:
 	if not live:
 		return
-	to = now if now >= 0 else int(Time.get_unix_time_from_system())
+	to = now if now >= 0 else clock()
 	from = to - span_sec
+
+
+## Unix seconds now (or clock_override, for tests).
+static func clock() -> int:
+	return clock_override if clock_override >= 0 else int(Time.get_unix_time_from_system())
+
+
+## This window's extent as of `now`, fixed: what turning live off (L) leaves on the timeline.
+## A fixed window comes back as an equal copy.
+func freeze(now := -1) -> TimeWindow:
+	if not live:
+		return fixed(from, to)
+	var t := now if now >= 0 else clock()
+	return fixed(t - span_sec, t)
 
 
 ## The last scan start time inside the window, or -1 when it is open-ended (live): what a
@@ -95,6 +114,32 @@ func iso_from() -> String:
 ## A live window's is only its last tick: use upper() for a bound (prune, --to).
 func iso_to() -> String:
 	return Time.get_datetime_string_from_unix_time(to) + "Z"
+
+
+## Writes the window for `nexrad prune` (nexrad/src/prune.rs) to `path` atomically (a temp
+## file renamed into place, so prune never reads a torn file), creating the directory:
+## {"from": ISO, "to": ISO, "live": bool, "written": ISO}, ISO as iso_from(). A live window is
+## written as its extent as of `now` (from = now - span, to = now); prune rolls it forward by
+## itself. `written` is `now` too: prune ignores the file once it is a day old, so the app
+## rewrites it on every change and hourly. False if it could not be written.
+func write_file(path: String, now := -1) -> bool:
+	var t := now if now >= 0 else clock()
+	var w := freeze(t)
+	var doc := {
+		"from": w.iso_from(),
+		"to": w.iso_to(),
+		"live": live,
+		"written": Time.get_datetime_string_from_unix_time(t) + "Z",
+	}
+	var abs_path := ProjectSettings.globalize_path(path)
+	DirAccess.make_dir_recursive_absolute(abs_path.get_base_dir())
+	var tmp := abs_path + ".tmp"
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	if f == null:
+		return false
+	f.store_string(JSON.stringify(doc) + "\n")
+	f.close()
+	return DirAccess.rename_absolute(tmp, abs_path) == OK
 
 
 ## For the HUD: "LIVE (last 60 min)", "2013-05-20 19:30–20:45Z", or both dates when the ends

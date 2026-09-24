@@ -83,7 +83,10 @@ static func _no_volume(main: Node) -> String:
 	var help := "Run:  nexrad update KTLX   (or: nexrad live KTLX)"
 	if fetcher.web:
 		help = "Press F to fetch radar data"
-	return "No volumes in %s\n%s" % [main.library.source.describe(), help]
+	var library: RadarLibrary = main.library
+	if not library.for_site(main.site).is_empty():  # cached, but not in the window
+		return "%s  no scans in this window\nPress F to fetch, L for live" % main.site
+	return "No volumes in %s\n%s" % [library.source.describe(), help]
 
 
 static func _view_3d_line(main: Node, cache_mb: int) -> String:

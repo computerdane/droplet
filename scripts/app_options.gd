@@ -1,8 +1,15 @@
 class_name AppOptions
 ## The app's key=value options (listed in main.gd's header): the command line after `--` on
 ## the desktop, the page's query string on web (?site=KTLX&time=20130520_200359).
+##
+## The time window (TimeWindow.from_options): window=live|live:<minutes>|<from>/<to> is the
+## canonical option; else fetch=, event= and time= each imply one (fetch= wins over event=, as
+## in start_fetch), else the app opens live.
 
 const DEFAULT_FETCH_SITE := "KTLX"
+
+## Tests: when not empty, parse() reads these key=value args instead of the command line.
+static var test_args := PackedStringArray()
 
 
 ## Native packages keep mutable data outside the read-only installed project.
@@ -13,7 +20,9 @@ static func data_path(child: String) -> String:
 
 static func parse() -> Dictionary:
 	var args := OS.get_cmdline_user_args()
-	if OS.has_feature("web"):
+	if not test_args.is_empty():
+		args = test_args
+	elif OS.has_feature("web"):
 		var query := str(JavaScriptBridge.eval("location.search", true))
 		args = PackedStringArray()
 		for a in query.trim_prefix("?").split("&", false):

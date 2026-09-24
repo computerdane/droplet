@@ -36,6 +36,8 @@ class Job:
 	var kind := ""  # "update" or "live"
 	var site := ""
 	var key := ""  # request_key() of the request that started it
+	var from := ""  # an update's range (ISO), if it fetches one; main widens the window to it
+	var to := ""
 	var args := PackedStringArray()
 	var pid := -1
 	var stdio: FileAccess
@@ -88,14 +90,20 @@ func start_update(site: String, at := "", from := "", to := "") -> Job:
 	var running := _repeat(key)
 	if running != null:
 		return running
+	var job: Job
 	if web:
-		return _start_worker("update", site, key, {"at": at, "from": from, "to": to})
-	var args := PackedStringArray(["update", site])
+		job = _start_worker("update", site, key, {"at": at, "from": from, "to": to})
+	else:
+		var args := PackedStringArray(["update", site])
+		if not from.is_empty() and not to.is_empty():
+			args.append_array(["--from", from, "--to", to])
+		elif not at.is_empty():
+			args.append_array(["--at", at])
+		job = _start("update", site, key, args)
 	if not from.is_empty() and not to.is_empty():
-		args.append_array(["--from", from, "--to", to])
-	elif not at.is_empty():
-		args.append_array(["--at", at])
-	return _start("update", site, key, args)
+		job.from = from
+		job.to = to
+	return job
 
 
 ## Returns the already running job instead when `site` is already being followed.

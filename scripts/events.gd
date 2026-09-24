@@ -166,7 +166,7 @@ static func unix(iso: String) -> int:
 
 
 ## Starts fetching `event`'s loop; main follows it as it arrives (takes_over) and jumps to its
-## peak when the job finishes ("jump_to").
+## peak when the job finishes ("jump_to"). The caller sets the window (main._set_window).
 static func start(event: Dictionary, fetcher: Fetcher) -> Fetcher.Job:
 	var job := fetcher.start_update(event["site"], "", event["from"], event["to"])
 	if job != null:
@@ -182,22 +182,11 @@ static func startup_site(event: Dictionary, want: String, sites: Array[String]) 
 	return ""
 
 
-## The frame to open on for event=: the one of `frames` (the event's site, ascending) nearest
-## `unix` (the peak, or an explicit time=) if it lies within the event's loop, else -1: the
-## site's other scans (yesterday's live view) are not the event, so nothing shows until its
-## own scans arrive.
-static func frame_within(event: Dictionary, frames: Array[String], unix: int) -> int:
-	var i := RadarLibrary.nearest_in_time(frames, unix)
-	if i < 0:
-		return -1
-	var t := RadarLibrary.unix_of(frames[i])
-	return i if t >= Events.unix(event["from"]) and t <= Events.unix(event["to"]) else -1
-
-
-## Whether the scan `name` just written by an event's fetch (oldest first) takes over from the
-## frame on screen (`shown`, "" for none): it does when it is nearer the event's `peak`, so the
-## view converges on the peak even if the fetch fails or is stopped part way, and a fetch that
-## re-reports cached scans never moves it off the peak.
+## Whether the scan `name` just written by a fetch (oldest first) takes over from the frame on
+## screen (`shown`, "" for none): it does when it is nearer the fetch's target (`peak`: an
+## event's peak, else the window's end), so the view converges on it even if the fetch fails
+## or is stopped part way, and a fetch that re-reports cached scans never moves it off the
+## target. The event's own window (TimeWindow.of_event) keeps the site's other scans out.
 static func takes_over(peak: int, name: String, shown: String) -> bool:
 	if shown.is_empty():
 		return true

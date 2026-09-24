@@ -5,11 +5,17 @@ extends SceneTree
 ##   volumes=res://data/volumes  run against another library root (e.g. real data)
 ##   only=readout                only tests whose file or method name contains this
 ## Exits 1 if any test failed or the volume root is empty.
+## The tests run on the first frame, once the root is in the tree, so a test can add the main
+## scene to it (test_app_window.gd) and have it readied.
 
 const RadarLibraryScript := preload("res://scripts/radar_library.gd")
 const DirSourceScript := preload("res://scripts/dir_source.gd")
 const FIXTURE_ROOT := "res://tests/fixtures/volumes"
 const UNIT_DIR := "res://tests/unit"
+
+var _root := FIXTURE_ROOT
+var _only := ""
+var _lib  # RadarLibrary
 
 
 func _initialize() -> void:
@@ -17,16 +23,24 @@ func _initialize() -> void:
 	for a in OS.get_cmdline_user_args():
 		if "=" in a:
 			opts[a.get_slice("=", 0)] = a.get_slice("=", 1)
-	var root: String = opts.get("volumes", FIXTURE_ROOT)
-	var only: String = opts.get("only", "")
-	var lib = RadarLibraryScript.new(DirSourceScript.new(root))
-	print("volumes: %d under %s  sites: %s" % [lib.volumes.size(), root, lib.sites()])
-	if lib.volumes.is_empty():
+	_root = opts.get("volumes", FIXTURE_ROOT)
+	_only = opts.get("only", "")
+	_lib = RadarLibraryScript.new(DirSourceScript.new(_root))
+	print("volumes: %d under %s  sites: %s" % [_lib.volumes.size(), _root, _lib.sites()])
+	if _lib.volumes.is_empty():
 		push_error(
-			"no volumes under %s%s" % [root, " (run: nexrad synth)" if root == FIXTURE_ROOT else ""]
+			(
+				"no volumes under %s%s"
+				% [_root, " (run: nexrad synth)" if _root == FIXTURE_ROOT else ""]
+			)
 		)
 		quit(1)
-		return
+
+
+func _process(_delta: float) -> bool:
+	var root := _root
+	var only := _only
+	var lib = _lib
 	var passed := 0
 	var failed := PackedStringArray()
 	for file in _test_files():
@@ -64,6 +78,7 @@ func _initialize() -> void:
 	if not failed.is_empty():
 		push_error("failed: " + ", ".join(failed))
 	quit(1 if not failed.is_empty() or passed == 0 else 0)
+	return true
 
 
 func _test_files() -> PackedStringArray:

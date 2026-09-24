@@ -1,7 +1,8 @@
 extends "res://tests/test_case.gd"
-## Launching with event= (issue #35): the frame to open on, which arriving scans take over
-## the view while the event's loop is fetched, and what the HUD says of a fetch that failed.
-## No scene, processes or network: the decisions are Events' and Fetcher's.
+## Launching with event= (issue #35): the frame to open on (the event's window, #39), which
+## arriving scans take over the view while the event's loop is fetched, and what the HUD says
+## of a fetch that failed. No scene, processes or network: the decisions are Events', the
+## window's and Fetcher's (the scene's own are in test_app_window.gd).
 
 const FetcherScript := preload("res://scripts/fetcher.gd")
 const TestFetcher := preload("res://tests/unit/test_fetcher.gd")
@@ -29,19 +30,30 @@ func test_startup_site() -> void:
 	check_eq(Events.startup_site({}, "", []), "", "an empty library: fall back")
 
 
-func test_frame_within_event() -> void:
+## The frame to open on is the nearest to the peak (or time=) among the site's scans inside
+## the event's window, as main._ready decides it; the site's other days are not the event.
+func test_startup_frame_is_in_the_event_window() -> void:
 	var e := Events.find(EVENT_ID)
+	var w := TimeWindow.of_event(e)
 	var peak := Events.unix(e["peak"])
-	check_eq(Events.frame_within(e, [], peak), -1, "empty cache: nothing to show")
-	check_eq(Events.frame_within(e, OTHER_DAY, peak), -1, "the site's other scans are not it")
+	check_eq(_startup_frame(w, [], peak), "", "empty cache: nothing to show")
+	check_eq(_startup_frame(w, OTHER_DAY, peak), "", "the site's other scans are not it")
 	var partial: Array[String] = OTHER_DAY + LOOP.slice(0, 2)
-	check_eq(Events.frame_within(e, partial, peak), 3, "partial cache: nearest scan of the loop")
+	check_eq(_startup_frame(w, partial, peak), LOOP[1], "partial cache: nearest scan of the loop")
 	var full: Array[String] = OTHER_DAY + LOOP
-	check_eq(Events.frame_within(e, full, peak), 5, "full cache: the peak")
+	check_eq(_startup_frame(w, full, peak), LOOP[3], "full cache: the peak")
 	var t := RadarLibrary.unix_of("X_20130520_194000")
-	check_eq(Events.frame_within(e, full, t), 3, "an explicit time= within the loop")
+	check_eq(_startup_frame(w, full, t), LOOP[1], "an explicit time= within the loop")
 	t = RadarLibrary.unix_of("X_20130520_230000")
-	check_eq(Events.frame_within(e, full, t), 7, "a time past the loop: its last scan")
+	check_eq(_startup_frame(w, full, t), LOOP[5], "a time past the loop: its last scan")
+	check_eq(w.filter(full), LOOP, "the timeline is the loop alone")
+
+
+## The scan main opens on (its name, "" for none) with `cached` for the event's site.
+static func _startup_frame(w: TimeWindow, cached: Array[String], t: int) -> String:
+	var frames := w.filter(cached)
+	var i := RadarLibrary.nearest_in_time(frames, t)
+	return frames[i] if i >= 0 else ""
 
 
 func test_arriving_scans_converge_on_peak() -> void:

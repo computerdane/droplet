@@ -111,6 +111,13 @@ The query string takes the same options as the command line, and a URL fetches w
 at, so links are permalinks: `?site=KTLX&time=20130520_200359` (the Moore tornado),
 `?site=KTLX&fetch=2013-05-20T19:30Z/2013-05-20T20:40Z&play=1` (a loop), `?site=KTLX` (live).
 
+The app shows one time window at a time, named in the playback bar: live is the last 60 min,
+rolling with the clock (L turns it off, freezing the window where it is, and on again);
+`time=T` opens T ± 30 min, `event=` the event's loop, `fetch=<from>/<to>` that range. The
+`window=` option sets it directly: `window=live:30` (the last 30 min) or
+`window=2013-05-20T19:30Z/2013-05-20T20:45Z`. Every site's timeline, the loop, the mosaic and
+the export use only the scans inside it; scans from other times stay cached but out of sight.
+
 Location (G, or the Location button) marks your position on the map. It is off by default; the
 browser asks for permission when you turn it on, and the position stays in the page (never
 stored or sent). A loop export (E) made while it is on includes the marker and the distance line,

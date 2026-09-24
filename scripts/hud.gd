@@ -103,6 +103,7 @@ var legend_classes: HBoxContainer  # class abbreviations under a categorical leg
 var play_button: Button
 var slider: HSlider
 var time_label: Label
+var window_label: Label  # the time window on the timeline (TimeWindow.label)
 var speed_option: OptionButton
 var live_button: Button
 var _field_row: HFlowContainer
@@ -359,7 +360,11 @@ func _build_bottom_bar() -> void:
 	time_label = _label(14)
 	time_label.custom_minimum_size.x = 220
 	row.add_child(time_label)
-	_bar_tail = [time_label]
+	window_label = _label(12)
+	window_label.modulate = Color(1, 1, 1, 0.75)
+	window_label.tooltip_text = "The time window the timeline, loop and mosaic show (L: live)"
+	row.add_child(window_label)
+	_bar_tail = [time_label, window_label]
 
 	for step in [-1, 1]:  # for touch screens (keys: Down, Up)
 		var tilt := _button("Tilt " + ("-" if step < 0 else "+"), "Lower / higher tilt (Down / Up)")
@@ -659,7 +664,12 @@ func set_overview(on: bool) -> void:
 	_queue_layout()
 
 
-## `frame` and `count` describe the position within the current sequence.
+## The time window on the timeline, as TimeWindow.label() puts it.
+func set_window(text: String) -> void:
+	window_label.text = text
+
+
+## `frame` and `count` describe the position within the current sequence (0: no frame).
 func set_playback(
 	playing: bool, live: bool, frame: int, count: int, time_text: String, fps: float
 ) -> void:
@@ -670,7 +680,7 @@ func set_playback(
 	slider.value = frame
 	slider.editable = count > 1
 	_setting_slider = false
-	time_label.text = "%s   %d/%d" % [time_text, frame + 1, count] if count > 0 else "US composite"
+	time_label.text = "%s   %d/%d" % [time_text, frame + 1, count] if count > 0 else "no scans"
 	var si := SPEEDS.find(fps)
 	if si >= 0 and speed_option.selected != si:
 		speed_option.select(si)

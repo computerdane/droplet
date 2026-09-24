@@ -7,21 +7,29 @@ const MAX_SKEW_SEC := 10 * 60
 const MAX_KM := 900.0
 
 
-## Volume of `s` nearest in time to `t`, or "" if none is within MAX_SKEW_SEC.
-static func path_near(library: RadarLibrary, s: String, t: int) -> String:
-	var list := library.for_site(s)
+## Volume of `s` nearest in time to `t` (inside `window`, when given), or "" if none is
+## within MAX_SKEW_SEC.
+static func path_near(
+	library: RadarLibrary, s: String, t: int, window: TimeWindow = null
+) -> String:
+	var list := library.for_site(s, window)
 	var i := RadarLibrary.nearest_in_time(list, t)
 	if i < 0 or absi(RadarLibrary.unix_of(list[i]) - t) > MAX_SKEW_SEC:
 		return ""
 	return list[i]
 
 
-## Other sites' volumes nearest in time to `volume`, with the tilt of `field_name` nearest
-## `elev` (loaded through `cache`), each with the positions of all the other radars in its
-## own frame (`others`, see _assign_others):
+## Other sites' volumes nearest in time to `volume` (inside `window`, when given), with the
+## tilt of `field_name` nearest `elev` (loaded through `cache`), each with the positions of all
+## the other radars in its own frame (`others`, see _assign_others):
 ## [{site, volume, sweep, offset_km (+y north), rotation (rad, clockwise), skew_sec, others}]
 static func neighbors(
-	library: RadarLibrary, cache: VolumeCache, volume: RadarVolume, field_name: String, elev: float
+	library: RadarLibrary,
+	cache: VolumeCache,
+	volume: RadarVolume,
+	field_name: String,
+	elev: float,
+	window: TimeWindow = null
 ) -> Array:
 	var out := []
 	var t := RadarLibrary.unix_of(volume.name)
@@ -30,7 +38,7 @@ static func neighbors(
 	for s in library.sites():
 		if s == volume.icao():
 			continue
-		var path := path_near(library, s, t)
+		var path := path_near(library, s, t, window)
 		if path.is_empty():
 			continue
 		var skew := RadarLibrary.unix_of(path) - t

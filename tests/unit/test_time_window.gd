@@ -214,3 +214,59 @@ func test_option_precedence() -> void:
 func test_upper() -> void:
 	check_eq(TimeWindow.fixed(1, 2).upper(), 2, "fixed: to")
 	check_eq(TimeWindow.live_window(60, T).upper(), -1, "live: open-ended")
+
+
+func test_freeze() -> void:
+	var live := TimeWindow.live_window(60, T)
+	var frozen := live.freeze(T + 600)
+	check(not frozen.live and frozen.equals(TimeWindow.fixed(T + 600 - 3600, T + 600)), "as of now")
+	check(live.live and live.to == T, "the live window is untouched")
+	TimeWindow.clock_override = T + 60
+	check(live.freeze().equals(TimeWindow.fixed(T + 60 - 3600, T + 60)), "the clock by default")
+	check(TimeWindow.live_window(60).to == T + 60, "live_window reads the same clock")
+	TimeWindow.clock_override = -1
+	var fixed := TimeWindow.fixed(1, 2)
+	check(fixed.freeze(T).equals(fixed) and fixed.freeze(T) != fixed, "a fixed window: a copy")
+
+
+func test_write_file() -> void:
+	var dir := OS.get_temp_dir().path_join("droplet-window-%d" % Time.get_ticks_usec())
+	var path := dir.path_join("data").path_join("window.json")
+	var moore := TimeWindow.of_event(Events.find("moore2013"))
+	check(moore.write_file(path, T + 100), "written (directories created)")
+	var doc: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+	check_eq(
+		doc,
+		{
+			"from": "2013-05-20T19:30:00Z",
+			"to": "2013-05-20T20:45:00Z",
+			"live": false,
+			"written": "2013-05-20T20:11:40Z",
+		},
+		"the format nexrad prune reads"
+	)
+	check(not FileAccess.file_exists(path + ".tmp"), "the temp file was renamed into place")
+	var live := TimeWindow.live_window(60, T)
+	check(live.write_file(path, T + 300), "overwritten")
+	doc = JSON.parse_string(FileAccess.get_file_as_string(path))
+	check_eq(
+		doc,
+		{
+			"from": "2013-05-20T19:15:00Z",
+			"to": "2013-05-20T20:15:00Z",
+			"live": true,
+			"written": "2013-05-20T20:15:00Z",
+		},
+		"live: its extent as of now, flagged live"
+	)
+	check_eq(live.to, T, "writing does not tick the window")
+	TimeWindow.clock_override = T + 7200
+	check(live.write_file(path), "the clock by default")
+	doc = JSON.parse_string(FileAccess.get_file_as_string(path))
+	check_eq(doc["written"], "2013-05-20T22:10:00Z", "written now")
+	TimeWindow.clock_override = -1
+	check(not moore.write_file(path.path_join("x")), "unwritable: false (a file is not a dir)")
+	for f in [path, path.path_join("x") + ".tmp"]:
+		DirAccess.remove_absolute(f)
+	DirAccess.remove_absolute(dir.path_join("data"))
+	DirAccess.remove_absolute(dir)

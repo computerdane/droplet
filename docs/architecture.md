@@ -41,6 +41,7 @@ godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_20035
 godot --path . --script res://tests/screenshot.gd -- out.png time=20130520_200359 vwp=1 hover=560,380
 godot --path . --script res://tests/screenshot.gd -- out.png volumes=res://tests/fixtures/volumes site=KTST
 godot --path . -- site=KTLX fetch=2013-05-20T20:00Z  # start with a fetch (also latest, live, <from>/<to>)
+godot --path . -- site=KTLX window=2013-05-20T19:30Z/2013-05-20T20:45Z   # the time window (also live, live:<minutes>)
 godot --path . --script res://tests/frametimes.gd -- frames=1500 view=3d mosaic=1 play=1 fps=15 time=20130520_193407
 godot --path . -- time=20130520_200359 fps=8 export=moore.png         # save the loop as an animated PNG and quit
 gdformat scripts tests && gdlint scripts tests
@@ -114,6 +115,9 @@ gdformat scripts tests && gdlint scripts tests
 - `tests/run.gd` – Godot unit tests: every `test_*` method of `tests/unit/test_*.gd` (which extend
   `tests/test_case.gd`: `check()`, `check_eq()`, `note()`, `lib`, `fixtures`) against the fixture volumes by default
   (`volumes=` for real data; fixture-only assertions are gated on `fixtures`). Exits 1 on any failure or no volumes.
+  They run on the first frame, so a test can add the main scene to the tree: `tests/unit/test_app_window.gd` launches
+  it headless with `AppOptions.test_args` and a `FakeFetcher` (no process, no network) to check startup options, the
+  window's frames, live rolling on, L, arriving scans and `data/window.json`.
 - `tests/golden.sh` + `tests/golden/*.png` – golden screenshots: 13 views of the fixtures (`basemap=0 hover=0 prefetch=0`)
   rendered by the flake's Mesa llvmpipe under Xvfb (`DROPLET_GL_LIBS`, not the host driver) and compared by
   `tests/compare.gd` (≤ 0.2 % of pixels off by > 24/255). Re-render with `--update` after an intended visual change and
@@ -181,8 +185,8 @@ gdformat scripts tests && gdlint scripts tests
   over their ground track and forecast, and the viewer's position (`set_user_location`). Fed by `main._update_section()` and `Overlays.update()`.
 - `scripts/readout.gd` – `Readout.plan_view()`: the 2D hover text (nearest radar's value, range/bearing, beam height,
   lat/lon, warnings containing the point).
-- `scripts/mosaic.gd` – `Mosaic.neighbors()` (other sites within 10 min / 900 km, projected + rotated),
-  `assign_others()` for the nearest-radar discard, `summary()`.
+- `scripts/mosaic.gd` – `Mosaic.neighbors()` (other sites' scans inside the window within 10 min / 900 km, projected +
+  rotated), `assign_others()` for the nearest-radar discard, `summary()`.
 - `nexrad/src/basemap.rs` – Census 1:500k state/county shapefiles (own zip + shapefile reader) + Natural Earth cities.
   `pack_lines()` stores each shared border once and simplifies runs between junctions (`SIMPLIFY_DEG`). `scripts/basemap.gd`
   loads it from `res://data/basemap` (desktop) or fetches `basemap/` next to index.html (web, `when_loaded()` callbacks).
@@ -200,7 +204,17 @@ gdformat scripts tests && gdlint scripts tests
   (`data/volumes`, or `volumes=`); `MemorySource` = volumes handed over whole (`add_volume(name, json, {file: bytes})`,
   the shape nexrad-wasm's `decode()` returns; the web backing store). Nothing else touches volume files.
   Volumes are identified by name (`ICAO_YYYYMMDD_HHMMSS`) everywhere, not by path.
-- `scripts/radar_library.gd` – indexes a `VolumeSource`, per-site lists, sequences (split at >30 min gaps); `open(name)`.
+- `scripts/radar_library.gd` – indexes a `VolumeSource`, per-site lists (`for_site(site, window)` keeps the scans inside a
+  `TimeWindow`), sequences (split at >30 min gaps); `open(name)`.
+- `scripts/time_window.gd` – `TimeWindow`, the app's one time window `[from, to]` (unix seconds): fixed (`fixed()`,
+  `around()` = time= ± 30 min, `of_event()`, `window=<from>/<to>`) or live (`live_window(minutes)`: the last 60 min by
+  default, the same for every site; `tick()` rolls it on, `upper()` is -1 for its open end, `freeze()` fixes it where it
+  is). `contains()`/`filter()` go by the scan start time in the name, inclusive. `from_options()` picks the window for
+  the app's options (`window=`, else `fetch=`, `event=`, `time=`, else live; fetch= wins over event= as in
+  `AppOptions.start_fetch`); `parse_time()` takes time='s `20130520_193000` and every ISO form nexrad does; `label()`
+  is the HUD's text; `to_option()`/`parse_option()` round-trip `window=`. `write_file(path)` writes `data/window.json`
+  atomically (temp file + rename): `{"from", "to", "live", "written"}` in ISO UTC, a live window as its extent as of
+  now, for `nexrad prune` to protect (#41; ignored once a day old, hence the hourly heartbeat).
 - `scripts/radar_volume.gd` – one volume, lazy float16 textures; `tilts(field)` = one sweep per
   elevation (split cuts / SAILS repeats merged, most gates then latest wins). Use tilts, not raw sweep indices.
 - `scripts/volume_cache.gd` – LRU of volumes by texture bytes (1 GiB), invalidates every completed
@@ -210,15 +224,31 @@ gdformat scripts tests && gdlint scripts tests
   `main._preload_ahead()` prefetches what the active view needs (`Need`: nearest tilt / all tilts / tilt array)
   for the loop frames after the playhead (+ mosaic neighbours) up to 80 % of
   the budget, so loops bigger than the cache still stream as a rolling window. `prefetch=0` disables it.
-- `scripts/main.gd` – controller: site, frame, field, *target elevation* (kept across frames), playback,
-  live, mosaic neighbours. With no site/time/fetch, starts on the live US composite; clicking a radar
-  selects it and fetches its recent live loop. Parses `key=value` user args (see its header) – screenshot.gd passes them through.
-- `scripts/volume_update_policy.gd` – picks the live target after new or rewritten volumes arrive,
-  keeps the newest pinned through older backfill, and labels growing versus provisional scans.
+- `scripts/main.gd` – controller: the time window, site, frame, field, *target elevation* (kept across frames),
+  playback, live, mosaic neighbours. `window` (a `TimeWindow`, `TimeWindow.from_options` at startup) bounds everything
+  shown: `frames` are the site's scans inside it (`_refilter()`, on every rescan and live tick), so the slider,
+  playback, loop export, VWP, rotation tracks, mosaic neighbours and prefetch never reach outside; `_latest_site()`
+  prefers the site with the newest scan inside it. Live following is on exactly when the window is live: `_set_live(on)`
+  opens a fresh live window or freezes the current one where it is (L, stepping back, a scrub, a finished update), and
+  `_set_window()` refilters, updates the HUD's label and tells prune (`_write_window()`: `data/window.json` on every
+  change and hourly, only on the desktop showing the data root it manages; on web the MemorySource's `set_window`,
+  once it has one, #41) and the live timer. An update's scans take over as they arrive while the view is on its site
+  and not live (`_follow_fetch`: nearer the job's target, an event's peak or else the window's end, see
+  `Events.takes_over`); scans outside the window are never frames. A finished update whose scan lies outside the
+  window re-targets it (the job's range, else ± 30 min around the scan: `fetch=latest` from a radar quiet for over an
+  hour). With no site/time/fetch/window, starts on the live US composite (the window stays live; nothing is followed);
+  clicking a radar selects it and fetches its recent live loop. Parses `key=value` user args (see its header) –
+  screenshot.gd passes them through. `scripts/info_text.gd` builds its top-left info text ("no scans in this window"
+  when the site has scans only outside it), `scripts/playback.gd` its loop arithmetic (next frame, dwell, sequence
+  jumps, speed steps, loop volumes, VWP columns).
+- `scripts/volume_update_policy.gd` – picks the live target among the window's frames after new or rewritten volumes
+  arrive, keeps the newest pinned through older backfill, and labels growing versus provisional scans.
 - `scripts/hud.gd` – code-built UI (no keyboard focus except the fetch panel's text fields, so shortcuts work).
   Responsive: stretch `canvas_items` + aspect `expand` from 1280x800; `main._fit_ui_scale()` keeps the scale
   ≥ the screen scale (× `ui_scale=`) so small windows reflow instead of shrinking; `Hud._layout()` wraps the
   top-right rows, sizes/places hodograph + section (side by side when they don't stack) and wraps/hides the hint.
+  The playback bar names the time window (`set_window`, `TimeWindow.label()`: `LIVE (last 60 min)` or
+  `2013-05-20 19:30–20:45Z`) next to the frame time.
   Below `NARROW_WIDTH` (720, phones) the playback bar takes two rows, the hint is hidden, and when the top-right
   column cannot fit beside the info text it spans the top with the info under it. Tilt -/+ buttons stand in for Up/Down.
   The field/product buttons are one dropdown; the national view hides per-site playback and field controls.
@@ -273,12 +303,16 @@ gdformat scripts tests && gdlint scripts tests
 - `scripts/events.gd` – `Events.LIST`: notable events (site, UTC from/to/peak, note; tornadoes and hurricanes 1997–2023,
   times checked against the archive listing). The fetch panel's "Notable events" list and `event=<id>` fetch the loop
   (`Events.start()`) and the finished job jumps to the peak (`jump_to` meta); `event=` also defaults `site=` and `time=`.
-  While the view is on the event's site (not live), each scan the fetch writes takes over if nearer the peak
-  (`Events.takes_over`), so the view converges on the peak even if the fetch fails or stops part way. At launch,
-  `event=` selects its site even when uncached and shows only a cached scan inside the event's loop
-  (`Events.frame_within`), else no frame until its scans arrive; a failed last job stays in the info text.
-- `scripts/app_options.gd` – `key=value` options from the command line, or the query string on web.
-  With no site/time/fetch/event the web app opens the national composite without starting a site job;
+  An event sets the window to its loop (`TimeWindow.of_event`; the panel's list and `event=` alike), so the site's
+  other days are never on the timeline. While the view is on the event's site (not live), each scan the fetch writes
+  takes over if nearer the peak (`Events.takes_over`, `main._follow_fetch`), so the view converges on the peak even if
+  the fetch fails or stops part way. At launch, `event=` selects its site even when uncached and opens on the cached
+  scan inside the window nearest the peak, else no frame until its scans arrive; a failed last job stays in the info
+  text.
+- `scripts/app_options.gd` – `key=value` options from the command line, or the query string on web (`test_args`
+  stands in for tests). `window=live|live:<minutes>|<from>/<to>` is the time window; without it `fetch=`, `event=` and
+  `time=` (± 30 min) imply one, else live (`TimeWindow.from_options`).
+  With no site/time/fetch/event/window the web app opens the national composite without starting a site job;
   an explicit web URL without `fetch=` fetches the volume at `time=`, else starts live for `site=`.
   On web main.gd uses a MemorySource (1400 MiB budget, oldest evicted, enough for roughly ten
   full recent scans plus a partial) and a 192 MiB texture cache within the 2 GB wasm heap.
@@ -330,7 +364,7 @@ gdformat scripts tests && gdlint scripts tests
 
 ## Mosaic
 
-Other sites' volumes within 10 min of the current one are placed at `Basemap.project(site)` and
+Other sites' volumes within 10 min of the current one (inside the time window) are placed at `Basemap.project(site)` and
 rotated for meridian convergence. Nearest-radar compositing: each ppi/cone shader gets the other
 radars' positions in its local frame (+x east, +y south) and discards pixels closer to another radar.
 
@@ -367,6 +401,6 @@ radars' positions in its local frame (+x east, +y south) and discards pixels clo
   hydrometeor classification with a melting layer.
 - Web: decoded volumes are not persisted (raw files are, in
   the Cache API; re-decoding costs ~0.5 s/volume against 84 MB stored per decoded volume).
-- Mosaic uses whatever is on disk; `nexrad live` takes several sites (a thread each; the fetch panel starts one job per site
+- Mosaic uses whatever is on disk inside the time window; `nexrad live` takes several sites (a thread each; the fetch panel starts one job per site
   for a live mosaic). Fetching from the UI needs the `nexrad` binary (PATH or `DROPLET_NEXRAD`) and a writable `DROPLET_ROOT` (defaults to the source checkout). The Nix package configures both and bundles a basemap.
 - 3D range rings and the height scale are the selected site's; mosaic neighbours get a ground disk and their name.
